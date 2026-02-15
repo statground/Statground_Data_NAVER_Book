@@ -1,1 +1,0 @@
-# Statground_Data_NAVER_Book
