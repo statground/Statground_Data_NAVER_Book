@@ -9,12 +9,10 @@ import pytz
 import re
 from datetime import datetime
 
-# 형태소/영문 품사 태깅 (GitHub Actions 환경에서 동작하던 구성을 유지)
 from konlpy.tag import Okt
 import nltk
 from nltk import pos_tag, word_tokenize
 
-# nltk 리소스 다운로드 (최초 실행 시)
 nltk.download("punkt")
 nltk.download("averaged_perceptron_tagger")
 
@@ -45,7 +43,7 @@ okt = Okt()
 
 
 # ─────────────────────────────
-# ClickHouse 스키마 조회 (존재 컬럼만 insert)
+# 테이블 컬럼 조회
 # ─────────────────────────────
 def get_table_columns(database: str, table: str) -> set[str]:
     q = f"""
@@ -68,7 +66,7 @@ def filter_row_by_existing_columns(row: dict) -> dict:
 
 
 # ─────────────────────────────
-# NAVER API 헤더 (요청마다 랜덤 키)
+# API 키 랜덤 선택
 # ─────────────────────────────
 def pick_api_headers() -> dict:
     api = random.choice(NAVER_API_KEYS)
@@ -78,13 +76,13 @@ def pick_api_headers() -> dict:
     }
 
 
-def fetch_items(keyword: str, sort: str, start: int, display: int = 100) -> list[dict]:
+def fetch_items(keyword: str, sort: str, start: int, display: int = 100):
     headers = pick_api_headers()
     params = {
         "query": keyword,
         "display": display,
         "start": start,
-        "sort": sort,  # sim | date
+        "sort": sort,
     }
     r = requests.get(NAVER_URL, headers=headers, params=params, timeout=20)
     if r.status_code != 200:
@@ -94,64 +92,81 @@ def fetch_items(keyword: str, sort: str, start: int, display: int = 100) -> list
 
 
 # ─────────────────────────────
-# 키워드 생성: raw_naver title 100개 랜덤 → 형태소/품사 → 조건 필터 → 랜덤
+# 키워드 생성
 # ─────────────────────────────
 def generate_keyword() -> str:
+    fallback = ["통계", "데이터", "Statistics", "Data"]
+
     try:
-        df = client.query_df("SELECT title FROM raw_naver ORDER BY rand() LIMIT 100")
+        df = client.query_df(
+            "SELECT title, author, publisher FROM raw_naver ORDER BY rand() LIMIT 100"
+        )
     except Exception:
         df = pd.DataFrame()
 
-    if df is None or df.empty or "title" not in df.columns:
-        return random.choice(["통계", "데이터", "Statistics", "Data"])
+    if df is None or df.empty:
+        return random.choice(fallback)
 
-    keywords: list[str] = []
+    source = random.choice(["title", "author", "publisher"])
 
-    for title in df["title"].tolist():
-        if not isinstance(title, str):
-            continue
+    # author
+    if source == "author":
+        candidates = []
+        if "author" in df.columns:
+            for v in df["author"].tolist():
+                if isinstance(v, str) and v.strip():
+                    parts = [p.strip() for p in v.split("^") if p.strip()]
+                    candidates.extend(parts)
+        return random.choice(candidates) if candidates else random.choice(fallback)
 
+    # publisher
+    if source == "publisher":
+        candidates = []
+        if "publisher" in df.columns:
+            for v in df["publisher"].tolist():
+                if isinstance(v, str) and v.strip():
+                    candidates.append(v.strip())
+        return random.choice(candidates) if candidates else random.choice(fallback)
+
+    # title → 형태소 분석
+    titles = []
+    if "title" in df.columns:
+        for v in df["title"].tolist():
+            if isinstance(v, str) and v.strip():
+                titles.append(v.strip())
+
+    if not titles:
+        return random.choice(fallback)
+
+    keywords = []
+    for title in titles:
         if re.search("[가-힣]", title):
-            # 한글: 명사, 2글자 이상
             nouns = okt.nouns(title)
-            keywords += [n for n in nouns if len(n) >= 2]
+            keywords.extend([n for n in nouns if len(n) >= 2])
         else:
-            # 영문: 명사(대략 NN*), 4글자 이상
             tokens = word_tokenize(title)
             tagged = pos_tag(tokens)
-            keywords += [w for w, t in tagged if t.startswith("NN") and len(w) >= 4]
+            keywords.extend([w for w, t in tagged if t.startswith("NN") and len(w) >= 4])
 
-    if not keywords:
-        return random.choice(["통계", "데이터", "Statistics", "Data"])
-
-    return random.choice(keywords)
+    return random.choice(keywords) if keywords else random.choice(fallback)
 
 
 # ─────────────────────────────
-# ISBN -> 기존 uuid / created_at / created_log 매핑
-# (UUID 불변 + 최초 created_at 유지)
+# 기존 UUID / created_at 유지
 # ─────────────────────────────
-def build_existing_map(isbns: list[str]) -> dict[str, dict]:
+def build_existing_map(isbns):
     isbns = [i for i in isbns if isinstance(i, str) and i.strip()]
     if not isbns:
         return {}
 
-    # ISBN은 보통 숫자/공백이라 따옴표 escape가 거의 필요 없지만, 최소 안전 처리(따옴표 제거)
     safe_isbns = [i.replace("'", "") for i in isbns]
     quoted = ",".join([f"'{i}'" for i in safe_isbns])
 
-    # version 컬럼이 있으면 최신 판정을 version 기준으로
     has_version = "version" in TABLE_COLUMNS
-    has_updated_at = "updated_at" in TABLE_COLUMNS
-    order_expr = "version DESC" if has_version else ("updated_at DESC" if has_updated_at else "created_at DESC")
+    order_expr = "version DESC" if has_version else "created_at DESC"
 
-    # ClickHouse: 동일 isbn 여러 행 중 최신 1개만 뽑기 (LIMIT 1 BY isbn)
     q = f"""
-        SELECT
-            isbn,
-            uuid,
-            created_at,
-            created_log
+        SELECT isbn, uuid, created_at, created_log
         FROM {TABLE_NAME}
         WHERE isbn IN ({quoted})
         ORDER BY {order_expr}
@@ -165,32 +180,33 @@ def build_existing_map(isbns: list[str]) -> dict[str, dict]:
 
     if df is None or df.empty:
         return {}
+
     needed = {"isbn", "uuid", "created_at", "created_log"}
     if not needed.issubset(set(df.columns)):
         return {}
 
-    m = {}
+    result = {}
     for _, row in df.iterrows():
-        m[str(row["isbn"])] = {
+        result[str(row["isbn"])] = {
             "uuid": str(row["uuid"]),
             "created_at": row["created_at"],
-            "created_log": str(row["created_log"]) if row["created_log"] is not None else "",
+            "created_log": row["created_log"],
         }
-    return m
+
+    return result
 
 
 # ─────────────────────────────
-# 수집 본체
+# 수집 실행
 # ─────────────────────────────
 def collect():
     keyword = generate_keyword()
-    sorts = ["sim", "date"]
 
-    for sort in sorts:
+    for sort in ["sim", "date"]:
         start = 1
 
         while start <= 1000:
-            items = fetch_items(keyword=keyword, sort=sort, start=start, display=100)
+            items = fetch_items(keyword, sort, start, 100)
             if not items:
                 break
 
@@ -201,6 +217,7 @@ def collect():
             existing_map = build_existing_map(batch_isbns)
 
             rows = []
+
             for it in items:
                 isbn = it.get("isbn")
                 if not isbn:
@@ -219,18 +236,11 @@ def collect():
 
                 row = {
                     "uuid": book_uuid,
-
-                    # 테이블에 있으면 사용, 없으면 filter에서 제거됨
                     "version": version,
-
-                    # ✅ 최초 값 유지(사이트맵/정렬 안정성에 도움)
                     "created_at": created_at_value,
                     "created_log": created_log_value,
-
-                    # ✅ 매 수집마다 갱신
                     "updated_at": now,
                     "updated_log": f"auto_upsert|keyword={keyword}|sort={sort}",
-
                     "title": it.get("title") or "",
                     "link": it.get("link") or "",
                     "image": it.get("image") or "",
