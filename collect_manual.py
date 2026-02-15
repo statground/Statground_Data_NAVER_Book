@@ -154,7 +154,7 @@ def collect_manual(keyword: str):
                     "created_at": now,
                     "created_log": "github_actions_manual",
                     "updated_at": now,
-                    "updated_log": "manual_upsert",
+                    "updated_log": f"manual_upsert|keyword={keyword}|sort={sort}",
 
                     "title": it.get("title") or "",
                     "link": it.get("link") or "",
