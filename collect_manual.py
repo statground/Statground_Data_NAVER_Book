@@ -87,8 +87,8 @@ def build_uuid_map(isbns: list[str]) -> dict[str, str]:
     if not isbns:
         return {}
 
-    # ISBN 문자열 안전 처리(최소한의 따옴표 escape)
-    quoted = ",".join([f"'{i.replace(\"'\", \"\\\\'\")}'" for i in isbns])
+    # ✅ ISBN은 일반적으로 숫자/공백 형태라 따옴표 escape가 필요 없음
+    quoted = ",".join([f"'{i}'" for i in isbns])
 
     q = f"""
         SELECT isbn, uuid
@@ -148,7 +148,7 @@ def collect_manual(keyword: str):
                 row = {
                     "uuid": book_uuid,
 
-                    # version 컬럼이 있는 테이블에서만 사용
+                    # version 컬럼이 있는 테이블에서만 사용 (테이블에 없으면 filter에서 자동 제거됨)
                     "version": version,
 
                     "created_at": now,
