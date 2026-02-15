@@ -1,0 +1,35 @@
+name: NAVER Book Manual Search
+
+on:
+  workflow_dispatch:
+    inputs:
+      keyword:
+        description: "검색할 키워드를 입력하세요"
+        required: true
+        type: string
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install requests clickhouse-connect pandas uuid6 pytz
+
+      - name: Run manual collector
+        env:
+          CH_HOST: ${{ secrets.CH_HOST }}
+          CH_PORT: ${{ secrets.CH_PORT }}
+          CH_USER: ${{ secrets.CH_USER }}
+          CH_PASSWORD: ${{ secrets.CH_PASSWORD }}
+          CH_DATABASE: ${{ secrets.CH_DATABASE }}
+          NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
+          MANUAL_KEYWORD: ${{ github.event.inputs.keyword }}
+        run: python collect_manual.py
