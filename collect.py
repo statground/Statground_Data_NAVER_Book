@@ -12,12 +12,15 @@ from konlpy.tag import Okt
 import nltk
 from nltk import pos_tag, word_tokenize
 
+# nltk 리소스 다운로드 (최초 실행 시)
 nltk.download('punkt')
 nltk.download('averaged_perceptron_tagger')
 
 KST = pytz.timezone("Asia/Seoul")
 
-# 환경 변수
+# ─────────────────────────────
+# 환경 변수 로드
+# ─────────────────────────────
 CH_HOST = os.environ["CH_HOST"]
 CH_PORT = int(os.environ["CH_PORT"])
 CH_USER = os.environ["CH_USER"]
@@ -25,6 +28,9 @@ CH_PASSWORD = os.environ["CH_PASSWORD"]
 CH_DATABASE = os.environ["CH_DATABASE"]
 NAVER_API_KEYS = json.loads(os.environ["NAVER_API_KEYS"])
 
+# ─────────────────────────────
+# ClickHouse 연결
+# ─────────────────────────────
 client = clickhouse_connect.get_client(
     host=CH_HOST,
     port=CH_PORT,
@@ -35,19 +41,28 @@ client = clickhouse_connect.get_client(
 
 okt = Okt()
 
-# 1️⃣ 키워드 생성
+# ─────────────────────────────
+# 키워드 생성 함수
+# ─────────────────────────────
 def generate_keyword():
 
-    df = client.query_df(
-        "SELECT title FROM raw_naver ORDER BY rand() LIMIT 100"
-    )
+    try:
+        df = client.query_df(
+            "SELECT title FROM raw_naver ORDER BY rand() LIMIT 100"
+        )
+    except:
+        df = pd.DataFrame()
 
     if df.empty:
-        return random.choice(["통계","데이터","Statistics","Data"])
+        return random.choice(["통계", "데이터", "Statistics", "Data"])
 
     keywords = []
 
     for title in df["title"]:
+        if not isinstance(title, str):
+            continue
+
+        # 한글 포함 여부
         if re.search("[가-힣]", title):
             nouns = okt.nouns(title)
             keywords += [n for n in nouns if len(n) >= 2]
@@ -60,12 +75,14 @@ def generate_keyword():
             ]
 
     if not keywords:
-        return random.choice(["통계","데이터","Statistics","Data"])
+        return random.choice(["통계", "데이터", "Statistics", "Data"])
 
     return random.choice(keywords)
 
 
-# 2️⃣ 수집
+# ─────────────────────────────
+# 수집 함수
+# ─────────────────────────────
 def collect():
 
     keyword = generate_keyword()
@@ -79,7 +96,9 @@ def collect():
     sorts = ["sim", "date"]
 
     for sort in sorts:
+
         start = 1
+
         while start <= 1000:
 
             params = {
@@ -89,17 +108,22 @@ def collect():
                 "sort": sort
             }
 
-            r = requests.get(
-                "https://openapi.naver.com/v1/search/book.json",
-                headers=headers,
-                params=params
-            )
+            try:
+                r = requests.get(
+                    "https://openapi.naver.com/v1/search/book.json",
+                    headers=headers,
+                    params=params,
+                    timeout=15
+                )
+            except:
+                break
 
             if r.status_code != 200:
                 break
 
             data = r.json()
             items = data.get("items", [])
+
             if not items:
                 break
 
@@ -108,6 +132,7 @@ def collect():
             version = int(now.timestamp())
 
             for item in items:
+
                 isbn = item.get("isbn")
                 if not isbn:
                     continue
@@ -130,7 +155,10 @@ def collect():
                     "pubdate": item.get("pubdate")
                 })
 
-            client.insert("raw_naver", rows)
+            # 🔥 insert_df 사용 (KeyError 해결)
+            if rows:
+                df_insert = pd.DataFrame(rows)
+                client.insert_df("raw_naver", df_insert)
 
             if len(items) < 100:
                 break
@@ -138,5 +166,8 @@ def collect():
             start += 100
 
 
+# ─────────────────────────────
+# 실행
+# ─────────────────────────────
 if __name__ == "__main__":
     collect()
