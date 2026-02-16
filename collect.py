@@ -13,16 +13,15 @@ from konlpy.tag import Okt
 import nltk
 from nltk import pos_tag, word_tokenize
 
+# ✅ NLTK 리소스 (GitHub Actions 환경 대응)
 nltk.download("punkt")
-nltk.download("punkt_tab")  # ✅ 추가: Resource punkt_tab not found 해결
+nltk.download("punkt_tab")
 nltk.download("averaged_perceptron_tagger")
+nltk.download("averaged_perceptron_tagger_eng")  # ✅ 추가: LookupError 해결
 
 KST = pytz.timezone("Asia/Seoul")
 NAVER_URL = "https://openapi.naver.com/v1/search/book.json"
 
-# ─────────────────────────────
-# 환경 변수
-# ─────────────────────────────
 CH_HOST = os.environ["CH_HOST"]
 CH_PORT = int(os.environ["CH_PORT"])
 CH_USER = os.environ["CH_USER"]
@@ -43,9 +42,6 @@ client = clickhouse_connect.get_client(
 okt = Okt()
 
 
-# ─────────────────────────────
-# 테이블 컬럼 조회
-# ─────────────────────────────
 def get_table_columns(database: str, table: str) -> set[str]:
     q = f"""
         SELECT name
@@ -66,9 +62,6 @@ def filter_row_by_existing_columns(row: dict) -> dict:
     return {k: v for k, v in row.items() if k in TABLE_COLUMNS}
 
 
-# ─────────────────────────────
-# API 키 랜덤 선택
-# ─────────────────────────────
 def pick_api_headers() -> dict:
     api = random.choice(NAVER_API_KEYS)
     return {
@@ -79,12 +72,7 @@ def pick_api_headers() -> dict:
 
 def fetch_items(keyword: str, sort: str, start: int, display: int = 100):
     headers = pick_api_headers()
-    params = {
-        "query": keyword,
-        "display": display,
-        "start": start,
-        "sort": sort,
-    }
+    params = {"query": keyword, "display": display, "start": start, "sort": sort}
     r = requests.get(NAVER_URL, headers=headers, params=params, timeout=20)
     if r.status_code != 200:
         return []
@@ -92,9 +80,19 @@ def fetch_items(keyword: str, sort: str, start: int, display: int = 100):
     return data.get("items", []) or []
 
 
-# ─────────────────────────────
-# 키워드 생성
-# ─────────────────────────────
+def sanitize_keyword(keyword) -> str:
+    """✅ None/공백 방지 + fallback"""
+    fallback = ["통계", "데이터", "Statistics", "Data"]
+    if keyword is None:
+        return random.choice(fallback)
+    if not isinstance(keyword, str):
+        keyword = str(keyword)
+    keyword = keyword.strip()
+    if not keyword:
+        return random.choice(fallback)
+    return keyword
+
+
 def generate_keyword() -> str:
     fallback = ["통계", "데이터", "Statistics", "Data"]
 
@@ -110,24 +108,24 @@ def generate_keyword() -> str:
 
     source = random.choice(["title", "author", "publisher"])
 
-    # author
+    # author (형태소 분석 X)
     if source == "author":
         candidates = []
         if "author" in df.columns:
             for v in df["author"].tolist():
                 if isinstance(v, str) and v.strip():
-                    parts = [p.strip() for p in v.split("^") if p.strip()]
+                    parts = [p.strip() for p in v.split("^") if p and p.strip()]
                     candidates.extend(parts)
-        return random.choice(candidates) if candidates else random.choice(fallback)
+        return sanitize_keyword(random.choice(candidates)) if candidates else random.choice(fallback)
 
-    # publisher
+    # publisher (형태소 분석 X)
     if source == "publisher":
         candidates = []
         if "publisher" in df.columns:
             for v in df["publisher"].tolist():
                 if isinstance(v, str) and v.strip():
                     candidates.append(v.strip())
-        return random.choice(candidates) if candidates else random.choice(fallback)
+        return sanitize_keyword(random.choice(candidates)) if candidates else random.choice(fallback)
 
     # title → 형태소 분석
     titles = []
@@ -146,15 +144,13 @@ def generate_keyword() -> str:
             keywords.extend([n for n in nouns if len(n) >= 2])
         else:
             tokens = word_tokenize(title)
+            # ✅ pos_tag에서 tagger_eng 필요 (위에서 다운로드)
             tagged = pos_tag(tokens)
             keywords.extend([w for w, t in tagged if t.startswith("NN") and len(w) >= 4])
 
-    return random.choice(keywords) if keywords else random.choice(fallback)
+    return sanitize_keyword(random.choice(keywords)) if keywords else random.choice(fallback)
 
 
-# ─────────────────────────────
-# 기존 UUID / created_at 유지
-# ─────────────────────────────
 def build_existing_map(isbns):
     isbns = [i for i in isbns if isinstance(i, str) and i.strip()]
     if not isbns:
@@ -193,15 +189,11 @@ def build_existing_map(isbns):
             "created_at": row["created_at"],
             "created_log": row["created_log"],
         }
-
     return result
 
 
-# ─────────────────────────────
-# 수집 실행
-# ─────────────────────────────
 def collect():
-    keyword = generate_keyword()
+    keyword = sanitize_keyword(generate_keyword())
 
     for sort in ["sim", "date"]:
         start = 1
@@ -218,7 +210,6 @@ def collect():
             existing_map = build_existing_map(batch_isbns)
 
             rows = []
-
             for it in items:
                 isbn = it.get("isbn")
                 if not isbn:
