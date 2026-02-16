@@ -2,7 +2,7 @@ name: NAVER Book Collector
 
 on:
   schedule:
-    - cron: "*/10 * * * *"   # 10분마다 (UTC 기준)
+    - cron: "0 * * * *"   # 1시간마다 실행 (UTC 기준)
   workflow_dispatch:
 
 jobs:
