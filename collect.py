@@ -14,6 +14,7 @@ import nltk
 from nltk import pos_tag, word_tokenize
 
 nltk.download("punkt")
+nltk.download("punkt_tab")  # ✅ 추가: Resource punkt_tab not found 해결
 nltk.download("averaged_perceptron_tagger")
 
 KST = pytz.timezone("Asia/Seoul")
