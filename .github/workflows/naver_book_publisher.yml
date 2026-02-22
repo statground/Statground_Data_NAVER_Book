@@ -22,7 +22,7 @@ jobs:
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
           else
-            pip install requests uuid6 clickhouse_connect
+            pip install requests pandas pytz nltk konlpy jpype1 uuid6 clickhouse_connect
           fi
 
       - name: Run collector (publisher)
