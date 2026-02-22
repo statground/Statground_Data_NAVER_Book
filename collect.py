@@ -22,12 +22,29 @@ nltk.download("averaged_perceptron_tagger_eng")  # ✅ 추가: LookupError 해�
 KST = pytz.timezone("Asia/Seoul")
 NAVER_URL = "https://openapi.naver.com/v1/search/book.json"
 
-CH_HOST = os.environ["CH_HOST"]
-CH_PORT = int(os.environ["CH_PORT"])
-CH_USER = os.environ["CH_USER"]
-CH_PASSWORD = os.environ["CH_PASSWORD"]
-CH_DATABASE = os.environ["CH_DATABASE"]
-NAVER_API_KEYS = json.loads(os.environ["NAVER_API_KEYS"])
+def _require_env(name: str) -> str:
+    v = os.getenv(name)
+    if v is None or str(v).strip() == "":
+        raise RuntimeError(
+            f"Missing required environment variable: {name}. "
+            f"Set it in GitHub Actions Secrets (repo Settings → Secrets and variables → Actions)."
+        )
+    return v
+
+# ---- Required env (GitHub Actions) ----
+CH_HOST = _require_env("CH_HOST")
+CH_PORT = int(_require_env("CH_PORT"))
+CH_USER = _require_env("CH_USER")
+CH_PASSWORD = _require_env("CH_PASSWORD")
+CH_DATABASE = _require_env("CH_DATABASE")
+
+try:
+    NAVER_API_KEYS = json.loads(_require_env("NAVER_API_KEYS"))
+except Exception as e:
+    raise RuntimeError(
+        "NAVER_API_KEYS must be a valid JSON string like "
+        '[{"client_id":"...","client_secret":"..."}, ...]'
+    ) from e
 
 TABLE_NAME = "raw_naver"
 

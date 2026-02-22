@@ -27,9 +27,18 @@ jobs:
 
       - name: Run collector (author)
         env:
-          COLLECT_MODE: author
+          # ClickHouse connection (set these in GitHub repo Secrets)
+          CH_HOST: ${{ secrets.CH_HOST }}
+          CH_PORT: ${{ secrets.CH_PORT }}
+          CH_USER: ${{ secrets.CH_USER }}
+          CH_PASSWORD: ${{ secrets.CH_PASSWORD }}
+          CH_DATABASE: ${{ secrets.CH_DATABASE }}
+          # NAVER API keys JSON (set as a single secret string, e.g. [{"client_id":"...","client_secret":"..."}, ...])
+          NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
+          # Batch controls
           BATCH_SIZE: '500'
           SAMPLE_ROWS: '8000'
           NAVER_DISPLAY: '100'
           REQS_PER_TERM: '1'
+          COLLECT_MODE: author
         run: python collect.py
