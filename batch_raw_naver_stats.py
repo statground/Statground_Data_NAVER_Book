@@ -100,20 +100,38 @@ def main():
              os.path.join(OUT_DIR,"raw_naver_totals.png"))
 
     if by_year:
-        plot_bar("Yearly", [str(y) for y,_ in by_year], [c for _,c in by_year],
+        plot_bar("Yearly",
+                 [str(y) for y,_ in by_year],
+                 [c for _,c in by_year],
                  os.path.join(OUT_DIR,"raw_naver_by_year.png"))
 
     if by_month:
-        plot_bar("Monthly (last 24)", [str(y) for y,_ in by_month], [c for _,c in by_month],
-                 os.path.join(OUT_DIR,"raw_naver_by_month.png"), rotate=45, limit=24)
+        plot_bar("Monthly (last 24)",
+                 [str(y) for y,_ in by_month],
+                 [c for _,c in by_month],
+                 os.path.join(OUT_DIR,"raw_naver_by_month.png"),
+                 rotate=45, limit=24)
 
     if by_day:
-        plot_bar("Daily (last 60)", [str(y) for y,_ in by_day], [c for _,c in by_day],
-                 os.path.join(OUT_DIR,"raw_naver_by_day.png"), rotate=45, limit=60)
+        plot_bar("Daily (last 60)",
+                 [str(y) for y,_ in by_day],
+                 [c for _,c in by_day],
+                 os.path.join(OUT_DIR,"raw_naver_by_day.png"),
+                 rotate=45, limit=60)
 
     if by_hour:
-        plot_bar("Hourly (last 48)", [str(y) for y,_ in by_hour], [c for _,c in by_hour],
-                 os.path.join(OUT_DIR,"raw_naver_by_hour.png"), rotate=45, limit=48)
+        # 🔥 여기 수정: YYYY-MM-DD HH 형식으로 변환
+        hours = [
+            datetime.fromisoformat(str(h)).strftime("%Y-%m-%d %H")
+            for h, _ in by_hour
+        ]
+        values = [c for _,c in by_hour]
+
+        plot_bar("Hourly (last 48)",
+                 hours,
+                 values,
+                 os.path.join(OUT_DIR,"raw_naver_by_hour.png"),
+                 rotate=45, limit=48)
 
     md = []
     md.append("# 수집 데이터 집계")
