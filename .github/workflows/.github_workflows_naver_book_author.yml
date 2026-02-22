@@ -1,12 +1,12 @@
-name: NAVER Book Collector
+name: NAVER Book Collector (Author)
 
 on:
   schedule:
-    - cron: "0 * * * *"   # 1시간마다 실행 (UTC 기준)
+    - cron: "25 * * * *"  # hourly at :25 (UTC)
   workflow_dispatch:
 
 jobs:
-  collect:
+  collect_author:
     runs-on: ubuntu-latest
 
     steps:
@@ -20,7 +20,7 @@ jobs:
         run: |
           pip install requests clickhouse-connect pandas uuid6 konlpy nltk pytz
 
-      - name: Run collector
+      - name: Run collector (author batch)
         env:
           CH_HOST: ${{ secrets.CH_HOST }}
           CH_PORT: ${{ secrets.CH_PORT }}
@@ -28,4 +28,9 @@ jobs:
           CH_PASSWORD: ${{ secrets.CH_PASSWORD }}
           CH_DATABASE: ${{ secrets.CH_DATABASE }}
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
+          COLLECT_MODE: author
+          BATCH_SIZE: "500"
+          SAMPLE_ROWS: "8000"
+          NAVER_DISPLAY: "100"
+          REQS_PER_TERM: "1"
         run: python collect.py

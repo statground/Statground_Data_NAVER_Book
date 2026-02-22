@@ -1,0 +1,36 @@
+name: NAVER Book Collector (Publisher)
+
+on:
+  schedule:
+    - cron: "45 * * * *"  # hourly at :45 (UTC)
+  workflow_dispatch:
+
+jobs:
+  collect_publisher:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install requests clickhouse-connect pandas uuid6 konlpy nltk pytz
+
+      - name: Run collector (publisher batch)
+        env:
+          CH_HOST: ${{ secrets.CH_HOST }}
+          CH_PORT: ${{ secrets.CH_PORT }}
+          CH_USER: ${{ secrets.CH_USER }}
+          CH_PASSWORD: ${{ secrets.CH_PASSWORD }}
+          CH_DATABASE: ${{ secrets.CH_DATABASE }}
+          NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
+          COLLECT_MODE: publisher
+          BATCH_SIZE: "500"
+          SAMPLE_ROWS: "8000"
+          NAVER_DISPLAY: "100"
+          REQS_PER_TERM: "1"
+        run: python collect.py
