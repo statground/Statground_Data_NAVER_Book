@@ -1,47 +1,55 @@
 # 수집 데이터 집계
 
-- 업데이트 시각(KST): 2026-02-23 18:36:26
+- 업데이트 시각(KST): 2026-02-23 18:44:18
 
-## 핵심 지표
-- 총 고유 ISBN 수: **2,014,430**
-- 저자 수: **423,338**
-- 출판사 수: **104,384**
+## 전체
 
-## 차트
+- 총 고유 ISBN 수: **2,016,134**
+- 저자 수: **423,545**
+- 출판사 수: **104,431**
 
-### 전체
 ![Totals](raw_naver_totals.png)
 
+## Books
+
 ### 연별 신규 유입
-
-![Year Books](raw_naver_by_year.png)
-
-![Year Authors](raw_naver_by_year_authors.png)
-
-![Year Publishers](raw_naver_by_year_publishers.png)
+![Books Year](raw_naver_by_year.png)
 
 ### 월별 신규 유입 (최근 24개월)
-
-![Month Books](raw_naver_by_month.png)
-
-![Month Authors](raw_naver_by_month_authors.png)
-
-![Month Publishers](raw_naver_by_month_publishers.png)
+![Books Month](raw_naver_by_month.png)
 
 ### 일별 신규 유입 (최근 60일)
-
-![Day Books](raw_naver_by_day.png)
-
-![Day Authors](raw_naver_by_day_authors.png)
-
-![Day Publishers](raw_naver_by_day_publishers.png)
+![Books Day](raw_naver_by_day.png)
 
 ### 시간별 신규 유입 (최근 48시간)
+![Books Hour](raw_naver_by_hour.png)
 
-![Hour Books](raw_naver_by_hour.png)
+## Authors
 
-![Hour Authors](raw_naver_by_hour_authors.png)
+### 연별 신규 유입
+![Authors Year](raw_naver_by_year_authors.png)
 
-![Hour Publishers](raw_naver_by_hour_publishers.png)
+### 월별 신규 유입 (최근 24개월)
+![Authors Month](raw_naver_by_month_authors.png)
+
+### 일별 신규 유입 (최근 60일)
+![Authors Day](raw_naver_by_day_authors.png)
+
+### 시간별 신규 유입 (최근 48시간)
+![Authors Hour](raw_naver_by_hour_authors.png)
+
+## Publishers
+
+### 연별 신규 유입
+![Publishers Year](raw_naver_by_year_publishers.png)
+
+### 월별 신규 유입 (최근 24개월)
+![Publishers Month](raw_naver_by_month_publishers.png)
+
+### 일별 신규 유입 (최근 60일)
+![Publishers Day](raw_naver_by_day_publishers.png)
+
+### 시간별 신규 유입 (최근 48시간)
+![Publishers Hour](raw_naver_by_hour_publishers.png)
 
 > 시계열은 각 항목(ISBN/저자/출판사)의 '최초 등장 시각' 기준 신규 유입을 집계합니다.
