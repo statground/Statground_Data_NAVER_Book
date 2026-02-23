@@ -140,11 +140,8 @@ def main():
     """)
 
     # ---------- New inflow series (first seen timestamp) ----------
-    # Helper notes:
-    # - Build first_seen per entity
-    # - Compute min/max bounds
-    # - Generate full timeline with numbers()
-    # - LEFT JOIN counts, fill missing with 0
+    # NOTE: ClickHouse scope rules: references like b.min_y can't be used inside numbers(...)
+    # unless precomputed. So we compute diff_* in bounds and use it for numbers(diff + 1).
 
     # Books
     y_books = q_rows(f"""
@@ -155,7 +152,10 @@ def main():
             GROUP BY isbn
         ),
         bounds AS (
-            SELECT toStartOfYear(min(first_at)) AS min_y, toStartOfYear(max(first_at)) AS max_y
+            SELECT
+                toStartOfYear(min(first_at)) AS min_y,
+                toStartOfYear(max(first_at)) AS max_y,
+                dateDiff('year', toStartOfYear(min(first_at)), toStartOfYear(max(first_at))) AS diff_y
             FROM first_seen
         ),
         counts AS (
@@ -167,7 +167,7 @@ def main():
             toYear(addYears(b.min_y, n.number)) AS y,
             ifNull(cnt.c, 0) AS c
         FROM bounds b
-        CROSS JOIN numbers(dateDiff('year', b.min_y, b.max_y) + 1) AS n
+        CROSS JOIN numbers(b.diff_y + 1) AS n
         LEFT JOIN counts cnt ON cnt.y = y
         ORDER BY y
     """)
@@ -179,7 +179,10 @@ def main():
             GROUP BY isbn
         ),
         bounds AS (
-            SELECT toStartOfMonth(min(first_at)) AS min_m, toStartOfMonth(max(first_at)) AS max_m
+            SELECT
+                toStartOfMonth(min(first_at)) AS min_m,
+                toStartOfMonth(max(first_at)) AS max_m,
+                dateDiff('month', toStartOfMonth(min(first_at)), toStartOfMonth(max(first_at))) AS diff_m
             FROM first_seen
         ),
         counts AS (
@@ -190,7 +193,7 @@ def main():
         timeline AS (
             SELECT addMonths(b.min_m, n.number) AS m
             FROM bounds b
-            CROSS JOIN numbers(dateDiff('month', b.min_m, b.max_m) + 1) AS n
+            CROSS JOIN numbers(b.diff_m + 1) AS n
         )
         SELECT
             toYYYYMM(t.m) AS yyyymm,
@@ -207,7 +210,10 @@ def main():
             GROUP BY isbn
         ),
         bounds AS (
-            SELECT toDate(min(first_at)) AS min_d, toDate(max(first_at)) AS max_d
+            SELECT
+                toDate(min(first_at)) AS min_d,
+                toDate(max(first_at)) AS max_d,
+                dateDiff('day', toDate(min(first_at)), toDate(max(first_at))) AS diff_d
             FROM first_seen
         ),
         counts AS (
@@ -218,7 +224,7 @@ def main():
         timeline AS (
             SELECT addDays(b.min_d, n.number) AS d
             FROM bounds b
-            CROSS JOIN numbers(dateDiff('day', b.min_d, b.max_d) + 1) AS n
+            CROSS JOIN numbers(b.diff_d + 1) AS n
         )
         SELECT
             t.d AS d,
@@ -235,7 +241,10 @@ def main():
             GROUP BY isbn
         ),
         bounds AS (
-            SELECT toStartOfHour(min(first_at)) AS min_t, toStartOfHour(max(first_at)) AS max_t
+            SELECT
+                toStartOfHour(min(first_at)) AS min_t,
+                toStartOfHour(max(first_at)) AS max_t,
+                dateDiff('hour', toStartOfHour(min(first_at)), toStartOfHour(max(first_at))) AS diff_h
             FROM first_seen
         ),
         counts AS (
@@ -246,7 +255,7 @@ def main():
         timeline AS (
             SELECT addHours(b.min_t, n.number) AS t
             FROM bounds b
-            CROSS JOIN numbers(dateDiff('hour', b.min_t, b.max_t) + 1) AS n
+            CROSS JOIN numbers(b.diff_h + 1) AS n
         )
         SELECT
             tl.t AS t,
@@ -265,7 +274,10 @@ def main():
             GROUP BY publisher
         ),
         bounds AS (
-            SELECT toStartOfYear(min(first_at)) AS min_y, toStartOfYear(max(first_at)) AS max_y
+            SELECT
+                toStartOfYear(min(first_at)) AS min_y,
+                toStartOfYear(max(first_at)) AS max_y,
+                dateDiff('year', toStartOfYear(min(first_at)), toStartOfYear(max(first_at))) AS diff_y
             FROM first_seen
         ),
         counts AS (
@@ -277,7 +289,7 @@ def main():
             toYear(addYears(b.min_y, n.number)) AS y,
             ifNull(cnt.c, 0) AS c
         FROM bounds b
-        CROSS JOIN numbers(dateDiff('year', b.min_y, b.max_y) + 1) AS n
+        CROSS JOIN numbers(b.diff_y + 1) AS n
         LEFT JOIN counts cnt ON cnt.y = y
         ORDER BY y
     """)
@@ -289,7 +301,10 @@ def main():
             GROUP BY publisher
         ),
         bounds AS (
-            SELECT toStartOfMonth(min(first_at)) AS min_m, toStartOfMonth(max(first_at)) AS max_m
+            SELECT
+                toStartOfMonth(min(first_at)) AS min_m,
+                toStartOfMonth(max(first_at)) AS max_m,
+                dateDiff('month', toStartOfMonth(min(first_at)), toStartOfMonth(max(first_at))) AS diff_m
             FROM first_seen
         ),
         counts AS (
@@ -300,7 +315,7 @@ def main():
         timeline AS (
             SELECT addMonths(b.min_m, n.number) AS m
             FROM bounds b
-            CROSS JOIN numbers(dateDiff('month', b.min_m, b.max_m) + 1) AS n
+            CROSS JOIN numbers(b.diff_m + 1) AS n
         )
         SELECT
             toYYYYMM(t.m) AS yyyymm,
@@ -317,7 +332,10 @@ def main():
             GROUP BY publisher
         ),
         bounds AS (
-            SELECT toDate(min(first_at)) AS min_d, toDate(max(first_at)) AS max_d
+            SELECT
+                toDate(min(first_at)) AS min_d,
+                toDate(max(first_at)) AS max_d,
+                dateDiff('day', toDate(min(first_at)), toDate(max(first_at))) AS diff_d
             FROM first_seen
         ),
         counts AS (
@@ -328,7 +346,7 @@ def main():
         timeline AS (
             SELECT addDays(b.min_d, n.number) AS d
             FROM bounds b
-            CROSS JOIN numbers(dateDiff('day', b.min_d, b.max_d) + 1) AS n
+            CROSS JOIN numbers(b.diff_d + 1) AS n
         )
         SELECT
             t.d AS d,
@@ -345,7 +363,10 @@ def main():
             GROUP BY publisher
         ),
         bounds AS (
-            SELECT toStartOfHour(min(first_at)) AS min_t, toStartOfHour(max(first_at)) AS max_t
+            SELECT
+                toStartOfHour(min(first_at)) AS min_t,
+                toStartOfHour(max(first_at)) AS max_t,
+                dateDiff('hour', toStartOfHour(min(first_at)), toStartOfHour(max(first_at))) AS diff_h
             FROM first_seen
         ),
         counts AS (
@@ -356,7 +377,7 @@ def main():
         timeline AS (
             SELECT addHours(b.min_t, n.number) AS t
             FROM bounds b
-            CROSS JOIN numbers(dateDiff('hour', b.min_t, b.max_t) + 1) AS n
+            CROSS JOIN numbers(b.diff_h + 1) AS n
         )
         SELECT
             tl.t AS t,
@@ -380,7 +401,10 @@ def main():
             GROUP BY author_one
         ),
         bounds AS (
-            SELECT toStartOfYear(min(first_at)) AS min_y, toStartOfYear(max(first_at)) AS max_y
+            SELECT
+                toStartOfYear(min(first_at)) AS min_y,
+                toStartOfYear(max(first_at)) AS max_y,
+                dateDiff('year', toStartOfYear(min(first_at)), toStartOfYear(max(first_at))) AS diff_y
             FROM first_seen
         ),
         counts AS (
@@ -392,7 +416,7 @@ def main():
             toYear(addYears(b.min_y, n.number)) AS y,
             ifNull(cnt.c, 0) AS c
         FROM bounds b
-        CROSS JOIN numbers(dateDiff('year', b.min_y, b.max_y) + 1) AS n
+        CROSS JOIN numbers(b.diff_y + 1) AS n
         LEFT JOIN counts cnt ON cnt.y = y
         ORDER BY y
     """)
@@ -409,7 +433,10 @@ def main():
             GROUP BY author_one
         ),
         bounds AS (
-            SELECT toStartOfMonth(min(first_at)) AS min_m, toStartOfMonth(max(first_at)) AS max_m
+            SELECT
+                toStartOfMonth(min(first_at)) AS min_m,
+                toStartOfMonth(max(first_at)) AS max_m,
+                dateDiff('month', toStartOfMonth(min(first_at)), toStartOfMonth(max(first_at))) AS diff_m
             FROM first_seen
         ),
         counts AS (
@@ -420,7 +447,7 @@ def main():
         timeline AS (
             SELECT addMonths(b.min_m, n.number) AS m
             FROM bounds b
-            CROSS JOIN numbers(dateDiff('month', b.min_m, b.max_m) + 1) AS n
+            CROSS JOIN numbers(b.diff_m + 1) AS n
         )
         SELECT
             toYYYYMM(t.m) AS yyyymm,
@@ -442,7 +469,10 @@ def main():
             GROUP BY author_one
         ),
         bounds AS (
-            SELECT toDate(min(first_at)) AS min_d, toDate(max(first_at)) AS max_d
+            SELECT
+                toDate(min(first_at)) AS min_d,
+                toDate(max(first_at)) AS max_d,
+                dateDiff('day', toDate(min(first_at)), toDate(max(first_at))) AS diff_d
             FROM first_seen
         ),
         counts AS (
@@ -453,7 +483,7 @@ def main():
         timeline AS (
             SELECT addDays(b.min_d, n.number) AS d
             FROM bounds b
-            CROSS JOIN numbers(dateDiff('day', b.min_d, b.max_d) + 1) AS n
+            CROSS JOIN numbers(b.diff_d + 1) AS n
         )
         SELECT
             t.d AS d,
@@ -475,7 +505,10 @@ def main():
             GROUP BY author_one
         ),
         bounds AS (
-            SELECT toStartOfHour(min(first_at)) AS min_t, toStartOfHour(max(first_at)) AS max_t
+            SELECT
+                toStartOfHour(min(first_at)) AS min_t,
+                toStartOfHour(max(first_at)) AS max_t,
+                dateDiff('hour', toStartOfHour(min(first_at)), toStartOfHour(max(first_at))) AS diff_h
             FROM first_seen
         ),
         counts AS (
@@ -486,7 +519,7 @@ def main():
         timeline AS (
             SELECT addHours(b.min_t, n.number) AS t
             FROM bounds b
-            CROSS JOIN numbers(dateDiff('hour', b.min_t, b.max_t) + 1) AS n
+            CROSS JOIN numbers(b.diff_h + 1) AS n
         )
         SELECT
             tl.t AS t,
