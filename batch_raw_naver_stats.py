@@ -4,14 +4,13 @@
 """
 Batch: raw_naver stats (GitHub Actions)
 
-What it does
-- Connects to ClickHouse
-- Computes totals (distinct ISBN / Authors / Publishers)
-- Computes "new inflow" time series by first_seen(min(created_at)) for each entity
-- Fills missing buckets (year/month/day/hour) with zeros so charts don't skip gaps
-- Generates PNG charts + Markdown report under ./stats
+- ClickHouse raw_naver 통계 리포트 생성
+- '최초 등장 시각(min(created_at))' 기준 신규 유입 시계열 산출
+- 연/월/일/시간 버킷을 전체 구간으로 생성하고, 누락 버킷은 0으로 채움
+- 차트 x축 라벨은 너무 길면 간소화(일정 간격만 표시)
+- ./stats 아래 PNG + Markdown 생성
 
-Env vars required
+Env vars:
 - CH_HOST, CH_PORT, CH_USER, CH_PASSWORD, CH_DATABASE
 """
 
@@ -80,10 +79,6 @@ def annotate_bars(ax, bars, fontsize=8, y_offset=3):
                     fontsize=fontsize)
 
 def _simplify_xticklabels(x_labels, max_labels=24):
-    """
-    Return a label list of same length where most labels are blank,
-    keeping about max_labels labels evenly spaced.
-    """
     n = len(x_labels)
     if n <= max_labels:
         return x_labels
@@ -94,11 +89,6 @@ def _simplify_xticklabels(x_labels, max_labels=24):
     return out
 
 def plot_series_bar(title, x_labels, values, path, color, rotate=0, max_labels=24):
-    """
-    Draw a simple bar chart.
-    - Always plots full series.
-    - If many points, x-axis labels are simplified (blanked) to improve readability.
-    """
     fig = plt.figure(figsize=(12, 5))
     ax = fig.add_subplot(111)
     x = list(range(len(x_labels)))
@@ -106,12 +96,10 @@ def plot_series_bar(title, x_labels, values, path, color, rotate=0, max_labels=2
     ax.set_title(title)
     ax.set_ylabel("Count")
 
-    # Simplify labels for readability
     display_labels = _simplify_xticklabels(x_labels, max_labels=max_labels)
     ax.set_xticks(x)
     ax.set_xticklabels(display_labels, rotation=rotate, ha="right" if rotate else "center")
 
-    # For very long series, avoid cluttering the bar annotations
     if len(values) <= 120:
         annotate_bars(ax, bars, fontsize=7, y_offset=2)
 
@@ -139,9 +127,13 @@ def main():
         )
     """)
 
-    # ---------- New inflow series (first seen timestamp) ----------
-    # NOTE: ClickHouse scope rules: references like b.min_y can't be used inside numbers(...)
-    # unless precomputed. So we compute diff_* in bounds and use it for numbers(diff + 1).
+    # =======================
+    # New inflow series (0 fill)
+    #
+    # ClickHouse scope note:
+    # - numbers(<expr>)에서 테이블 alias(b.xxx) 참조가 스코프 에러를 내는 케이스가 있어,
+    #   system.numbers + WHERE number <= diff 형태로 안전하게 구현.
+    # =======================
 
     # Books
     y_books = q_rows(f"""
@@ -151,26 +143,33 @@ def main():
             WHERE {base_isbn}
             GROUP BY isbn
         ),
-        bounds AS (
+        params AS (
             SELECT
                 toStartOfYear(min(first_at)) AS min_y,
                 toStartOfYear(max(first_at)) AS max_y,
-                dateDiff('year', toStartOfYear(min(first_at)), toStartOfYear(max(first_at))) AS diff_y
+                dateDiff('year', toStartOfYear(min(first_at)), toStartOfYear(max(first_at))) AS diff_y,
+                count() AS cnt
             FROM first_seen
         ),
         counts AS (
             SELECT toYear(first_at) AS y, count() AS c
             FROM first_seen
             GROUP BY y
+        ),
+        timeline AS (
+            SELECT toYear(addYears(p.min_y, n.number)) AS y
+            FROM system.numbers n
+            CROSS JOIN params p
+            WHERE p.cnt > 0 AND n.number <= p.diff_y
         )
         SELECT
-            toYear(addYears(b.min_y, n.number)) AS y,
-            ifNull(cnt.c, 0) AS c
-        FROM bounds b
-        CROSS JOIN numbers(b.diff_y + 1) AS n
-        LEFT JOIN counts cnt ON cnt.y = y
+            t.y AS y,
+            ifNull(c.c, 0) AS c
+        FROM timeline t
+        LEFT JOIN counts c ON c.y = t.y
         ORDER BY y
     """)
+
     m_books = q_rows(f"""
         WITH first_seen AS (
             SELECT isbn, min(created_at) AS first_at
@@ -178,11 +177,12 @@ def main():
             WHERE {base_isbn}
             GROUP BY isbn
         ),
-        bounds AS (
+        params AS (
             SELECT
                 toStartOfMonth(min(first_at)) AS min_m,
                 toStartOfMonth(max(first_at)) AS max_m,
-                dateDiff('month', toStartOfMonth(min(first_at)), toStartOfMonth(max(first_at))) AS diff_m
+                dateDiff('month', toStartOfMonth(min(first_at)), toStartOfMonth(max(first_at))) AS diff_m,
+                count() AS cnt
             FROM first_seen
         ),
         counts AS (
@@ -191,17 +191,19 @@ def main():
             GROUP BY m
         ),
         timeline AS (
-            SELECT addMonths(b.min_m, n.number) AS m
-            FROM bounds b
-            CROSS JOIN numbers(b.diff_m + 1) AS n
+            SELECT addMonths(p.min_m, n.number) AS m
+            FROM system.numbers n
+            CROSS JOIN params p
+            WHERE p.cnt > 0 AND n.number <= p.diff_m
         )
         SELECT
             toYYYYMM(t.m) AS yyyymm,
-            ifNull(cnt.c, 0) AS c
+            ifNull(c.c, 0) AS c
         FROM timeline t
-        LEFT JOIN counts cnt ON cnt.m = t.m
+        LEFT JOIN counts c ON c.m = t.m
         ORDER BY yyyymm
     """)
+
     d_books = q_rows(f"""
         WITH first_seen AS (
             SELECT isbn, min(created_at) AS first_at
@@ -209,11 +211,12 @@ def main():
             WHERE {base_isbn}
             GROUP BY isbn
         ),
-        bounds AS (
+        params AS (
             SELECT
                 toDate(min(first_at)) AS min_d,
                 toDate(max(first_at)) AS max_d,
-                dateDiff('day', toDate(min(first_at)), toDate(max(first_at))) AS diff_d
+                dateDiff('day', toDate(min(first_at)), toDate(max(first_at))) AS diff_d,
+                count() AS cnt
             FROM first_seen
         ),
         counts AS (
@@ -222,17 +225,19 @@ def main():
             GROUP BY d
         ),
         timeline AS (
-            SELECT addDays(b.min_d, n.number) AS d
-            FROM bounds b
-            CROSS JOIN numbers(b.diff_d + 1) AS n
+            SELECT addDays(p.min_d, n.number) AS d
+            FROM system.numbers n
+            CROSS JOIN params p
+            WHERE p.cnt > 0 AND n.number <= p.diff_d
         )
         SELECT
             t.d AS d,
-            ifNull(cnt.c, 0) AS c
+            ifNull(c.c, 0) AS c
         FROM timeline t
-        LEFT JOIN counts cnt ON cnt.d = t.d
+        LEFT JOIN counts c ON c.d = t.d
         ORDER BY d
     """)
+
     h_books = q_rows(f"""
         WITH first_seen AS (
             SELECT isbn, min(created_at) AS first_at
@@ -240,11 +245,12 @@ def main():
             WHERE {base_isbn}
             GROUP BY isbn
         ),
-        bounds AS (
+        params AS (
             SELECT
                 toStartOfHour(min(first_at)) AS min_t,
                 toStartOfHour(max(first_at)) AS max_t,
-                dateDiff('hour', toStartOfHour(min(first_at)), toStartOfHour(max(first_at))) AS diff_h
+                dateDiff('hour', toStartOfHour(min(first_at)), toStartOfHour(max(first_at))) AS diff_h,
+                count() AS cnt
             FROM first_seen
         ),
         counts AS (
@@ -253,15 +259,16 @@ def main():
             GROUP BY t
         ),
         timeline AS (
-            SELECT addHours(b.min_t, n.number) AS t
-            FROM bounds b
-            CROSS JOIN numbers(b.diff_h + 1) AS n
+            SELECT addHours(p.min_t, n.number) AS t
+            FROM system.numbers n
+            CROSS JOIN params p
+            WHERE p.cnt > 0 AND n.number <= p.diff_h
         )
         SELECT
             tl.t AS t,
-            ifNull(cnt.c, 0) AS c
+            ifNull(c.c, 0) AS c
         FROM timeline tl
-        LEFT JOIN counts cnt ON cnt.t = tl.t
+        LEFT JOIN counts c ON c.t = tl.t
         ORDER BY t
     """)
 
@@ -273,26 +280,33 @@ def main():
             WHERE {base_pub}
             GROUP BY publisher
         ),
-        bounds AS (
+        params AS (
             SELECT
                 toStartOfYear(min(first_at)) AS min_y,
                 toStartOfYear(max(first_at)) AS max_y,
-                dateDiff('year', toStartOfYear(min(first_at)), toStartOfYear(max(first_at))) AS diff_y
+                dateDiff('year', toStartOfYear(min(first_at)), toStartOfYear(max(first_at))) AS diff_y,
+                count() AS cnt
             FROM first_seen
         ),
         counts AS (
             SELECT toYear(first_at) AS y, count() AS c
             FROM first_seen
             GROUP BY y
+        ),
+        timeline AS (
+            SELECT toYear(addYears(p.min_y, n.number)) AS y
+            FROM system.numbers n
+            CROSS JOIN params p
+            WHERE p.cnt > 0 AND n.number <= p.diff_y
         )
         SELECT
-            toYear(addYears(b.min_y, n.number)) AS y,
-            ifNull(cnt.c, 0) AS c
-        FROM bounds b
-        CROSS JOIN numbers(b.diff_y + 1) AS n
-        LEFT JOIN counts cnt ON cnt.y = y
+            t.y AS y,
+            ifNull(c.c, 0) AS c
+        FROM timeline t
+        LEFT JOIN counts c ON c.y = t.y
         ORDER BY y
     """)
+
     m_pubs = q_rows(f"""
         WITH first_seen AS (
             SELECT publisher, min(created_at) AS first_at
@@ -300,11 +314,12 @@ def main():
             WHERE {base_pub}
             GROUP BY publisher
         ),
-        bounds AS (
+        params AS (
             SELECT
                 toStartOfMonth(min(first_at)) AS min_m,
                 toStartOfMonth(max(first_at)) AS max_m,
-                dateDiff('month', toStartOfMonth(min(first_at)), toStartOfMonth(max(first_at))) AS diff_m
+                dateDiff('month', toStartOfMonth(min(first_at)), toStartOfMonth(max(first_at))) AS diff_m,
+                count() AS cnt
             FROM first_seen
         ),
         counts AS (
@@ -313,17 +328,19 @@ def main():
             GROUP BY m
         ),
         timeline AS (
-            SELECT addMonths(b.min_m, n.number) AS m
-            FROM bounds b
-            CROSS JOIN numbers(b.diff_m + 1) AS n
+            SELECT addMonths(p.min_m, n.number) AS m
+            FROM system.numbers n
+            CROSS JOIN params p
+            WHERE p.cnt > 0 AND n.number <= p.diff_m
         )
         SELECT
             toYYYYMM(t.m) AS yyyymm,
-            ifNull(cnt.c, 0) AS c
+            ifNull(c.c, 0) AS c
         FROM timeline t
-        LEFT JOIN counts cnt ON cnt.m = t.m
+        LEFT JOIN counts c ON c.m = t.m
         ORDER BY yyyymm
     """)
+
     d_pubs = q_rows(f"""
         WITH first_seen AS (
             SELECT publisher, min(created_at) AS first_at
@@ -331,11 +348,12 @@ def main():
             WHERE {base_pub}
             GROUP BY publisher
         ),
-        bounds AS (
+        params AS (
             SELECT
                 toDate(min(first_at)) AS min_d,
                 toDate(max(first_at)) AS max_d,
-                dateDiff('day', toDate(min(first_at)), toDate(max(first_at))) AS diff_d
+                dateDiff('day', toDate(min(first_at)), toDate(max(first_at))) AS diff_d,
+                count() AS cnt
             FROM first_seen
         ),
         counts AS (
@@ -344,17 +362,19 @@ def main():
             GROUP BY d
         ),
         timeline AS (
-            SELECT addDays(b.min_d, n.number) AS d
-            FROM bounds b
-            CROSS JOIN numbers(b.diff_d + 1) AS n
+            SELECT addDays(p.min_d, n.number) AS d
+            FROM system.numbers n
+            CROSS JOIN params p
+            WHERE p.cnt > 0 AND n.number <= p.diff_d
         )
         SELECT
             t.d AS d,
-            ifNull(cnt.c, 0) AS c
+            ifNull(c.c, 0) AS c
         FROM timeline t
-        LEFT JOIN counts cnt ON cnt.d = t.d
+        LEFT JOIN counts c ON c.d = t.d
         ORDER BY d
     """)
+
     h_pubs = q_rows(f"""
         WITH first_seen AS (
             SELECT publisher, min(created_at) AS first_at
@@ -362,11 +382,12 @@ def main():
             WHERE {base_pub}
             GROUP BY publisher
         ),
-        bounds AS (
+        params AS (
             SELECT
                 toStartOfHour(min(first_at)) AS min_t,
                 toStartOfHour(max(first_at)) AS max_t,
-                dateDiff('hour', toStartOfHour(min(first_at)), toStartOfHour(max(first_at))) AS diff_h
+                dateDiff('hour', toStartOfHour(min(first_at)), toStartOfHour(max(first_at))) AS diff_h,
+                count() AS cnt
             FROM first_seen
         ),
         counts AS (
@@ -375,19 +396,20 @@ def main():
             GROUP BY t
         ),
         timeline AS (
-            SELECT addHours(b.min_t, n.number) AS t
-            FROM bounds b
-            CROSS JOIN numbers(b.diff_h + 1) AS n
+            SELECT addHours(p.min_t, n.number) AS t
+            FROM system.numbers n
+            CROSS JOIN params p
+            WHERE p.cnt > 0 AND n.number <= p.diff_h
         )
         SELECT
             tl.t AS t,
-            ifNull(cnt.c, 0) AS c
+            ifNull(c.c, 0) AS c
         FROM timeline tl
-        LEFT JOIN counts cnt ON cnt.t = tl.t
+        LEFT JOIN counts c ON c.t = tl.t
         ORDER BY t
     """)
 
-    # Authors (split '^')
+    # Authors
     y_auth = q_rows(f"""
         WITH exploded AS (
             SELECT trim(author_one) AS author_one, created_at
@@ -400,26 +422,33 @@ def main():
             FROM exploded
             GROUP BY author_one
         ),
-        bounds AS (
+        params AS (
             SELECT
                 toStartOfYear(min(first_at)) AS min_y,
                 toStartOfYear(max(first_at)) AS max_y,
-                dateDiff('year', toStartOfYear(min(first_at)), toStartOfYear(max(first_at))) AS diff_y
+                dateDiff('year', toStartOfYear(min(first_at)), toStartOfYear(max(first_at))) AS diff_y,
+                count() AS cnt
             FROM first_seen
         ),
         counts AS (
             SELECT toYear(first_at) AS y, count() AS c
             FROM first_seen
             GROUP BY y
+        ),
+        timeline AS (
+            SELECT toYear(addYears(p.min_y, n.number)) AS y
+            FROM system.numbers n
+            CROSS JOIN params p
+            WHERE p.cnt > 0 AND n.number <= p.diff_y
         )
         SELECT
-            toYear(addYears(b.min_y, n.number)) AS y,
-            ifNull(cnt.c, 0) AS c
-        FROM bounds b
-        CROSS JOIN numbers(b.diff_y + 1) AS n
-        LEFT JOIN counts cnt ON cnt.y = y
+            t.y AS y,
+            ifNull(c.c, 0) AS c
+        FROM timeline t
+        LEFT JOIN counts c ON c.y = t.y
         ORDER BY y
     """)
+
     m_auth = q_rows(f"""
         WITH exploded AS (
             SELECT trim(author_one) AS author_one, created_at
@@ -432,11 +461,12 @@ def main():
             FROM exploded
             GROUP BY author_one
         ),
-        bounds AS (
+        params AS (
             SELECT
                 toStartOfMonth(min(first_at)) AS min_m,
                 toStartOfMonth(max(first_at)) AS max_m,
-                dateDiff('month', toStartOfMonth(min(first_at)), toStartOfMonth(max(first_at))) AS diff_m
+                dateDiff('month', toStartOfMonth(min(first_at)), toStartOfMonth(max(first_at))) AS diff_m,
+                count() AS cnt
             FROM first_seen
         ),
         counts AS (
@@ -445,17 +475,19 @@ def main():
             GROUP BY m
         ),
         timeline AS (
-            SELECT addMonths(b.min_m, n.number) AS m
-            FROM bounds b
-            CROSS JOIN numbers(b.diff_m + 1) AS n
+            SELECT addMonths(p.min_m, n.number) AS m
+            FROM system.numbers n
+            CROSS JOIN params p
+            WHERE p.cnt > 0 AND n.number <= p.diff_m
         )
         SELECT
             toYYYYMM(t.m) AS yyyymm,
-            ifNull(cnt.c, 0) AS c
+            ifNull(c.c, 0) AS c
         FROM timeline t
-        LEFT JOIN counts cnt ON cnt.m = t.m
+        LEFT JOIN counts c ON c.m = t.m
         ORDER BY yyyymm
     """)
+
     d_auth = q_rows(f"""
         WITH exploded AS (
             SELECT trim(author_one) AS author_one, created_at
@@ -468,11 +500,12 @@ def main():
             FROM exploded
             GROUP BY author_one
         ),
-        bounds AS (
+        params AS (
             SELECT
                 toDate(min(first_at)) AS min_d,
                 toDate(max(first_at)) AS max_d,
-                dateDiff('day', toDate(min(first_at)), toDate(max(first_at))) AS diff_d
+                dateDiff('day', toDate(min(first_at)), toDate(max(first_at))) AS diff_d,
+                count() AS cnt
             FROM first_seen
         ),
         counts AS (
@@ -481,17 +514,19 @@ def main():
             GROUP BY d
         ),
         timeline AS (
-            SELECT addDays(b.min_d, n.number) AS d
-            FROM bounds b
-            CROSS JOIN numbers(b.diff_d + 1) AS n
+            SELECT addDays(p.min_d, n.number) AS d
+            FROM system.numbers n
+            CROSS JOIN params p
+            WHERE p.cnt > 0 AND n.number <= p.diff_d
         )
         SELECT
             t.d AS d,
-            ifNull(cnt.c, 0) AS c
+            ifNull(c.c, 0) AS c
         FROM timeline t
-        LEFT JOIN counts cnt ON cnt.d = t.d
+        LEFT JOIN counts c ON c.d = t.d
         ORDER BY d
     """)
+
     h_auth = q_rows(f"""
         WITH exploded AS (
             SELECT trim(author_one) AS author_one, created_at
@@ -504,11 +539,12 @@ def main():
             FROM exploded
             GROUP BY author_one
         ),
-        bounds AS (
+        params AS (
             SELECT
                 toStartOfHour(min(first_at)) AS min_t,
                 toStartOfHour(max(first_at)) AS max_t,
-                dateDiff('hour', toStartOfHour(min(first_at)), toStartOfHour(max(first_at))) AS diff_h
+                dateDiff('hour', toStartOfHour(min(first_at)), toStartOfHour(max(first_at))) AS diff_h,
+                count() AS cnt
             FROM first_seen
         ),
         counts AS (
@@ -517,15 +553,16 @@ def main():
             GROUP BY t
         ),
         timeline AS (
-            SELECT addHours(b.min_t, n.number) AS t
-            FROM bounds b
-            CROSS JOIN numbers(b.diff_h + 1) AS n
+            SELECT addHours(p.min_t, n.number) AS t
+            FROM system.numbers n
+            CROSS JOIN params p
+            WHERE p.cnt > 0 AND n.number <= p.diff_h
         )
         SELECT
             tl.t AS t,
-            ifNull(cnt.c, 0) AS c
+            ifNull(c.c, 0) AS c
         FROM timeline tl
-        LEFT JOIN counts cnt ON cnt.t = tl.t
+        LEFT JOIN counts c ON c.t = tl.t
         ORDER BY t
     """)
 
@@ -545,11 +582,9 @@ def main():
     plt.close(fig)
 
     def fmt_hour(v):
-        # ClickHouse DateTime/DateTime64 renders to string; keep hour precision
         return datetime.fromisoformat(str(v)).strftime("%Y-%m-%d %H")
 
     # ---------- Split charts (full period) ----------
-    # Year
     if y_books:
         plot_series_bar("Yearly (New Books)", [str(k) for k, _ in y_books], [v for _, v in y_books],
                         os.path.join(OUT_DIR, "raw_naver_by_year.png"), color=COLOR_BOOKS, max_labels=24)
@@ -560,7 +595,6 @@ def main():
         plot_series_bar("Yearly (New Publishers)", [str(k) for k, _ in y_pubs], [v for _, v in y_pubs],
                         os.path.join(OUT_DIR, "raw_naver_by_year_publishers.png"), color=COLOR_PUBLISHERS, max_labels=24)
 
-    # Month (full)
     if m_books:
         plot_series_bar("Monthly (New Books)", [str(k) for k, _ in m_books], [v for _, v in m_books],
                         os.path.join(OUT_DIR, "raw_naver_by_month.png"), rotate=45, color=COLOR_BOOKS, max_labels=24)
@@ -571,7 +605,6 @@ def main():
         plot_series_bar("Monthly (New Publishers)", [str(k) for k, _ in m_pubs], [v for _, v in m_pubs],
                         os.path.join(OUT_DIR, "raw_naver_by_month_publishers.png"), rotate=45, color=COLOR_PUBLISHERS, max_labels=24)
 
-    # Day (full)
     if d_books:
         plot_series_bar("Daily (New Books)", [str(k) for k, _ in d_books], [v for _, v in d_books],
                         os.path.join(OUT_DIR, "raw_naver_by_day.png"), rotate=45, color=COLOR_BOOKS, max_labels=24)
@@ -582,7 +615,6 @@ def main():
         plot_series_bar("Daily (New Publishers)", [str(k) for k, _ in d_pubs], [v for _, v in d_pubs],
                         os.path.join(OUT_DIR, "raw_naver_by_day_publishers.png"), rotate=45, color=COLOR_PUBLISHERS, max_labels=24)
 
-    # Hour (full)
     if h_books:
         plot_series_bar("Hourly (New Books)", [fmt_hour(k) for k, _ in h_books], [v for _, v in h_books],
                         os.path.join(OUT_DIR, "raw_naver_by_hour.png"), rotate=45, color=COLOR_BOOKS, max_labels=24)
