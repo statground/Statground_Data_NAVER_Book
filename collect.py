@@ -55,7 +55,7 @@ TABLE_NAME = "raw_naver"
 COLLECT_MODE = (os.getenv("COLLECT_MODE") or "mixed").strip().lower()
 
 # How many unique terms to collect per run
-BATCH_SIZE = int(os.getenv("BATCH_SIZE") or "500")
+BATCH_SIZE = int(os.getenv("BATCH_SIZE") or "1000")
 
 # How many raw rows to sample from ClickHouse to build term candidates
 SAMPLE_ROWS = int(os.getenv("SAMPLE_ROWS") or "8000")
@@ -66,31 +66,54 @@ DISPLAY = int(os.getenv("NAVER_DISPLAY") or "100")  # max 100
 # One term = one request (default). If set to 2, we do both sort=sim/date.
 REQS_PER_TERM = int(os.getenv("REQS_PER_TERM") or "1")
 
-client = clickhouse_connect.get_client(
-    host=CH_HOST,
-    port=CH_PORT,
-    username=CH_USER,
-    password=CH_PASSWORD,
-    database=CH_DATABASE
-)
+# Threading controls
+# MAX_WORKERS: number of parallel term workers (I/O bound). Start with 6~12.
+MAX_WORKERS = int(os.getenv("MAX_WORKERS") or "8")
+
+def make_ch_client():
+    return clickhouse_connect.get_client(
+        host=CH_HOST,
+        port=CH_PORT,
+        username=CH_USER,
+        password=CH_PASSWORD,
+        database=CH_DATABASE
+    )
+
+# Base client (single-thread use) for metadata/sample queries
+base_client = make_ch_client()
+
+# Thread-local ClickHouse client (one per worker thread)
+_tls = None
+try:
+    import threading as _threading
+    _tls = _threading.local()
+except Exception:
+    _tls = None
+
+def get_thread_client():
+    if _tls is None:
+        return make_ch_client()
+    if not hasattr(_tls, "client"):
+        _tls.client = make_ch_client()
+    return _tls.client
 
 okt = Okt()
 
 
-def get_table_columns(database: str, table: str) -> set[str]:
+def get_table_columns(ch_client, database: str, table: str) -> set[str]:
     q = f"""
         SELECT name
         FROM system.columns
         WHERE database = '{database}'
           AND table = '{table}'
     """
-    df = client.query_df(q)
+    df = ch_client.query_df(q)
     if df is None or df.empty or "name" not in df.columns:
         return set()
     return set(df["name"].astype(str).tolist())
 
 
-TABLE_COLUMNS = get_table_columns(CH_DATABASE, TABLE_NAME)
+TABLE_COLUMNS = get_table_columns(base_client, CH_DATABASE, TABLE_NAME)
 
 
 def filter_row_by_existing_columns(row: dict) -> dict:
@@ -132,7 +155,7 @@ def generate_keyword() -> str:
     fallback = ["통계", "데이터", "Statistics", "Data"]
 
     try:
-        df = client.query_df(
+        df = base_client.query_df(
             "SELECT title, author, publisher FROM raw_naver ORDER BY rand() LIMIT 100"
         )
     except Exception:
@@ -189,7 +212,7 @@ def generate_keyword() -> str:
 def _sample_df_for_terms(sample_rows: int) -> pd.DataFrame:
     """Random sample from raw_naver to build term pools."""
     try:
-        return client.query_df(
+        return base_client.query_df(
             f"SELECT title, author, publisher FROM {TABLE_NAME} ORDER BY rand() LIMIT {int(sample_rows)}"
         )
     except Exception:
@@ -275,7 +298,7 @@ def pick_unique_terms(mode: str, batch_size: int, sample_rows: int) -> list[str]
     return [sanitize_keyword(x) for x in picked]
 
 
-def build_existing_map(isbns):
+def build_existing_map(ch_client, isbns):
     isbns = [i for i in isbns if isinstance(i, str) and i.strip()]
     if not isbns:
         return {}
@@ -295,7 +318,7 @@ def build_existing_map(isbns):
     """
 
     try:
-        df = client.query_df(q)
+        df = ch_client.query_df(q)
     except Exception:
         return {}
 
@@ -316,7 +339,7 @@ def build_existing_map(isbns):
     return result
 
 
-def _collect_for_term(term: str, mode: str):
+def _collect_for_term(term: str, mode: str, ch_client):
     # Request strategy
     sorts = [random.choice(["sim", "date"])] if REQS_PER_TERM <= 1 else ["sim", "date"]
     for sort in sorts:
@@ -328,7 +351,7 @@ def _collect_for_term(term: str, mode: str):
         version = int(now.timestamp())
 
         batch_isbns = [it.get("isbn") for it in items if it.get("isbn")]
-        existing_map = build_existing_map(batch_isbns)
+        existing_map = build_existing_map(ch_client, batch_isbns)
 
         rows = []
         for it in items:
@@ -369,7 +392,7 @@ def _collect_for_term(term: str, mode: str):
 
         if rows:
             df_ins = pd.DataFrame(rows)
-            client.insert_df(TABLE_NAME, df_ins)
+            ch_client.insert_df(TABLE_NAME, df_ins)
 
 
 def collect():
@@ -378,14 +401,14 @@ def collect():
     # legacy behavior
     if mode == "mixed":
         term = sanitize_keyword(generate_keyword())
-        _collect_for_term(term, mode)
+        _collect_for_term(term, mode, base_client)
         return
 
     # new behavior
     terms = pick_unique_terms(mode=mode, batch_size=BATCH_SIZE, sample_rows=SAMPLE_ROWS)
     random.shuffle(terms)
     for term in terms:
-        _collect_for_term(term, mode)
+        _collect_for_term(term, mode, base_client)
 
 
 if __name__ == "__main__":
