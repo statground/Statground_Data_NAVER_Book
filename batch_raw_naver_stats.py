@@ -28,6 +28,11 @@ TABLE_NAME = "raw_naver"
 OUT_DIR = "stats"
 OUTPUT_MD = os.path.join(OUT_DIR, "raw_naver_stats.md")
 
+# User requested distinct colors
+COLOR_BOOKS = "#1f77b4"       # blue
+COLOR_AUTHORS = "#2ca02c"     # green
+COLOR_PUBLISHERS = "#ff7f0e"  # orange
+
 client = clickhouse_connect.get_client(
     host=CH_HOST,
     port=CH_PORT,
@@ -59,14 +64,14 @@ def annotate_bars(ax, bars, fontsize=8, y_offset=3):
                     ha="center", va="bottom",
                     fontsize=fontsize)
 
-def plot_series_bar(title, x_labels, values, path, rotate=0, limit=None):
+def plot_series_bar(title, x_labels, values, path, color, rotate=0, limit=None):
     if limit and len(x_labels) > limit:
         x_labels = x_labels[-limit:]
         values = values[-limit:]
     fig = plt.figure(figsize=(12, 5))
     ax = fig.add_subplot(111)
     x = list(range(len(x_labels)))
-    bars = ax.bar(x, values)
+    bars = ax.bar(x, values, color=color)
     ax.set_title(title)
     ax.set_ylabel("Count")
     ax.set_xticks(x)
@@ -231,10 +236,14 @@ def main():
         SELECT toStartOfHour(first_at), count() FROM first_seen GROUP BY 1 ORDER BY 1
     """)
 
-    # Totals chart (keep existing filename)
+    # Totals chart (keep existing filename) with colored bars per metric
     fig = plt.figure(figsize=(9, 4.5))
     ax = fig.add_subplot(111)
-    bars = ax.bar(["Books(uniq isbn)", "Authors(uniq)", "Publishers(uniq)"], [total_books, total_authors, total_publishers])
+    bars = ax.bar(
+        ["Books(uniq isbn)", "Authors(uniq)", "Publishers(uniq)"],
+        [total_books, total_authors, total_publishers],
+        color=[COLOR_BOOKS, COLOR_AUTHORS, COLOR_PUBLISHERS]
+    )
     ax.set_title("Total Overview")
     ax.set_ylabel("Count")
     annotate_bars(ax, bars, fontsize=9, y_offset=3)
@@ -245,94 +254,106 @@ def main():
     def fmt_hour(v):
         return datetime.fromisoformat(str(v)).strftime("%Y-%m-%d %H")
 
-    # Split charts
+    # Split charts (Books keep original filenames)
+    # Year
     if y_books:
         plot_series_bar("Yearly (New Books)", [str(k) for k,_ in y_books], [v for _,v in y_books],
-                        os.path.join(OUT_DIR, "raw_naver_by_year.png"))
+                        os.path.join(OUT_DIR, "raw_naver_by_year.png"), color=COLOR_BOOKS)
     if y_auth:
         plot_series_bar("Yearly (New Authors)", [str(k) for k,_ in y_auth], [v for _,v in y_auth],
-                        os.path.join(OUT_DIR, "raw_naver_by_year_authors.png"))
+                        os.path.join(OUT_DIR, "raw_naver_by_year_authors.png"), color=COLOR_AUTHORS)
     if y_pubs:
         plot_series_bar("Yearly (New Publishers)", [str(k) for k,_ in y_pubs], [v for _,v in y_pubs],
-                        os.path.join(OUT_DIR, "raw_naver_by_year_publishers.png"))
+                        os.path.join(OUT_DIR, "raw_naver_by_year_publishers.png"), color=COLOR_PUBLISHERS)
 
+    # Month (last 24)
     if m_books:
         plot_series_bar("Monthly (New Books, last 24)", [str(k) for k,_ in m_books], [v for _,v in m_books],
-                        os.path.join(OUT_DIR, "raw_naver_by_month.png"), rotate=45, limit=24)
+                        os.path.join(OUT_DIR, "raw_naver_by_month.png"), rotate=45, limit=24, color=COLOR_BOOKS)
     if m_auth:
         plot_series_bar("Monthly (New Authors, last 24)", [str(k) for k,_ in m_auth], [v for _,v in m_auth],
-                        os.path.join(OUT_DIR, "raw_naver_by_month_authors.png"), rotate=45, limit=24)
+                        os.path.join(OUT_DIR, "raw_naver_by_month_authors.png"), rotate=45, limit=24, color=COLOR_AUTHORS)
     if m_pubs:
         plot_series_bar("Monthly (New Publishers, last 24)", [str(k) for k,_ in m_pubs], [v for _,v in m_pubs],
-                        os.path.join(OUT_DIR, "raw_naver_by_month_publishers.png"), rotate=45, limit=24)
+                        os.path.join(OUT_DIR, "raw_naver_by_month_publishers.png"), rotate=45, limit=24, color=COLOR_PUBLISHERS)
 
+    # Day (last 60)
     if d_books:
         plot_series_bar("Daily (New Books, last 60)", [str(k) for k,_ in d_books], [v for _,v in d_books],
-                        os.path.join(OUT_DIR, "raw_naver_by_day.png"), rotate=45, limit=60)
+                        os.path.join(OUT_DIR, "raw_naver_by_day.png"), rotate=45, limit=60, color=COLOR_BOOKS)
     if d_auth:
         plot_series_bar("Daily (New Authors, last 60)", [str(k) for k,_ in d_auth], [v for _,v in d_auth],
-                        os.path.join(OUT_DIR, "raw_naver_by_day_authors.png"), rotate=45, limit=60)
+                        os.path.join(OUT_DIR, "raw_naver_by_day_authors.png"), rotate=45, limit=60, color=COLOR_AUTHORS)
     if d_pubs:
         plot_series_bar("Daily (New Publishers, last 60)", [str(k) for k,_ in d_pubs], [v for _,v in d_pubs],
-                        os.path.join(OUT_DIR, "raw_naver_by_day_publishers.png"), rotate=45, limit=60)
+                        os.path.join(OUT_DIR, "raw_naver_by_day_publishers.png"), rotate=45, limit=60, color=COLOR_PUBLISHERS)
 
+    # Hour (last 48)
     if h_books:
         plot_series_bar("Hourly (New Books, last 48)", [fmt_hour(k) for k,_ in h_books], [v for _,v in h_books],
-                        os.path.join(OUT_DIR, "raw_naver_by_hour.png"), rotate=45, limit=48)
+                        os.path.join(OUT_DIR, "raw_naver_by_hour.png"), rotate=45, limit=48, color=COLOR_BOOKS)
     if h_auth:
         plot_series_bar("Hourly (New Authors, last 48)", [fmt_hour(k) for k,_ in h_auth], [v for _,v in h_auth],
-                        os.path.join(OUT_DIR, "raw_naver_by_hour_authors.png"), rotate=45, limit=48)
+                        os.path.join(OUT_DIR, "raw_naver_by_hour_authors.png"), rotate=45, limit=48, color=COLOR_AUTHORS)
     if h_pubs:
         plot_series_bar("Hourly (New Publishers, last 48)", [fmt_hour(k) for k,_ in h_pubs], [v for _,v in h_pubs],
-                        os.path.join(OUT_DIR, "raw_naver_by_hour_publishers.png"), rotate=45, limit=48)
+                        os.path.join(OUT_DIR, "raw_naver_by_hour_publishers.png"), rotate=45, limit=48, color=COLOR_PUBLISHERS)
 
-    # Markdown
+    # Markdown with big sections per metric: Books -> Authors -> Publishers
     md = []
     md.append("# 수집 데이터 집계")
     md.append("")
     md.append(f"- 업데이트 시각(KST): {now.strftime('%Y-%m-%d %H:%M:%S')}")
     md.append("")
-    md.append("## 핵심 지표")
+    md.append("## 전체")
+    md.append("")
     md.append(f"- 총 고유 ISBN 수: **{total_books:,}**")
     md.append(f"- 저자 수: **{total_authors:,}**")
     md.append(f"- 출판사 수: **{total_publishers:,}**")
     md.append("")
-    md.append("## 차트")
-    md.append("")
-    md.append("### 전체")
     md.append("![Totals](raw_naver_totals.png)")
     md.append("")
+    md.append("## Books")
+    md.append("")
     md.append("### 연별 신규 유입")
-    md.append("")
-    md.append("![Year Books](raw_naver_by_year.png)")
-    md.append("")
-    md.append("![Year Authors](raw_naver_by_year_authors.png)")
-    md.append("")
-    md.append("![Year Publishers](raw_naver_by_year_publishers.png)")
+    md.append("![Books Year](raw_naver_by_year.png)")
     md.append("")
     md.append("### 월별 신규 유입 (최근 24개월)")
-    md.append("")
-    md.append("![Month Books](raw_naver_by_month.png)")
-    md.append("")
-    md.append("![Month Authors](raw_naver_by_month_authors.png)")
-    md.append("")
-    md.append("![Month Publishers](raw_naver_by_month_publishers.png)")
+    md.append("![Books Month](raw_naver_by_month.png)")
     md.append("")
     md.append("### 일별 신규 유입 (최근 60일)")
-    md.append("")
-    md.append("![Day Books](raw_naver_by_day.png)")
-    md.append("")
-    md.append("![Day Authors](raw_naver_by_day_authors.png)")
-    md.append("")
-    md.append("![Day Publishers](raw_naver_by_day_publishers.png)")
+    md.append("![Books Day](raw_naver_by_day.png)")
     md.append("")
     md.append("### 시간별 신규 유입 (최근 48시간)")
+    md.append("![Books Hour](raw_naver_by_hour.png)")
     md.append("")
-    md.append("![Hour Books](raw_naver_by_hour.png)")
+    md.append("## Authors")
     md.append("")
-    md.append("![Hour Authors](raw_naver_by_hour_authors.png)")
+    md.append("### 연별 신규 유입")
+    md.append("![Authors Year](raw_naver_by_year_authors.png)")
     md.append("")
-    md.append("![Hour Publishers](raw_naver_by_hour_publishers.png)")
+    md.append("### 월별 신규 유입 (최근 24개월)")
+    md.append("![Authors Month](raw_naver_by_month_authors.png)")
+    md.append("")
+    md.append("### 일별 신규 유입 (최근 60일)")
+    md.append("![Authors Day](raw_naver_by_day_authors.png)")
+    md.append("")
+    md.append("### 시간별 신규 유입 (최근 48시간)")
+    md.append("![Authors Hour](raw_naver_by_hour_authors.png)")
+    md.append("")
+    md.append("## Publishers")
+    md.append("")
+    md.append("### 연별 신규 유입")
+    md.append("![Publishers Year](raw_naver_by_year_publishers.png)")
+    md.append("")
+    md.append("### 월별 신규 유입 (최근 24개월)")
+    md.append("![Publishers Month](raw_naver_by_month_publishers.png)")
+    md.append("")
+    md.append("### 일별 신규 유입 (최근 60일)")
+    md.append("![Publishers Day](raw_naver_by_day_publishers.png)")
+    md.append("")
+    md.append("### 시간별 신규 유입 (최근 48시간)")
+    md.append("![Publishers Hour](raw_naver_by_hour_publishers.png)")
     md.append("")
     md.append("> 시계열은 각 항목(ISBN/저자/출판사)의 '최초 등장 시각' 기준 신규 유입을 집계합니다.")
     md.append("")
