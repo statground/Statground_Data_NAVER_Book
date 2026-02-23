@@ -83,10 +83,7 @@ def _simplify_xticklabels(x_labels, max_labels=24):
     if n <= max_labels:
         return x_labels
     step = max(1, int(math.ceil(n / max_labels)))
-    out = []
-    for i, lab in enumerate(x_labels):
-        out.append(lab if (i % step == 0 or i == n - 1) else "")
-    return out
+    return [lab if (i % step == 0 or i == n - 1) else "" for i, lab in enumerate(x_labels)]
 
 def plot_series_bar(title, x_labels, values, path, color, rotate=0, max_labels=24):
     fig = plt.figure(figsize=(12, 5))
@@ -100,6 +97,7 @@ def plot_series_bar(title, x_labels, values, path, color, rotate=0, max_labels=2
     ax.set_xticks(x)
     ax.set_xticklabels(display_labels, rotation=rotate, ha="right" if rotate else "center")
 
+    # bar annotation은 너무 많으면 지저분해서 적당히 제한
     if len(values) <= 120:
         annotate_bars(ax, bars, fontsize=7, y_offset=2)
 
@@ -128,11 +126,12 @@ def main():
     """)
 
     # =======================
-    # New inflow series (0 fill)
+    # New inflow series (0 fill, fast)
     #
-    # ClickHouse scope note:
-    # - numbers(<expr>)에서 테이블 alias(b.xxx) 참조가 스코프 에러를 내는 케이스가 있어,
-    #   system.numbers + WHERE number <= diff 형태로 안전하게 구현.
+    # 핵심:
+    # - system.numbers(무한 테이블) 사용 금지 → 느려지고 비용 큼
+    # - ARRAY JOIN range(N) 사용 (N이 정확히 정해짐) → 빠르고 안정적
+    # - first_seen 비어있으면 params가 0 rows가 되도록 HAVING count()>0 처리
     # =======================
 
     # Books
@@ -146,10 +145,9 @@ def main():
         params AS (
             SELECT
                 toStartOfYear(min(first_at)) AS min_y,
-                toStartOfYear(max(first_at)) AS max_y,
-                dateDiff('year', toStartOfYear(min(first_at)), toStartOfYear(max(first_at))) AS diff_y,
-                count() AS cnt
+                dateDiff('year', toStartOfYear(min(first_at)), toStartOfYear(max(first_at))) AS diff_y
             FROM first_seen
+            HAVING count() > 0
         ),
         counts AS (
             SELECT toYear(first_at) AS y, count() AS c
@@ -157,14 +155,11 @@ def main():
             GROUP BY y
         ),
         timeline AS (
-            SELECT toYear(addYears(p.min_y, n.number)) AS y
-            FROM system.numbers n
-            CROSS JOIN params p
-            WHERE p.cnt > 0 AND n.number <= p.diff_y
+            SELECT toYear(addYears(p.min_y, n)) AS y
+            FROM params p
+            ARRAY JOIN range(p.diff_y + 1) AS n
         )
-        SELECT
-            t.y AS y,
-            ifNull(c.c, 0) AS c
+        SELECT t.y AS y, ifNull(c.c, 0) AS c
         FROM timeline t
         LEFT JOIN counts c ON c.y = t.y
         ORDER BY y
@@ -180,10 +175,9 @@ def main():
         params AS (
             SELECT
                 toStartOfMonth(min(first_at)) AS min_m,
-                toStartOfMonth(max(first_at)) AS max_m,
-                dateDiff('month', toStartOfMonth(min(first_at)), toStartOfMonth(max(first_at))) AS diff_m,
-                count() AS cnt
+                dateDiff('month', toStartOfMonth(min(first_at)), toStartOfMonth(max(first_at))) AS diff_m
             FROM first_seen
+            HAVING count() > 0
         ),
         counts AS (
             SELECT toStartOfMonth(first_at) AS m, count() AS c
@@ -191,14 +185,11 @@ def main():
             GROUP BY m
         ),
         timeline AS (
-            SELECT addMonths(p.min_m, n.number) AS m
-            FROM system.numbers n
-            CROSS JOIN params p
-            WHERE p.cnt > 0 AND n.number <= p.diff_m
+            SELECT addMonths(p.min_m, n) AS m
+            FROM params p
+            ARRAY JOIN range(p.diff_m + 1) AS n
         )
-        SELECT
-            toYYYYMM(t.m) AS yyyymm,
-            ifNull(c.c, 0) AS c
+        SELECT toYYYYMM(t.m) AS yyyymm, ifNull(c.c, 0) AS c
         FROM timeline t
         LEFT JOIN counts c ON c.m = t.m
         ORDER BY yyyymm
@@ -214,10 +205,9 @@ def main():
         params AS (
             SELECT
                 toDate(min(first_at)) AS min_d,
-                toDate(max(first_at)) AS max_d,
-                dateDiff('day', toDate(min(first_at)), toDate(max(first_at))) AS diff_d,
-                count() AS cnt
+                dateDiff('day', toDate(min(first_at)), toDate(max(first_at))) AS diff_d
             FROM first_seen
+            HAVING count() > 0
         ),
         counts AS (
             SELECT toDate(first_at) AS d, count() AS c
@@ -225,14 +215,11 @@ def main():
             GROUP BY d
         ),
         timeline AS (
-            SELECT addDays(p.min_d, n.number) AS d
-            FROM system.numbers n
-            CROSS JOIN params p
-            WHERE p.cnt > 0 AND n.number <= p.diff_d
+            SELECT addDays(p.min_d, n) AS d
+            FROM params p
+            ARRAY JOIN range(p.diff_d + 1) AS n
         )
-        SELECT
-            t.d AS d,
-            ifNull(c.c, 0) AS c
+        SELECT t.d AS d, ifNull(c.c, 0) AS c
         FROM timeline t
         LEFT JOIN counts c ON c.d = t.d
         ORDER BY d
@@ -248,10 +235,9 @@ def main():
         params AS (
             SELECT
                 toStartOfHour(min(first_at)) AS min_t,
-                toStartOfHour(max(first_at)) AS max_t,
-                dateDiff('hour', toStartOfHour(min(first_at)), toStartOfHour(max(first_at))) AS diff_h,
-                count() AS cnt
+                dateDiff('hour', toStartOfHour(min(first_at)), toStartOfHour(max(first_at))) AS diff_h
             FROM first_seen
+            HAVING count() > 0
         ),
         counts AS (
             SELECT toStartOfHour(first_at) AS t, count() AS c
@@ -259,16 +245,13 @@ def main():
             GROUP BY t
         ),
         timeline AS (
-            SELECT addHours(p.min_t, n.number) AS t
-            FROM system.numbers n
-            CROSS JOIN params p
-            WHERE p.cnt > 0 AND n.number <= p.diff_h
+            SELECT addHours(p.min_t, n) AS t
+            FROM params p
+            ARRAY JOIN range(p.diff_h + 1) AS n
         )
-        SELECT
-            tl.t AS t,
-            ifNull(c.c, 0) AS c
-        FROM timeline tl
-        LEFT JOIN counts c ON c.t = tl.t
+        SELECT t.t AS t, ifNull(c.c, 0) AS c
+        FROM timeline t
+        LEFT JOIN counts c ON c.t = t.t
         ORDER BY t
     """)
 
@@ -283,10 +266,9 @@ def main():
         params AS (
             SELECT
                 toStartOfYear(min(first_at)) AS min_y,
-                toStartOfYear(max(first_at)) AS max_y,
-                dateDiff('year', toStartOfYear(min(first_at)), toStartOfYear(max(first_at))) AS diff_y,
-                count() AS cnt
+                dateDiff('year', toStartOfYear(min(first_at)), toStartOfYear(max(first_at))) AS diff_y
             FROM first_seen
+            HAVING count() > 0
         ),
         counts AS (
             SELECT toYear(first_at) AS y, count() AS c
@@ -294,14 +276,11 @@ def main():
             GROUP BY y
         ),
         timeline AS (
-            SELECT toYear(addYears(p.min_y, n.number)) AS y
-            FROM system.numbers n
-            CROSS JOIN params p
-            WHERE p.cnt > 0 AND n.number <= p.diff_y
+            SELECT toYear(addYears(p.min_y, n)) AS y
+            FROM params p
+            ARRAY JOIN range(p.diff_y + 1) AS n
         )
-        SELECT
-            t.y AS y,
-            ifNull(c.c, 0) AS c
+        SELECT t.y AS y, ifNull(c.c, 0) AS c
         FROM timeline t
         LEFT JOIN counts c ON c.y = t.y
         ORDER BY y
@@ -317,10 +296,9 @@ def main():
         params AS (
             SELECT
                 toStartOfMonth(min(first_at)) AS min_m,
-                toStartOfMonth(max(first_at)) AS max_m,
-                dateDiff('month', toStartOfMonth(min(first_at)), toStartOfMonth(max(first_at))) AS diff_m,
-                count() AS cnt
+                dateDiff('month', toStartOfMonth(min(first_at)), toStartOfMonth(max(first_at))) AS diff_m
             FROM first_seen
+            HAVING count() > 0
         ),
         counts AS (
             SELECT toStartOfMonth(first_at) AS m, count() AS c
@@ -328,14 +306,11 @@ def main():
             GROUP BY m
         ),
         timeline AS (
-            SELECT addMonths(p.min_m, n.number) AS m
-            FROM system.numbers n
-            CROSS JOIN params p
-            WHERE p.cnt > 0 AND n.number <= p.diff_m
+            SELECT addMonths(p.min_m, n) AS m
+            FROM params p
+            ARRAY JOIN range(p.diff_m + 1) AS n
         )
-        SELECT
-            toYYYYMM(t.m) AS yyyymm,
-            ifNull(c.c, 0) AS c
+        SELECT toYYYYMM(t.m) AS yyyymm, ifNull(c.c, 0) AS c
         FROM timeline t
         LEFT JOIN counts c ON c.m = t.m
         ORDER BY yyyymm
@@ -351,10 +326,9 @@ def main():
         params AS (
             SELECT
                 toDate(min(first_at)) AS min_d,
-                toDate(max(first_at)) AS max_d,
-                dateDiff('day', toDate(min(first_at)), toDate(max(first_at))) AS diff_d,
-                count() AS cnt
+                dateDiff('day', toDate(min(first_at)), toDate(max(first_at))) AS diff_d
             FROM first_seen
+            HAVING count() > 0
         ),
         counts AS (
             SELECT toDate(first_at) AS d, count() AS c
@@ -362,14 +336,11 @@ def main():
             GROUP BY d
         ),
         timeline AS (
-            SELECT addDays(p.min_d, n.number) AS d
-            FROM system.numbers n
-            CROSS JOIN params p
-            WHERE p.cnt > 0 AND n.number <= p.diff_d
+            SELECT addDays(p.min_d, n) AS d
+            FROM params p
+            ARRAY JOIN range(p.diff_d + 1) AS n
         )
-        SELECT
-            t.d AS d,
-            ifNull(c.c, 0) AS c
+        SELECT t.d AS d, ifNull(c.c, 0) AS c
         FROM timeline t
         LEFT JOIN counts c ON c.d = t.d
         ORDER BY d
@@ -385,10 +356,9 @@ def main():
         params AS (
             SELECT
                 toStartOfHour(min(first_at)) AS min_t,
-                toStartOfHour(max(first_at)) AS max_t,
-                dateDiff('hour', toStartOfHour(min(first_at)), toStartOfHour(max(first_at))) AS diff_h,
-                count() AS cnt
+                dateDiff('hour', toStartOfHour(min(first_at)), toStartOfHour(max(first_at))) AS diff_h
             FROM first_seen
+            HAVING count() > 0
         ),
         counts AS (
             SELECT toStartOfHour(first_at) AS t, count() AS c
@@ -396,16 +366,13 @@ def main():
             GROUP BY t
         ),
         timeline AS (
-            SELECT addHours(p.min_t, n.number) AS t
-            FROM system.numbers n
-            CROSS JOIN params p
-            WHERE p.cnt > 0 AND n.number <= p.diff_h
+            SELECT addHours(p.min_t, n) AS t
+            FROM params p
+            ARRAY JOIN range(p.diff_h + 1) AS n
         )
-        SELECT
-            tl.t AS t,
-            ifNull(c.c, 0) AS c
-        FROM timeline tl
-        LEFT JOIN counts c ON c.t = tl.t
+        SELECT t.t AS t, ifNull(c.c, 0) AS c
+        FROM timeline t
+        LEFT JOIN counts c ON c.t = t.t
         ORDER BY t
     """)
 
@@ -425,10 +392,9 @@ def main():
         params AS (
             SELECT
                 toStartOfYear(min(first_at)) AS min_y,
-                toStartOfYear(max(first_at)) AS max_y,
-                dateDiff('year', toStartOfYear(min(first_at)), toStartOfYear(max(first_at))) AS diff_y,
-                count() AS cnt
+                dateDiff('year', toStartOfYear(min(first_at)), toStartOfYear(max(first_at))) AS diff_y
             FROM first_seen
+            HAVING count() > 0
         ),
         counts AS (
             SELECT toYear(first_at) AS y, count() AS c
@@ -436,14 +402,11 @@ def main():
             GROUP BY y
         ),
         timeline AS (
-            SELECT toYear(addYears(p.min_y, n.number)) AS y
-            FROM system.numbers n
-            CROSS JOIN params p
-            WHERE p.cnt > 0 AND n.number <= p.diff_y
+            SELECT toYear(addYears(p.min_y, n)) AS y
+            FROM params p
+            ARRAY JOIN range(p.diff_y + 1) AS n
         )
-        SELECT
-            t.y AS y,
-            ifNull(c.c, 0) AS c
+        SELECT t.y AS y, ifNull(c.c, 0) AS c
         FROM timeline t
         LEFT JOIN counts c ON c.y = t.y
         ORDER BY y
@@ -464,10 +427,9 @@ def main():
         params AS (
             SELECT
                 toStartOfMonth(min(first_at)) AS min_m,
-                toStartOfMonth(max(first_at)) AS max_m,
-                dateDiff('month', toStartOfMonth(min(first_at)), toStartOfMonth(max(first_at))) AS diff_m,
-                count() AS cnt
+                dateDiff('month', toStartOfMonth(min(first_at)), toStartOfMonth(max(first_at))) AS diff_m
             FROM first_seen
+            HAVING count() > 0
         ),
         counts AS (
             SELECT toStartOfMonth(first_at) AS m, count() AS c
@@ -475,14 +437,11 @@ def main():
             GROUP BY m
         ),
         timeline AS (
-            SELECT addMonths(p.min_m, n.number) AS m
-            FROM system.numbers n
-            CROSS JOIN params p
-            WHERE p.cnt > 0 AND n.number <= p.diff_m
+            SELECT addMonths(p.min_m, n) AS m
+            FROM params p
+            ARRAY JOIN range(p.diff_m + 1) AS n
         )
-        SELECT
-            toYYYYMM(t.m) AS yyyymm,
-            ifNull(c.c, 0) AS c
+        SELECT toYYYYMM(t.m) AS yyyymm, ifNull(c.c, 0) AS c
         FROM timeline t
         LEFT JOIN counts c ON c.m = t.m
         ORDER BY yyyymm
@@ -503,10 +462,9 @@ def main():
         params AS (
             SELECT
                 toDate(min(first_at)) AS min_d,
-                toDate(max(first_at)) AS max_d,
-                dateDiff('day', toDate(min(first_at)), toDate(max(first_at))) AS diff_d,
-                count() AS cnt
+                dateDiff('day', toDate(min(first_at)), toDate(max(first_at))) AS diff_d
             FROM first_seen
+            HAVING count() > 0
         ),
         counts AS (
             SELECT toDate(first_at) AS d, count() AS c
@@ -514,14 +472,11 @@ def main():
             GROUP BY d
         ),
         timeline AS (
-            SELECT addDays(p.min_d, n.number) AS d
-            FROM system.numbers n
-            CROSS JOIN params p
-            WHERE p.cnt > 0 AND n.number <= p.diff_d
+            SELECT addDays(p.min_d, n) AS d
+            FROM params p
+            ARRAY JOIN range(p.diff_d + 1) AS n
         )
-        SELECT
-            t.d AS d,
-            ifNull(c.c, 0) AS c
+        SELECT t.d AS d, ifNull(c.c, 0) AS c
         FROM timeline t
         LEFT JOIN counts c ON c.d = t.d
         ORDER BY d
@@ -542,10 +497,9 @@ def main():
         params AS (
             SELECT
                 toStartOfHour(min(first_at)) AS min_t,
-                toStartOfHour(max(first_at)) AS max_t,
-                dateDiff('hour', toStartOfHour(min(first_at)), toStartOfHour(max(first_at))) AS diff_h,
-                count() AS cnt
+                dateDiff('hour', toStartOfHour(min(first_at)), toStartOfHour(max(first_at))) AS diff_h
             FROM first_seen
+            HAVING count() > 0
         ),
         counts AS (
             SELECT toStartOfHour(first_at) AS t, count() AS c
@@ -553,16 +507,13 @@ def main():
             GROUP BY t
         ),
         timeline AS (
-            SELECT addHours(p.min_t, n.number) AS t
-            FROM system.numbers n
-            CROSS JOIN params p
-            WHERE p.cnt > 0 AND n.number <= p.diff_h
+            SELECT addHours(p.min_t, n) AS t
+            FROM params p
+            ARRAY JOIN range(p.diff_h + 1) AS n
         )
-        SELECT
-            tl.t AS t,
-            ifNull(c.c, 0) AS c
-        FROM timeline tl
-        LEFT JOIN counts c ON c.t = tl.t
+        SELECT t.t AS t, ifNull(c.c, 0) AS c
+        FROM timeline t
+        LEFT JOIN counts c ON c.t = t.t
         ORDER BY t
     """)
 
