@@ -105,6 +105,50 @@ def plot_series_bar(title, x_labels, values, path, color, rotate=0, max_labels=2
     fig.savefig(path, dpi=150)
     plt.close(fig)
 
+def cumulative(values):
+    total = 0
+    out = []
+    for v in values:
+        total += int(v)
+        out.append(total)
+    return out
+
+def plot_series_with_cumulative(title, x_labels, values, path, color, rotate=0, max_labels=24):
+    '''
+    Draw New Inflow (bar) + Cumulative (line, secondary y-axis).
+    - values: new inflow series
+    - cumulative is computed in python (running sum)
+    '''
+    cum_values = cumulative(values)
+
+    fig = plt.figure(figsize=(12, 5))
+    ax1 = fig.add_subplot(111)
+
+    x = list(range(len(x_labels)))
+
+    # New inflow (bar)
+    bars = ax1.bar(x, values, color=color, alpha=0.6)
+    ax1.set_title(title)
+    ax1.set_ylabel("New Inflow")
+
+    # Cumulative (line) on secondary axis
+    ax2 = ax1.twinx()
+    ax2.plot(x, cum_values, color=color, linewidth=2)
+    ax2.set_ylabel("Cumulative")
+
+    display_labels = _simplify_xticklabels(x_labels, max_labels=max_labels)
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(display_labels, rotation=rotate, ha="right" if rotate else "center")
+
+    # bar annotation은 너무 많으면 지저분해서 적당히 제한
+    if len(values) <= 120:
+        annotate_bars(ax1, bars, fontsize=7, y_offset=2)
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+
+
 def main():
     now = datetime.now(KST)
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -537,43 +581,43 @@ def main():
 
     # ---------- Split charts (full period) ----------
     if y_books:
-        plot_series_bar("Yearly (New Books)", [str(k) for k, _ in y_books], [v for _, v in y_books],
+        plot_series_with_cumulative("Yearly (Books: New + Cumulative)", [str(k) for k, _ in y_books], [v for _, v in y_books],
                         os.path.join(OUT_DIR, "raw_naver_by_year.png"), color=COLOR_BOOKS, max_labels=24)
     if y_auth:
-        plot_series_bar("Yearly (New Authors)", [str(k) for k, _ in y_auth], [v for _, v in y_auth],
+        plot_series_with_cumulative("Yearly (Authors: New + Cumulative)", [str(k) for k, _ in y_auth], [v for _, v in y_auth],
                         os.path.join(OUT_DIR, "raw_naver_by_year_authors.png"), color=COLOR_AUTHORS, max_labels=24)
     if y_pubs:
-        plot_series_bar("Yearly (New Publishers)", [str(k) for k, _ in y_pubs], [v for _, v in y_pubs],
+        plot_series_with_cumulative("Yearly (Publishers: New + Cumulative)", [str(k) for k, _ in y_pubs], [v for _, v in y_pubs],
                         os.path.join(OUT_DIR, "raw_naver_by_year_publishers.png"), color=COLOR_PUBLISHERS, max_labels=24)
 
     if m_books:
-        plot_series_bar("Monthly (New Books)", [str(k) for k, _ in m_books], [v for _, v in m_books],
+        plot_series_with_cumulative("Monthly (Books: New + Cumulative)", [str(k) for k, _ in m_books], [v for _, v in m_books],
                         os.path.join(OUT_DIR, "raw_naver_by_month.png"), rotate=45, color=COLOR_BOOKS, max_labels=24)
     if m_auth:
-        plot_series_bar("Monthly (New Authors)", [str(k) for k, _ in m_auth], [v for _, v in m_auth],
+        plot_series_with_cumulative("Monthly (Authors: New + Cumulative)", [str(k) for k, _ in m_auth], [v for _, v in m_auth],
                         os.path.join(OUT_DIR, "raw_naver_by_month_authors.png"), rotate=45, color=COLOR_AUTHORS, max_labels=24)
     if m_pubs:
-        plot_series_bar("Monthly (New Publishers)", [str(k) for k, _ in m_pubs], [v for _, v in m_pubs],
+        plot_series_with_cumulative("Monthly (Publishers: New + Cumulative)", [str(k) for k, _ in m_pubs], [v for _, v in m_pubs],
                         os.path.join(OUT_DIR, "raw_naver_by_month_publishers.png"), rotate=45, color=COLOR_PUBLISHERS, max_labels=24)
 
     if d_books:
-        plot_series_bar("Daily (New Books)", [str(k) for k, _ in d_books], [v for _, v in d_books],
+        plot_series_with_cumulative("Daily (Books: New + Cumulative)", [str(k) for k, _ in d_books], [v for _, v in d_books],
                         os.path.join(OUT_DIR, "raw_naver_by_day.png"), rotate=45, color=COLOR_BOOKS, max_labels=24)
     if d_auth:
-        plot_series_bar("Daily (New Authors)", [str(k) for k, _ in d_auth], [v for _, v in d_auth],
+        plot_series_with_cumulative("Daily (Authors: New + Cumulative)", [str(k) for k, _ in d_auth], [v for _, v in d_auth],
                         os.path.join(OUT_DIR, "raw_naver_by_day_authors.png"), rotate=45, color=COLOR_AUTHORS, max_labels=24)
     if d_pubs:
-        plot_series_bar("Daily (New Publishers)", [str(k) for k, _ in d_pubs], [v for _, v in d_pubs],
+        plot_series_with_cumulative("Daily (Publishers: New + Cumulative)", [str(k) for k, _ in d_pubs], [v for _, v in d_pubs],
                         os.path.join(OUT_DIR, "raw_naver_by_day_publishers.png"), rotate=45, color=COLOR_PUBLISHERS, max_labels=24)
 
     if h_books:
-        plot_series_bar("Hourly (New Books)", [fmt_hour(k) for k, _ in h_books], [v for _, v in h_books],
+        plot_series_with_cumulative("Hourly (Books: New + Cumulative)", [fmt_hour(k) for k, _ in h_books], [v for _, v in h_books],
                         os.path.join(OUT_DIR, "raw_naver_by_hour.png"), rotate=45, color=COLOR_BOOKS, max_labels=24)
     if h_auth:
-        plot_series_bar("Hourly (New Authors)", [fmt_hour(k) for k, _ in h_auth], [v for _, v in h_auth],
+        plot_series_with_cumulative("Hourly (Authors: New + Cumulative)", [fmt_hour(k) for k, _ in h_auth], [v for _, v in h_auth],
                         os.path.join(OUT_DIR, "raw_naver_by_hour_authors.png"), rotate=45, color=COLOR_AUTHORS, max_labels=24)
     if h_pubs:
-        plot_series_bar("Hourly (New Publishers)", [fmt_hour(k) for k, _ in h_pubs], [v for _, v in h_pubs],
+        plot_series_with_cumulative("Hourly (Publishers: New + Cumulative)", [fmt_hour(k) for k, _ in h_pubs], [v for _, v in h_pubs],
                         os.path.join(OUT_DIR, "raw_naver_by_hour_publishers.png"), rotate=45, color=COLOR_PUBLISHERS, max_labels=24)
 
     # ---------- Markdown report ----------
@@ -590,53 +634,71 @@ def main():
     md.append("")
     md.append("![Totals](raw_naver_totals.png)")
     md.append("")
-    md.append("## Books")
+
+    # 핵심: Monthly 3종만 상단에 노출 (스크롤 최소화)
+    md.append("## 📊 Monthly Overview (New + Cumulative)")
     md.append("")
-    md.append("### 연별 신규 유입")
-    md.append("![Books Year](raw_naver_by_year.png)")
-    md.append("")
-    md.append("### 월별 신규 유입")
+    md.append("### Books")
     md.append("![Books Month](raw_naver_by_month.png)")
     md.append("")
-    md.append("### 일별 신규 유입")
-    md.append("![Books Day](raw_naver_by_day.png)")
-    md.append("")
-    md.append("### 시간별 신규 유입")
-    md.append("![Books Hour](raw_naver_by_hour.png)")
-    md.append("")
-    md.append("## Authors")
-    md.append("")
-    md.append("### 연별 신규 유입")
-    md.append("![Authors Year](raw_naver_by_year_authors.png)")
-    md.append("")
-    md.append("### 월별 신규 유입")
+    md.append("### Authors")
     md.append("![Authors Month](raw_naver_by_month_authors.png)")
     md.append("")
-    md.append("### 일별 신규 유입")
-    md.append("![Authors Day](raw_naver_by_day_authors.png)")
-    md.append("")
-    md.append("### 시간별 신규 유입")
-    md.append("![Authors Hour](raw_naver_by_hour_authors.png)")
-    md.append("")
-    md.append("## Publishers")
-    md.append("")
-    md.append("### 연별 신규 유입")
-    md.append("![Publishers Year](raw_naver_by_year_publishers.png)")
-    md.append("")
-    md.append("### 월별 신규 유입")
+    md.append("### Publishers")
     md.append("![Publishers Month](raw_naver_by_month_publishers.png)")
     md.append("")
-    md.append("### 일별 신규 유입")
+
+    # Details (fold)
+    md.append("<details>")
+    md.append("<summary>📅 Yearly Details</summary>")
+    md.append("")
+    md.append("### Books")
+    md.append("![Books Year](raw_naver_by_year.png)")
+    md.append("")
+    md.append("### Authors")
+    md.append("![Authors Year](raw_naver_by_year_authors.png)")
+    md.append("")
+    md.append("### Publishers")
+    md.append("![Publishers Year](raw_naver_by_year_publishers.png)")
+    md.append("")
+    md.append("</details>")
+    md.append("")
+
+    md.append("<details>")
+    md.append("<summary>📆 Daily Details</summary>")
+    md.append("")
+    md.append("### Books")
+    md.append("![Books Day](raw_naver_by_day.png)")
+    md.append("")
+    md.append("### Authors")
+    md.append("![Authors Day](raw_naver_by_day_authors.png)")
+    md.append("")
+    md.append("### Publishers")
     md.append("![Publishers Day](raw_naver_by_day_publishers.png)")
     md.append("")
-    md.append("### 시간별 신규 유입")
+    md.append("</details>")
+    md.append("")
+
+    md.append("<details>")
+    md.append("<summary>⏱ Hourly Details</summary>")
+    md.append("")
+    md.append("### Books")
+    md.append("![Books Hour](raw_naver_by_hour.png)")
+    md.append("")
+    md.append("### Authors")
+    md.append("![Authors Hour](raw_naver_by_hour_authors.png)")
+    md.append("")
+    md.append("### Publishers")
     md.append("![Publishers Hour](raw_naver_by_hour_publishers.png)")
     md.append("")
+    md.append("</details>")
+    md.append("")
+
     md.append("> 시계열은 각 항목(ISBN/저자/출판사)의 '최초 등장 시각' 기준 신규 유입을 집계합니다. (빈 구간은 0으로 채움)")
+    md.append("> 모든 시계열 차트는 **신규 유입(막대) + 누적(선)** 을 함께 표시합니다.")
     md.append("")
 
     with open(OUTPUT_MD, "w", encoding="utf-8") as f:
         f.write("\n".join(md))
-
 if __name__ == "__main__":
     main()
