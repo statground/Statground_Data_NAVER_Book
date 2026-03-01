@@ -33,3 +33,15 @@ jobs:
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
           MANUAL_KEYWORD: ${{ github.event.inputs.keyword }}
         run: python collect_manual.py
+
+      - name: OPTIMIZE raw_naver (random partition)
+        env:
+          CH_HOST: ${{ secrets.CH_HOST }}
+          CH_PORT: ${{ secrets.CH_PORT }}
+          CH_USER: ${{ secrets.CH_USER }}
+          CH_PASSWORD: ${{ secrets.CH_PASSWORD }}
+          CH_DATABASE: ${{ secrets.CH_DATABASE }}
+          OPTIMIZE_ENABLED: '1'
+          OPTIMIZE_RECENT_PARTITIONS: '6'
+          OPTIMIZE_FINAL: '1'
+        run: python optimize_raw_naver_random_partition.py
