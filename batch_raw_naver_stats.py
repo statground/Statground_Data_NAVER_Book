@@ -756,7 +756,7 @@ def main():
 
     # Monthly exact distribution
     pub_valid_month = f"({pub_len_expr} >= 6) AND {pub_valid_year} AND ({pub_month_expr} BETWEEN 1 AND 12)"
-    pub_month_start = f"toDate(concat(toString({pub_year_expr}), '-', lpad(toString({pub_month_expr}), 2, '0'), '-01'))"
+    pub_month_start = f"toDateOrNull(concat(toString({pub_year_expr}), '-', lpad(toString({pub_month_expr}), 2, '0'), '-01'))"
 
     sql_m_pub_books = f"""
         WITH base AS (
@@ -848,14 +848,14 @@ def main():
 
     # Daily exact distribution
     pub_valid_day = f"({pub_len_expr} >= 8) AND {pub_valid_month} AND ({pub_day_expr} BETWEEN 1 AND 31)"
-    pub_day_date = f"toDate(concat(toString({pub_year_expr}), '-', lpad(toString({pub_month_expr}), 2, '0'), '-', lpad(toString({pub_day_expr}), 2, '0')))"
+    pub_day_date = f"toDateOrNull(concat(toString({pub_year_expr}), '-', lpad(toString({pub_month_expr}), 2, '0'), '-', lpad(toString({pub_day_expr}), 2, '0')))"
 
     sql_d_pub_books = f"""
         WITH base AS (
             SELECT DISTINCT isbn,
                 {pub_day_date} AS d
             FROM {TABLE_NAME}
-            WHERE {base_isbn} AND {pub_valid_day} AND isNotNull(parseDateTimeBestEffortOrNull(toString(d)))
+            WHERE {base_isbn} AND {pub_valid_day}
         ),
         params AS (
             SELECT min(d) AS min_d,
@@ -884,7 +884,7 @@ def main():
             SELECT DISTINCT publisher,
                 {pub_day_date} AS d
             FROM {TABLE_NAME}
-            WHERE {base_pub} AND {pub_valid_day} AND isNotNull(parseDateTimeBestEffortOrNull(toString(d)))
+            WHERE {base_pub} AND {pub_valid_day}
         ),
         params AS (
             SELECT min(d) AS min_d,
@@ -914,7 +914,7 @@ def main():
                 {pub_day_date} AS d
             FROM {TABLE_NAME}
             ARRAY JOIN splitByChar('^', ifNull(author, '')) AS author_one
-            WHERE length(trim(author_one)) > 0 AND {pub_valid_day} AND isNotNull(parseDateTimeBestEffortOrNull(toString(d)))
+            WHERE length(trim(author_one)) > 0 AND {pub_valid_day}
         ),
         params AS (
             SELECT min(d) AS min_d,
@@ -972,7 +972,11 @@ def main():
         future_map = {ex.submit(q_rows, sql): key for key, sql in pub_tasks.items()}
         for fut in as_completed(future_map):
             key = future_map[fut]
-            pub_results[key] = fut.result()
+            try:
+                pub_results[key] = fut.result()
+            except Exception as e:
+                print(f"[WARN] pubdate stats query failed: {key} err={e}")
+                pub_results[key] = []
 
     y_pub_books = pub_results.get("y_pub_books", [])
     y_pub_pubs = pub_results.get("y_pub_pubs", [])
