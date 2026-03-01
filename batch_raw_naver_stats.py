@@ -19,6 +19,7 @@ import math
 from datetime import datetime
 import pytz
 import clickhouse_connect
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import matplotlib
 matplotlib.use("Agg")
@@ -47,20 +48,35 @@ COLOR_BOOKS = "#1f77b4"       # blue
 COLOR_AUTHORS = "#2ca02c"     # green
 COLOR_PUBLISHERS = "#ff7f0e"  # orange
 
-client = clickhouse_connect.get_client(
-    host=CH_HOST,
-    port=CH_PORT,
-    username=CH_USER,
-    password=CH_PASSWORD,
-    database=CH_DATABASE
-)
+def make_client():
+    return clickhouse_connect.get_client(
+        host=CH_HOST,
+        port=CH_PORT,
+        username=CH_USER,
+        password=CH_PASSWORD,
+        database=CH_DATABASE
+    )
 
 def q_scalar(sql: str) -> int:
-    r = client.query(sql)
-    return int(r.result_rows[0][0]) if r.result_rows else 0
+    c = make_client()
+    try:
+        r = c.query(sql)
+        return int(r.result_rows[0][0]) if r.result_rows else 0
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
 
 def q_rows(sql: str):
-    return client.query(sql).result_rows
+    c = make_client()
+    try:
+        return c.query(sql).result_rows
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
 
 def _fmt_int(v) -> str:
     try:
@@ -178,8 +194,12 @@ def main():
     # - first_seen 비어있으면 params가 0 rows가 되도록 HAVING count()>0 처리
     # =======================
 
-    # Books
-    y_books = q_rows(f"""
+    # =======================
+    # New inflow series (0 fill, fast)
+    # (Threaded query execution)
+    # =======================
+
+    sql_y_books = f"""
         WITH first_seen AS (
             SELECT isbn, min(created_at) AS first_at
             FROM {TABLE_NAME}
@@ -207,9 +227,9 @@ def main():
         FROM timeline t
         LEFT JOIN counts c ON c.y = t.y
         ORDER BY y
-    """)
+    """
 
-    m_books = q_rows(f"""
+    sql_m_books = f"""
         WITH first_seen AS (
             SELECT isbn, min(created_at) AS first_at
             FROM {TABLE_NAME}
@@ -237,9 +257,9 @@ def main():
         FROM timeline t
         LEFT JOIN counts c ON c.m = t.m
         ORDER BY yyyymm
-    """)
+    """
 
-    d_books = q_rows(f"""
+    sql_d_books = f"""
         WITH first_seen AS (
             SELECT isbn, min(created_at) AS first_at
             FROM {TABLE_NAME}
@@ -267,9 +287,9 @@ def main():
         FROM timeline t
         LEFT JOIN counts c ON c.d = t.d
         ORDER BY d
-    """)
+    """
 
-    h_books = q_rows(f"""
+    sql_h_books = f"""
         WITH first_seen AS (
             SELECT isbn, min(created_at) AS first_at
             FROM {TABLE_NAME}
@@ -297,10 +317,9 @@ def main():
         FROM timeline t
         LEFT JOIN counts c ON c.t = t.t
         ORDER BY t
-    """)
+    """
 
-    # Publishers
-    y_pubs = q_rows(f"""
+    sql_y_pubs = f"""
         WITH first_seen AS (
             SELECT publisher, min(created_at) AS first_at
             FROM {TABLE_NAME}
@@ -328,9 +347,9 @@ def main():
         FROM timeline t
         LEFT JOIN counts c ON c.y = t.y
         ORDER BY y
-    """)
+    """
 
-    m_pubs = q_rows(f"""
+    sql_m_pubs = f"""
         WITH first_seen AS (
             SELECT publisher, min(created_at) AS first_at
             FROM {TABLE_NAME}
@@ -358,9 +377,9 @@ def main():
         FROM timeline t
         LEFT JOIN counts c ON c.m = t.m
         ORDER BY yyyymm
-    """)
+    """
 
-    d_pubs = q_rows(f"""
+    sql_d_pubs = f"""
         WITH first_seen AS (
             SELECT publisher, min(created_at) AS first_at
             FROM {TABLE_NAME}
@@ -388,9 +407,9 @@ def main():
         FROM timeline t
         LEFT JOIN counts c ON c.d = t.d
         ORDER BY d
-    """)
+    """
 
-    h_pubs = q_rows(f"""
+    sql_h_pubs = f"""
         WITH first_seen AS (
             SELECT publisher, min(created_at) AS first_at
             FROM {TABLE_NAME}
@@ -418,10 +437,9 @@ def main():
         FROM timeline t
         LEFT JOIN counts c ON c.t = t.t
         ORDER BY t
-    """)
+    """
 
-    # Authors
-    y_auth = q_rows(f"""
+    sql_y_auth = f"""
         WITH exploded AS (
             SELECT trim(author_one) AS author_one, created_at
             FROM {TABLE_NAME}
@@ -454,9 +472,9 @@ def main():
         FROM timeline t
         LEFT JOIN counts c ON c.y = t.y
         ORDER BY y
-    """)
+    """
 
-    m_auth = q_rows(f"""
+    sql_m_auth = f"""
         WITH exploded AS (
             SELECT trim(author_one) AS author_one, created_at
             FROM {TABLE_NAME}
@@ -489,9 +507,9 @@ def main():
         FROM timeline t
         LEFT JOIN counts c ON c.m = t.m
         ORDER BY yyyymm
-    """)
+    """
 
-    d_auth = q_rows(f"""
+    sql_d_auth = f"""
         WITH exploded AS (
             SELECT trim(author_one) AS author_one, created_at
             FROM {TABLE_NAME}
@@ -524,9 +542,9 @@ def main():
         FROM timeline t
         LEFT JOIN counts c ON c.d = t.d
         ORDER BY d
-    """)
+    """
 
-    h_auth = q_rows(f"""
+    sql_h_auth = f"""
         WITH exploded AS (
             SELECT trim(author_one) AS author_one, created_at
             FROM {TABLE_NAME}
@@ -559,25 +577,413 @@ def main():
         FROM timeline t
         LEFT JOIN counts c ON c.t = t.t
         ORDER BY t
-    """)
+    """
 
-    # ---------- Totals chart ----------
-    fig = plt.figure(figsize=(9, 4.5))
-    ax = fig.add_subplot(111)
-    bars = ax.bar(
-        ["Books(uniq isbn)", "Authors(uniq)", "Publishers(uniq)"],
-        [total_books, total_authors, total_publishers],
-        color=[COLOR_BOOKS, COLOR_AUTHORS, COLOR_PUBLISHERS]
-    )
-    ax.set_title("Total Overview")
-    ax.set_ylabel("Count")
-    annotate_bars(ax, bars, fontsize=9, y_offset=3)
-    fig.tight_layout()
-    fig.savefig(os.path.join(OUT_DIR, "raw_naver_totals.png"), dpi=150)
-    plt.close(fig)
+    # Execute in parallel (each query opens its own CH client)
+    max_workers = int(os.getenv("STATS_WORKERS", "6"))
+    tasks = {
+        "y_books": sql_y_books,
+        "m_books": sql_m_books,
+        "d_books": sql_d_books,
+        "h_books": sql_h_books,
+        "y_pubs": sql_y_pubs,
+        "m_pubs": sql_m_pubs,
+        "d_pubs": sql_d_pubs,
+        "h_pubs": sql_h_pubs,
+        "y_auth": sql_y_auth,
+        "m_auth": sql_m_auth,
+        "d_auth": sql_d_auth,
+        "h_auth": sql_h_auth
+    }
+    results = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        future_map = {ex.submit(q_rows, sql): key for key, sql in tasks.items()}
+        for fut in as_completed(future_map):
+            key = future_map[fut]
+            results[key] = fut.result()
+
+    y_books = results.get("y_books", [])
+    m_books = results.get("m_books", [])
+    d_books = results.get("d_books", [])
+    h_books = results.get("h_books", [])
+
+    y_pubs = results.get("y_pubs", [])
+    m_pubs = results.get("m_pubs", [])
+    d_pubs = results.get("d_pubs", [])
+    h_pubs = results.get("h_pubs", [])
+
+    y_auth = results.get("y_auth", [])
+    m_auth = results.get("m_auth", [])
+    d_auth = results.get("d_auth", [])
+    h_auth = results.get("h_auth", [])
 
     def fmt_hour(v):
         return datetime.fromisoformat(str(v)).strftime("%Y-%m-%d %H")
+
+
+    # =======================
+    # Published date based stats (pubdate)
+    # - pubdate is String (may be YYYY, YYYYMM, YYYYMMDD, or other)
+    # - We treat:
+    #   * exact-year: length>=4 (YYYY)
+    #   * exact-month: length>=6 (YYYYMM) where month 01-12
+    #   * exact-day: length>=8 (YYYYMMDD) where date is valid
+    # - For monthly/daily, year-only / year-month-only items are summarized separately (UNKNOWN buckets)
+    # =======================
+
+    pub_digits_expr = "replaceRegexpAll(trim(pubdate), '[^0-9]', '')"
+    pub_len_expr = f"length({pub_digits_expr})"
+    pub_year_expr = f"toUInt16OrZero(substring({pub_digits_expr}, 1, 4))"
+    pub_month_expr = f"toUInt8OrZero(substring({pub_digits_expr}, 5, 2))"
+    pub_day_expr = f"toUInt8OrZero(substring({pub_digits_expr}, 7, 2))"
+    pub_valid_year = f"({pub_len_expr} >= 4) AND ({pub_year_expr} BETWEEN 1000 AND 2100)"
+
+    # Totals by granularity
+    total_pub_year = q_scalar(f"""
+        SELECT uniqExact(isbn)
+        FROM {TABLE_NAME}
+        WHERE {base_isbn} AND {pub_valid_year}
+    """)
+    total_pub_year_only = q_scalar(f"""
+        SELECT uniqExact(isbn)
+        FROM {TABLE_NAME}
+        WHERE {base_isbn} AND {pub_valid_year} AND {pub_len_expr} = 4
+    """)
+    total_pub_ym = q_scalar(f"""
+        SELECT uniqExact(isbn)
+        FROM {TABLE_NAME}
+        WHERE {base_isbn} AND {pub_valid_year} AND {pub_len_expr} = 6
+    """)
+    total_pub_ymd = q_scalar(f"""
+        SELECT uniqExact(isbn)
+        FROM {TABLE_NAME}
+        WHERE {base_isbn} AND {pub_valid_year} AND {pub_len_expr} >= 8
+    """)
+    total_pub_missing = q_scalar(f"""
+        SELECT uniqExact(isbn)
+        FROM {TABLE_NAME}
+        WHERE {base_isbn} AND NOT ({pub_valid_year})
+    """)
+
+    # Yearly distribution (books / publishers / authors)
+    sql_y_pub_books = f"""
+        WITH base AS (
+            SELECT DISTINCT isbn,
+                {pub_year_expr} AS y
+            FROM {TABLE_NAME}
+            WHERE {base_isbn} AND {pub_valid_year}
+        ),
+        params AS (
+            SELECT toStartOfYear(toDate(min(y) * 10000 + 101)) AS min_y,
+                   dateDiff('year', toStartOfYear(toDate(min(y) * 10000 + 101)), toStartOfYear(toDate(max(y) * 10000 + 101))) AS diff_y
+            FROM base
+            HAVING count() > 0
+        ),
+        counts AS (
+            SELECT y, count() AS c
+            FROM base
+            GROUP BY y
+        ),
+        timeline AS (
+            SELECT toYear(addYears(p.min_y, n)) AS y
+            FROM params p
+            ARRAY JOIN range(p.diff_y + 1) AS n
+        )
+        SELECT t.y AS y, ifNull(c.c, 0) AS c
+        FROM timeline t
+        LEFT JOIN counts c ON c.y = t.y
+        ORDER BY y
+    """
+
+    sql_y_pub_pubs = f"""
+        WITH base AS (
+            SELECT DISTINCT publisher,
+                {pub_year_expr} AS y
+            FROM {TABLE_NAME}
+            WHERE {base_pub} AND {pub_valid_year}
+        ),
+        params AS (
+            SELECT toStartOfYear(toDate(min(y) * 10000 + 101)) AS min_y,
+                   dateDiff('year', toStartOfYear(toDate(min(y) * 10000 + 101)), toStartOfYear(toDate(max(y) * 10000 + 101))) AS diff_y
+            FROM base
+            HAVING count() > 0
+        ),
+        counts AS (
+            SELECT y, count() AS c
+            FROM base
+            GROUP BY y
+        ),
+        timeline AS (
+            SELECT toYear(addYears(p.min_y, n)) AS y
+            FROM params p
+            ARRAY JOIN range(p.diff_y + 1) AS n
+        )
+        SELECT t.y AS y, ifNull(c.c, 0) AS c
+        FROM timeline t
+        LEFT JOIN counts c ON c.y = t.y
+        ORDER BY y
+    """
+
+    sql_y_pub_auth = f"""
+        WITH base AS (
+            SELECT DISTINCT trim(author_one) AS author_one,
+                {pub_year_expr} AS y
+            FROM {TABLE_NAME}
+            ARRAY JOIN splitByChar('^', ifNull(author, '')) AS author_one
+            WHERE length(trim(author_one)) > 0 AND {pub_valid_year}
+        ),
+        params AS (
+            SELECT toStartOfYear(toDate(min(y) * 10000 + 101)) AS min_y,
+                   dateDiff('year', toStartOfYear(toDate(min(y) * 10000 + 101)), toStartOfYear(toDate(max(y) * 10000 + 101))) AS diff_y
+            FROM base
+            HAVING count() > 0
+        ),
+        counts AS (
+            SELECT y, count() AS c
+            FROM base
+            GROUP BY y
+        ),
+        timeline AS (
+            SELECT toYear(addYears(p.min_y, n)) AS y
+            FROM params p
+            ARRAY JOIN range(p.diff_y + 1) AS n
+        )
+        SELECT t.y AS y, ifNull(c.c, 0) AS c
+        FROM timeline t
+        LEFT JOIN counts c ON c.y = t.y
+        ORDER BY y
+    """
+
+    # Monthly exact distribution
+    pub_valid_month = f"({pub_len_expr} >= 6) AND {pub_valid_year} AND ({pub_month_expr} BETWEEN 1 AND 12)"
+    pub_month_start = f"toDate(concat(toString({pub_year_expr}), '-', lpad(toString({pub_month_expr}), 2, '0'), '-01'))"
+
+    sql_m_pub_books = f"""
+        WITH base AS (
+            SELECT DISTINCT isbn,
+                {pub_month_start} AS m
+            FROM {TABLE_NAME}
+            WHERE {base_isbn} AND {pub_valid_month}
+        ),
+        params AS (
+            SELECT toStartOfMonth(min(m)) AS min_m,
+                   dateDiff('month', toStartOfMonth(min(m)), toStartOfMonth(max(m))) AS diff_m
+            FROM base
+            HAVING count() > 0
+        ),
+        counts AS (
+            SELECT toYYYYMM(m) AS ym, count() AS c
+            FROM base
+            GROUP BY ym
+        ),
+        timeline AS (
+            SELECT toYYYYMM(addMonths(p.min_m, n)) AS ym
+            FROM params p
+            ARRAY JOIN range(p.diff_m + 1) AS n
+        )
+        SELECT t.ym AS ym, ifNull(c.c, 0) AS c
+        FROM timeline t
+        LEFT JOIN counts c ON c.ym = t.ym
+        ORDER BY ym
+    """
+
+    sql_m_pub_pubs = f"""
+        WITH base AS (
+            SELECT DISTINCT publisher,
+                {pub_month_start} AS m
+            FROM {TABLE_NAME}
+            WHERE {base_pub} AND {pub_valid_month}
+        ),
+        params AS (
+            SELECT toStartOfMonth(min(m)) AS min_m,
+                   dateDiff('month', toStartOfMonth(min(m)), toStartOfMonth(max(m))) AS diff_m
+            FROM base
+            HAVING count() > 0
+        ),
+        counts AS (
+            SELECT toYYYYMM(m) AS ym, count() AS c
+            FROM base
+            GROUP BY ym
+        ),
+        timeline AS (
+            SELECT toYYYYMM(addMonths(p.min_m, n)) AS ym
+            FROM params p
+            ARRAY JOIN range(p.diff_m + 1) AS n
+        )
+        SELECT t.ym AS ym, ifNull(c.c, 0) AS c
+        FROM timeline t
+        LEFT JOIN counts c ON c.ym = t.ym
+        ORDER BY ym
+    """
+
+    sql_m_pub_auth = f"""
+        WITH base AS (
+            SELECT DISTINCT trim(author_one) AS author_one,
+                {pub_month_start} AS m
+            FROM {TABLE_NAME}
+            ARRAY JOIN splitByChar('^', ifNull(author, '')) AS author_one
+            WHERE length(trim(author_one)) > 0 AND {pub_valid_month}
+        ),
+        params AS (
+            SELECT toStartOfMonth(min(m)) AS min_m,
+                   dateDiff('month', toStartOfMonth(min(m)), toStartOfMonth(max(m))) AS diff_m
+            FROM base
+            HAVING count() > 0
+        ),
+        counts AS (
+            SELECT toYYYYMM(m) AS ym, count() AS c
+            FROM base
+            GROUP BY ym
+        ),
+        timeline AS (
+            SELECT toYYYYMM(addMonths(p.min_m, n)) AS ym
+            FROM params p
+            ARRAY JOIN range(p.diff_m + 1) AS n
+        )
+        SELECT t.ym AS ym, ifNull(c.c, 0) AS c
+        FROM timeline t
+        LEFT JOIN counts c ON c.ym = t.ym
+        ORDER BY ym
+    """
+
+    # Daily exact distribution
+    pub_valid_day = f"({pub_len_expr} >= 8) AND {pub_valid_month} AND ({pub_day_expr} BETWEEN 1 AND 31)"
+    pub_day_date = f"toDate(concat(toString({pub_year_expr}), '-', lpad(toString({pub_month_expr}), 2, '0'), '-', lpad(toString({pub_day_expr}), 2, '0')))"
+
+    sql_d_pub_books = f"""
+        WITH base AS (
+            SELECT DISTINCT isbn,
+                {pub_day_date} AS d
+            FROM {TABLE_NAME}
+            WHERE {base_isbn} AND {pub_valid_day} AND isNotNull(parseDateTimeBestEffortOrNull(toString(d)))
+        ),
+        params AS (
+            SELECT min(d) AS min_d,
+                   dateDiff('day', min(d), max(d)) AS diff_d
+            FROM base
+            HAVING count() > 0
+        ),
+        counts AS (
+            SELECT toDate(d) AS d, count() AS c
+            FROM base
+            GROUP BY d
+        ),
+        timeline AS (
+            SELECT addDays(p.min_d, n) AS d
+            FROM params p
+            ARRAY JOIN range(p.diff_d + 1) AS n
+        )
+        SELECT toString(t.d) AS d, ifNull(c.c, 0) AS c
+        FROM timeline t
+        LEFT JOIN counts c ON c.d = t.d
+        ORDER BY d
+    """
+
+    sql_d_pub_pubs = f"""
+        WITH base AS (
+            SELECT DISTINCT publisher,
+                {pub_day_date} AS d
+            FROM {TABLE_NAME}
+            WHERE {base_pub} AND {pub_valid_day} AND isNotNull(parseDateTimeBestEffortOrNull(toString(d)))
+        ),
+        params AS (
+            SELECT min(d) AS min_d,
+                   dateDiff('day', min(d), max(d)) AS diff_d
+            FROM base
+            HAVING count() > 0
+        ),
+        counts AS (
+            SELECT toDate(d) AS d, count() AS c
+            FROM base
+            GROUP BY d
+        ),
+        timeline AS (
+            SELECT addDays(p.min_d, n) AS d
+            FROM params p
+            ARRAY JOIN range(p.diff_d + 1) AS n
+        )
+        SELECT toString(t.d) AS d, ifNull(c.c, 0) AS c
+        FROM timeline t
+        LEFT JOIN counts c ON c.d = t.d
+        ORDER BY d
+    """
+
+    sql_d_pub_auth = f"""
+        WITH base AS (
+            SELECT DISTINCT trim(author_one) AS author_one,
+                {pub_day_date} AS d
+            FROM {TABLE_NAME}
+            ARRAY JOIN splitByChar('^', ifNull(author, '')) AS author_one
+            WHERE length(trim(author_one)) > 0 AND {pub_valid_day} AND isNotNull(parseDateTimeBestEffortOrNull(toString(d)))
+        ),
+        params AS (
+            SELECT min(d) AS min_d,
+                   dateDiff('day', min(d), max(d)) AS diff_d
+            FROM base
+            HAVING count() > 0
+        ),
+        counts AS (
+            SELECT toDate(d) AS d, count() AS c
+            FROM base
+            GROUP BY d
+        ),
+        timeline AS (
+            SELECT addDays(p.min_d, n) AS d
+            FROM params p
+            ARRAY JOIN range(p.diff_d + 1) AS n
+        )
+        SELECT toString(t.d) AS d, ifNull(c.c, 0) AS c
+        FROM timeline t
+        LEFT JOIN counts c ON c.d = t.d
+        ORDER BY d
+    """
+
+    # UNKNOWN buckets (Books only)
+    unknown_month_books = q_rows(f"""
+        SELECT {pub_year_expr} AS y, uniqExact(isbn) AS c
+        FROM {TABLE_NAME}
+        WHERE {base_isbn} AND {pub_valid_year} AND {pub_len_expr} = 4
+        GROUP BY y
+        ORDER BY y
+    """)
+    unknown_day_books = q_rows(f"""
+        SELECT concat(toString({pub_year_expr}), '-', lpad(toString({pub_month_expr}), 2, '0')) AS ym,
+               uniqExact(isbn) AS c
+        FROM {TABLE_NAME}
+        WHERE {base_isbn} AND {pub_valid_month} AND {pub_len_expr} = 6
+        GROUP BY ym
+        ORDER BY ym
+    """)
+
+    # Run published distribution queries in parallel
+    pub_tasks = {
+        "y_pub_books": sql_y_pub_books,
+        "y_pub_pubs": sql_y_pub_pubs,
+        "y_pub_auth": sql_y_pub_auth,
+        "m_pub_books": sql_m_pub_books,
+        "m_pub_pubs": sql_m_pub_pubs,
+        "m_pub_auth": sql_m_pub_auth,
+        "d_pub_books": sql_d_pub_books,
+        "d_pub_pubs": sql_d_pub_pubs,
+        "d_pub_auth": sql_d_pub_auth,
+    }
+    pub_results = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        future_map = {ex.submit(q_rows, sql): key for key, sql in pub_tasks.items()}
+        for fut in as_completed(future_map):
+            key = future_map[fut]
+            pub_results[key] = fut.result()
+
+    y_pub_books = pub_results.get("y_pub_books", [])
+    y_pub_pubs = pub_results.get("y_pub_pubs", [])
+    y_pub_auth = pub_results.get("y_pub_auth", [])
+    m_pub_books = pub_results.get("m_pub_books", [])
+    m_pub_pubs = pub_results.get("m_pub_pubs", [])
+    m_pub_auth = pub_results.get("m_pub_auth", [])
+    d_pub_books = pub_results.get("d_pub_books", [])
+    d_pub_pubs = pub_results.get("d_pub_pubs", [])
+    d_pub_auth = pub_results.get("d_pub_auth", [])
+
 
     # ---------- Split charts (full period) ----------
     if y_books:
@@ -620,6 +1026,40 @@ def main():
         plot_series_with_cumulative("Hourly (Publishers: New + Cumulative)", [fmt_hour(k) for k, _ in h_pubs], [v for _, v in h_pubs],
                         os.path.join(OUT_DIR, "raw_naver_by_hour_publishers.png"), rotate=45, color=COLOR_PUBLISHERS, max_labels=24)
 
+
+    # ---------- Published-date charts ----------
+    # (Distribution by pubdate; bar + cumulative for readability)
+    if y_pub_books:
+        plot_series_with_cumulative("Yearly (Books by Published Date)", [str(k) for k, _ in y_pub_books], [v for _, v in y_pub_books],
+                        os.path.join(OUT_DIR, "raw_naver_pub_by_year_books.png"), color=COLOR_BOOKS)
+    if m_pub_books:
+        plot_series_with_cumulative("Monthly (Books by Published Date)", [str(k) for k, _ in m_pub_books], [v for _, v in m_pub_books],
+                        os.path.join(OUT_DIR, "raw_naver_pub_by_month_books.png"), rotate=45, color=COLOR_BOOKS, max_labels=24)
+    if d_pub_books:
+        plot_series_with_cumulative("Daily (Books by Published Date)", [str(k) for k, _ in d_pub_books], [v for _, v in d_pub_books],
+                        os.path.join(OUT_DIR, "raw_naver_pub_by_day_books.png"), rotate=45, color=COLOR_BOOKS, max_labels=24)
+
+    if y_pub_pubs:
+        plot_series_with_cumulative("Yearly (Publishers by Published Date)", [str(k) for k, _ in y_pub_pubs], [v for _, v in y_pub_pubs],
+                        os.path.join(OUT_DIR, "raw_naver_pub_by_year_publishers.png"), color=COLOR_PUBLISHERS)
+    if m_pub_pubs:
+        plot_series_with_cumulative("Monthly (Publishers by Published Date)", [str(k) for k, _ in m_pub_pubs], [v for _, v in m_pub_pubs],
+                        os.path.join(OUT_DIR, "raw_naver_pub_by_month_publishers.png"), rotate=45, color=COLOR_PUBLISHERS, max_labels=24)
+    if d_pub_pubs:
+        plot_series_with_cumulative("Daily (Publishers by Published Date)", [str(k) for k, _ in d_pub_pubs], [v for _, v in d_pub_pubs],
+                        os.path.join(OUT_DIR, "raw_naver_pub_by_day_publishers.png"), rotate=45, color=COLOR_PUBLISHERS, max_labels=24)
+
+    if y_pub_auth:
+        plot_series_with_cumulative("Yearly (Authors by Published Date)", [str(k) for k, _ in y_pub_auth], [v for _, v in y_pub_auth],
+                        os.path.join(OUT_DIR, "raw_naver_pub_by_year_authors.png"), color=COLOR_AUTHORS)
+    if m_pub_auth:
+        plot_series_with_cumulative("Monthly (Authors by Published Date)", [str(k) for k, _ in m_pub_auth], [v for _, v in m_pub_auth],
+                        os.path.join(OUT_DIR, "raw_naver_pub_by_month_authors.png"), rotate=45, color=COLOR_AUTHORS, max_labels=24)
+    if d_pub_auth:
+        plot_series_with_cumulative("Daily (Authors by Published Date)", [str(k) for k, _ in d_pub_auth], [v for _, v in d_pub_auth],
+                        os.path.join(OUT_DIR, "raw_naver_pub_by_day_authors.png"), rotate=45, color=COLOR_AUTHORS, max_labels=24)
+
+
     # ---------- Markdown report ----------
     md = []
     md.append("# 수집 데이터 집계")
@@ -634,6 +1074,62 @@ def main():
     md.append("")
     md.append("![Totals](raw_naver_totals.png)")
     md.append("")
+
+    md.append("## 출간일(pubdate) 기준 통계")
+    md.append("")
+    md.append(f"- 출간연도(YYYY 이상) 파싱 가능 ISBN: **{total_pub_year:,}**")
+    md.append(f"  - 연도만(YYYY): **{total_pub_year_only:,}**")
+    md.append(f"  - 연/월(YYYYMM): **{total_pub_ym:,}**")
+    md.append(f"  - 연/월/일(YYYYMMDD+): **{total_pub_ymd:,}**")
+    md.append(f"- 출간일 파싱 불가/없음 ISBN: **{total_pub_missing:,}**")
+    md.append("")
+    if y_pub_books:
+        md.append("### Books (Published Date)")
+        md.append("![Books Published Year](raw_naver_pub_by_year_books.png)")
+        md.append("")
+    if m_pub_books:
+        md.append("![Books Published Month](raw_naver_pub_by_month_books.png)")
+        md.append("")
+    if d_pub_books:
+        md.append("![Books Published Day](raw_naver_pub_by_day_books.png)")
+        md.append("")
+    # UNKNOWN buckets summary (Books)
+    if unknown_month_books:
+        md.append("### Books (Published Date) - UNKNOWN month (year-only)")
+        md.append("")
+        md.append("| Year | ISBN Count |")
+        md.append("|---:|---:|")
+        for y, c in unknown_month_books:
+            md.append(f"| {y} | {int(c):,} |")
+        md.append("")
+    if unknown_day_books:
+        md.append("### Books (Published Date) - UNKNOWN day (year-month only)")
+        md.append("")
+        md.append("| Year-Month | ISBN Count |")
+        md.append("|---:|---:|")
+        for ym, c in unknown_day_books:
+            md.append(f"| {ym} | {int(c):,} |")
+        md.append("")
+    md.append("<details>")
+    md.append("<summary>📚 Published Date Details (Authors/Publishers)</summary>")
+    md.append("")
+    md.append("### Authors")
+    md.append("![Authors Published Year](raw_naver_pub_by_year_authors.png)")
+    md.append("")
+    md.append("![Authors Published Month](raw_naver_pub_by_month_authors.png)")
+    md.append("")
+    md.append("![Authors Published Day](raw_naver_pub_by_day_authors.png)")
+    md.append("")
+    md.append("### Publishers")
+    md.append("![Publishers Published Year](raw_naver_pub_by_year_publishers.png)")
+    md.append("")
+    md.append("![Publishers Published Month](raw_naver_pub_by_month_publishers.png)")
+    md.append("")
+    md.append("![Publishers Published Day](raw_naver_pub_by_day_publishers.png)")
+    md.append("")
+    md.append("</details>")
+    md.append("")
+
 
     # 핵심: Monthly 3종만 상단에 노출 (스크롤 최소화)
     md.append("## 📊 Monthly Overview (New + Cumulative)")
