@@ -78,6 +78,18 @@ def q_rows(sql: str):
         except Exception:
             pass
 
+
+def q_value(sql: str):
+    c = make_client()
+    try:
+        r = c.query(sql)
+        return r.result_rows[0][0] if r.result_rows else None
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+
 def _fmt_int(v) -> str:
     try:
         return f"{int(v):,}"
@@ -166,7 +178,15 @@ def plot_series_with_cumulative(title, x_labels, values, path, color, rotate=0, 
 
 
 def main():
-    now = datetime.now(KST)
+    data_updated_at = q_value(f"SELECT max(updated_at) FROM {TABLE_NAME}")
+    if isinstance(data_updated_at, datetime):
+        if data_updated_at.tzinfo is None:
+            data_updated_at = KST.localize(data_updated_at)
+        else:
+            data_updated_at = data_updated_at.astimezone(KST)
+    else:
+        data_updated_at = None
+
     os.makedirs(OUT_DIR, exist_ok=True)
 
     base_isbn = "isbn IS NOT NULL AND length(trim(isbn)) > 0"
@@ -1068,7 +1088,7 @@ def main():
     md = []
     md.append("# 수집 데이터 집계")
     md.append("")
-    md.append(f"- 업데이트 시각(KST): {now.strftime('%Y-%m-%d %H:%M:%S')}")
+    md.append(f"- 데이터 기준 최종 수정 시각(KST): {data_updated_at.strftime('%Y-%m-%d %H:%M:%S')}" if data_updated_at else "- 데이터 기준 최종 수정 시각(KST): N/A")
     md.append("")
     md.append("## 전체")
     md.append("")

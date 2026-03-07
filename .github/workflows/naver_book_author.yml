@@ -2,6 +2,7 @@ name: NAVER Book Collector (Author)
 
 on:
   schedule:
+    # UTC 매시 00분 실행 (KST 매시 00분)
     - cron: '0 * * * *'
   workflow_dispatch:
 
@@ -54,3 +55,26 @@ jobs:
           OPTIMIZE_RECENT_PARTITIONS: '6'
           OPTIMIZE_FINAL: '1'
         run: python optimize_raw_naver_random_partition.py
+
+  stats:
+    name: Generate stats after collect
+    needs: collect
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: statground-book-raw-naver-stats
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate stats and push
+        uses: ./.github/actions/run-raw-naver-stats
+        env:
+          CH_HOST: ${{ secrets.CH_HOST }}
+          CH_PORT: ${{ secrets.CH_PORT }}
+          CH_USER: ${{ secrets.CH_USER }}
+          CH_PASSWORD: ${{ secrets.CH_PASSWORD }}
+          CH_DATABASE: ${{ secrets.CH_DATABASE }}
