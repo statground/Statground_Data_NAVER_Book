@@ -15,19 +15,56 @@ runs:
         python -m pip install --upgrade pip
         pip install clickhouse_connect pytz matplotlib
 
-    - name: Generate charts
-      shell: bash
-      run: python batch_raw_naver_stats.py
-
-    - name: Commit and push if changed
+    - name: Generate charts and push safely
       shell: bash
       run: |
+        set -euo pipefail
+
+        BRANCH_NAME="${GITHUB_REF_NAME:-main}"
+        REMOTE_NAME="origin"
+        MAX_ATTEMPTS=5
+
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
-        git add stats
-        if git diff --cached --quiet; then
-          echo "No changes to commit."
-          exit 0
-        fi
-        git commit -m "chore(stats): update charts after ${GITHUB_WORKFLOW}"
-        git push origin HEAD:${GITHUB_REF_NAME}
+
+        refresh_branch() {
+          if git ls-remote --exit-code --heads "${REMOTE_NAME}" "${BRANCH_NAME}" >/dev/null 2>&1; then
+            git fetch --no-tags "${REMOTE_NAME}" "${BRANCH_NAME}"
+            git checkout -B "${BRANCH_NAME}" "refs/remotes/${REMOTE_NAME}/${BRANCH_NAME}"
+          else
+            git checkout -B "${BRANCH_NAME}"
+          fi
+        }
+
+        clean_stats_outputs() {
+          mkdir -p stats
+          find stats -maxdepth 1 -type f \( -name '*.png' -o -name '*.md' \) -delete
+        }
+
+        for attempt in $(seq 1 "${MAX_ATTEMPTS}"); do
+          echo "Stats push attempt ${attempt}/${MAX_ATTEMPTS}"
+
+          refresh_branch
+          clean_stats_outputs
+          python batch_raw_naver_stats.py
+
+          git add -A stats
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "chore(stats): update charts after ${GITHUB_WORKFLOW}"
+
+          if git push "${REMOTE_NAME}" "HEAD:${BRANCH_NAME}"; then
+            echo "Stats push completed."
+            exit 0
+          fi
+
+          echo "Push rejected because ${BRANCH_NAME} advanced. Retrying from latest remote state."
+          git reset --hard
+          sleep $((attempt * 2))
+        done
+
+        echo "Failed to push stats after ${MAX_ATTEMPTS} attempts."
+        exit 1
