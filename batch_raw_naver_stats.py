@@ -16,6 +16,7 @@ Env vars:
 
 import os
 import math
+from urllib.parse import quote
 from datetime import datetime
 import pytz
 import clickhouse_connect
@@ -42,6 +43,22 @@ CH_DATABASE = _require_env("CH_DATABASE")
 TABLE_NAME = "raw_naver"
 OUT_DIR = "stats"
 OUTPUT_MD = os.path.join(OUT_DIR, "raw_naver_stats.md")
+
+
+def _github_raw_base() -> str | None:
+    repo = (os.getenv("GITHUB_REPOSITORY") or "").strip()
+    ref_name = (os.getenv("GITHUB_REF_NAME") or "").strip()
+    if not repo or not ref_name:
+        return None
+    return f"https://raw.githubusercontent.com/{repo}/{quote(ref_name, safe='')}"
+
+def md_image(filename: str, alt: str) -> str:
+    rel_path = f"{OUT_DIR}/{filename}".replace(os.sep, "/")
+    base = _github_raw_base()
+    if base:
+        return f"![{alt}]({base}/{quote(rel_path, safe='/')})"
+    return f"![{alt}]({filename})"
+
 
 # User requested distinct colors
 COLOR_BOOKS = "#1f77b4"       # blue
@@ -1096,7 +1113,7 @@ def main():
     md.append(f"- 저자 수: **{total_authors:,}**")
     md.append(f"- 출판사 수: **{total_publishers:,}**")
     md.append("")
-    md.append("![Totals](raw_naver_totals.png)")
+    md.append(md_image("raw_naver_totals.png", "Totals"))
     md.append("")
 
     md.append("## 출간일(pubdate) 기준 통계")
@@ -1109,13 +1126,13 @@ def main():
     md.append("")
     if y_pub_books:
         md.append("### Books (Published Date)")
-        md.append("![Books Published Year](raw_naver_pub_by_year_books.png)")
+        md.append(md_image("raw_naver_pub_by_year_books.png", "Books Published Year"))
         md.append("")
     if m_pub_books:
-        md.append("![Books Published Month](raw_naver_pub_by_month_books.png)")
+        md.append(md_image("raw_naver_pub_by_month_books.png", "Books Published Month"))
         md.append("")
     if d_pub_books:
-        md.append("![Books Published Day](raw_naver_pub_by_day_books.png)")
+        md.append(md_image("raw_naver_pub_by_day_books.png", "Books Published Day"))
         md.append("")
     # UNKNOWN buckets summary (Books)
     if unknown_month_books:
@@ -1138,18 +1155,18 @@ def main():
     md.append("<summary>📚 Published Date Details (Authors/Publishers)</summary>")
     md.append("")
     md.append("### Authors")
-    md.append("![Authors Published Year](raw_naver_pub_by_year_authors.png)")
+    md.append(md_image("raw_naver_pub_by_year_authors.png", "Authors Published Year"))
     md.append("")
-    md.append("![Authors Published Month](raw_naver_pub_by_month_authors.png)")
+    md.append(md_image("raw_naver_pub_by_month_authors.png", "Authors Published Month"))
     md.append("")
-    md.append("![Authors Published Day](raw_naver_pub_by_day_authors.png)")
+    md.append(md_image("raw_naver_pub_by_day_authors.png", "Authors Published Day"))
     md.append("")
     md.append("### Publishers")
-    md.append("![Publishers Published Year](raw_naver_pub_by_year_publishers.png)")
+    md.append(md_image("raw_naver_pub_by_year_publishers.png", "Publishers Published Year"))
     md.append("")
-    md.append("![Publishers Published Month](raw_naver_pub_by_month_publishers.png)")
+    md.append(md_image("raw_naver_pub_by_month_publishers.png", "Publishers Published Month"))
     md.append("")
-    md.append("![Publishers Published Day](raw_naver_pub_by_day_publishers.png)")
+    md.append(md_image("raw_naver_pub_by_day_publishers.png", "Publishers Published Day"))
     md.append("")
     md.append("</details>")
     md.append("")
@@ -1159,13 +1176,13 @@ def main():
     md.append("## 📊 Monthly Overview (New + Cumulative)")
     md.append("")
     md.append("### Books")
-    md.append("![Books Month](raw_naver_by_month.png)")
+    md.append(md_image("raw_naver_by_month.png", "Books Month"))
     md.append("")
     md.append("### Authors")
-    md.append("![Authors Month](raw_naver_by_month_authors.png)")
+    md.append(md_image("raw_naver_by_month_authors.png", "Authors Month"))
     md.append("")
     md.append("### Publishers")
-    md.append("![Publishers Month](raw_naver_by_month_publishers.png)")
+    md.append(md_image("raw_naver_by_month_publishers.png", "Publishers Month"))
     md.append("")
 
     # Details (fold)
@@ -1173,13 +1190,13 @@ def main():
     md.append("<summary>📅 Yearly Details</summary>")
     md.append("")
     md.append("### Books")
-    md.append("![Books Year](raw_naver_by_year.png)")
+    md.append(md_image("raw_naver_by_year.png", "Books Year"))
     md.append("")
     md.append("### Authors")
-    md.append("![Authors Year](raw_naver_by_year_authors.png)")
+    md.append(md_image("raw_naver_by_year_authors.png", "Authors Year"))
     md.append("")
     md.append("### Publishers")
-    md.append("![Publishers Year](raw_naver_by_year_publishers.png)")
+    md.append(md_image("raw_naver_by_year_publishers.png", "Publishers Year"))
     md.append("")
     md.append("</details>")
     md.append("")
@@ -1188,13 +1205,13 @@ def main():
     md.append("<summary>📆 Daily Details</summary>")
     md.append("")
     md.append("### Books")
-    md.append("![Books Day](raw_naver_by_day.png)")
+    md.append(md_image("raw_naver_by_day.png", "Books Day"))
     md.append("")
     md.append("### Authors")
-    md.append("![Authors Day](raw_naver_by_day_authors.png)")
+    md.append(md_image("raw_naver_by_day_authors.png", "Authors Day"))
     md.append("")
     md.append("### Publishers")
-    md.append("![Publishers Day](raw_naver_by_day_publishers.png)")
+    md.append(md_image("raw_naver_by_day_publishers.png", "Publishers Day"))
     md.append("")
     md.append("</details>")
     md.append("")
@@ -1203,13 +1220,13 @@ def main():
     md.append("<summary>⏱ Hourly Details</summary>")
     md.append("")
     md.append("### Books")
-    md.append("![Books Hour](raw_naver_by_hour.png)")
+    md.append(md_image("raw_naver_by_hour.png", "Books Hour"))
     md.append("")
     md.append("### Authors")
-    md.append("![Authors Hour](raw_naver_by_hour_authors.png)")
+    md.append(md_image("raw_naver_by_hour_authors.png", "Authors Hour"))
     md.append("")
     md.append("### Publishers")
-    md.append("![Publishers Hour](raw_naver_by_hour_publishers.png)")
+    md.append(md_image("raw_naver_by_hour_publishers.png", "Publishers Hour"))
     md.append("")
     md.append("</details>")
     md.append("")

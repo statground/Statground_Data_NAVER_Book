@@ -1,0 +1,87 @@
+name: NAVER Book Collector (Unicode Random Char)
+
+on:
+  schedule:
+    # UTC 매시 50분 실행 (KST 매시 50분)
+    - cron: '50 * * * *'
+  workflow_dispatch:
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install requests pandas pytz nltk konlpy jpype1 uuid6 clickhouse_connect regex
+          fi
+
+      - name: Run collector (unicode random char)
+        env:
+          # ClickHouse connection (set these in GitHub repo Secrets)
+          CH_HOST: ${{ secrets.CH_HOST }}
+          CH_PORT: ${{ secrets.CH_PORT }}
+          CH_USER: ${{ secrets.CH_USER }}
+          CH_PASSWORD: ${{ secrets.CH_PASSWORD }}
+          CH_DATABASE: ${{ secrets.CH_DATABASE }}
+          # NAVER API keys JSON (set as a single secret string, e.g. [{"client_id":"...","client_secret":"..."}, ...])
+          NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
+          # Batch controls
+          BATCH_SIZE: '500'
+          SAMPLE_ROWS: '8000'
+          NAVER_DISPLAY: '100'
+          REQS_PER_TERM: '2'
+          PAGINATE_ALL: '1'
+          NAVER_MAX_START: '1000'
+          MAX_WORKERS: '10'
+          COLLECT_MODE: unicode_random
+          UNICODE_SINGLE_RATIO: '0.5'
+          UNICODE_BATCH_ANCHOR: '2026-03-11T00:00:00+09:00'
+          UNICODE_RANDOM_SEED: '20260311'
+        run: python collect.py
+
+      - name: OPTIMIZE raw_naver (random partition)
+        env:
+          CH_HOST: ${{ secrets.CH_HOST }}
+          CH_PORT: ${{ secrets.CH_PORT }}
+          CH_USER: ${{ secrets.CH_USER }}
+          CH_PASSWORD: ${{ secrets.CH_PASSWORD }}
+          CH_DATABASE: ${{ secrets.CH_DATABASE }}
+          OPTIMIZE_ENABLED: '1'
+          OPTIMIZE_RECENT_PARTITIONS: '6'
+          OPTIMIZE_FINAL: '1'
+        run: python optimize_raw_naver_random_partition.py
+
+  stats:
+    name: Generate stats after collect
+    needs: collect
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: statground-book-raw-naver-stats
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref_name }}
+
+      - name: Generate stats and push
+        uses: ./.github/actions/run-raw-naver-stats
+        env:
+          CH_HOST: ${{ secrets.CH_HOST }}
+          CH_PORT: ${{ secrets.CH_PORT }}
+          CH_USER: ${{ secrets.CH_USER }}
+          CH_PASSWORD: ${{ secrets.CH_PASSWORD }}
+          CH_DATABASE: ${{ secrets.CH_DATABASE }}
