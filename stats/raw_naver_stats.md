@@ -1,71 +1,71 @@
 # 수집 데이터 집계
 
-- 데이터 기준 최종 수정 시각(KST): 2026-03-11 23:19:05
+- 데이터 기준 최종 수정 시각(KST): 2026-03-12 00:17:43
 
 ## 전체
 
-- 총 고유 ISBN 수: **3,705,131**
-- 저자 수: **642,422**
-- 출판사 수: **156,007**
+- 총 고유 ISBN 수: **3,708,961**
+- 저자 수: **643,232**
+- 출판사 수: **156,082**
 
-![Totals](raw_naver_totals.png)
+![Totals](https://raw.githubusercontent.com/statground/Statground_Data_NAVER_Book/main/stats/raw_naver_totals.png)
 
 ## 출간일(pubdate) 기준 통계
 
-- 출간연도(YYYY 이상) 파싱 가능 ISBN: **3,693,725**
+- 출간연도(YYYY 이상) 파싱 가능 ISBN: **3,697,525**
   - 연도만(YYYY): **0**
   - 연/월(YYYYMM): **0**
-  - 연/월/일(YYYYMMDD+): **3,693,725**
-- 출간일 파싱 불가/없음 ISBN: **11,442**
+  - 연/월/일(YYYYMMDD+): **3,697,527**
+- 출간일 파싱 불가/없음 ISBN: **11,485**
 
 ### Books (Published Date)
-![Books Published Year](raw_naver_pub_by_year_books.png)
+![Books Published Year](https://raw.githubusercontent.com/statground/Statground_Data_NAVER_Book/main/stats/raw_naver_pub_by_year_books.png)
 
-![Books Published Month](raw_naver_pub_by_month_books.png)
+![Books Published Month](https://raw.githubusercontent.com/statground/Statground_Data_NAVER_Book/main/stats/raw_naver_pub_by_month_books.png)
 
-![Books Published Day](raw_naver_pub_by_day_books.png)
+![Books Published Day](https://raw.githubusercontent.com/statground/Statground_Data_NAVER_Book/main/stats/raw_naver_pub_by_day_books.png)
 
 <details>
 <summary>📚 Published Date Details (Authors/Publishers)</summary>
 
 ### Authors
-![Authors Published Year](raw_naver_pub_by_year_authors.png)
+![Authors Published Year](https://raw.githubusercontent.com/statground/Statground_Data_NAVER_Book/main/stats/raw_naver_pub_by_year_authors.png)
 
-![Authors Published Month](raw_naver_pub_by_month_authors.png)
+![Authors Published Month](https://raw.githubusercontent.com/statground/Statground_Data_NAVER_Book/main/stats/raw_naver_pub_by_month_authors.png)
 
-![Authors Published Day](raw_naver_pub_by_day_authors.png)
+![Authors Published Day](https://raw.githubusercontent.com/statground/Statground_Data_NAVER_Book/main/stats/raw_naver_pub_by_day_authors.png)
 
 ### Publishers
-![Publishers Published Year](raw_naver_pub_by_year_publishers.png)
+![Publishers Published Year](https://raw.githubusercontent.com/statground/Statground_Data_NAVER_Book/main/stats/raw_naver_pub_by_year_publishers.png)
 
-![Publishers Published Month](raw_naver_pub_by_month_publishers.png)
+![Publishers Published Month](https://raw.githubusercontent.com/statground/Statground_Data_NAVER_Book/main/stats/raw_naver_pub_by_month_publishers.png)
 
-![Publishers Published Day](raw_naver_pub_by_day_publishers.png)
+![Publishers Published Day](https://raw.githubusercontent.com/statground/Statground_Data_NAVER_Book/main/stats/raw_naver_pub_by_day_publishers.png)
 
 </details>
 
 ## 📊 Monthly Overview (New + Cumulative)
 
 ### Books
-![Books Month](raw_naver_by_month.png)
+![Books Month](https://raw.githubusercontent.com/statground/Statground_Data_NAVER_Book/main/stats/raw_naver_by_month.png)
 
 ### Authors
-![Authors Month](raw_naver_by_month_authors.png)
+![Authors Month](https://raw.githubusercontent.com/statground/Statground_Data_NAVER_Book/main/stats/raw_naver_by_month_authors.png)
 
 ### Publishers
-![Publishers Month](raw_naver_by_month_publishers.png)
+![Publishers Month](https://raw.githubusercontent.com/statground/Statground_Data_NAVER_Book/main/stats/raw_naver_by_month_publishers.png)
 
 <details>
 <summary>📅 Yearly Details</summary>
 
 ### Books
-![Books Year](raw_naver_by_year.png)
+![Books Year](https://raw.githubusercontent.com/statground/Statground_Data_NAVER_Book/main/stats/raw_naver_by_year.png)
 
 ### Authors
-![Authors Year](raw_naver_by_year_authors.png)
+![Authors Year](https://raw.githubusercontent.com/statground/Statground_Data_NAVER_Book/main/stats/raw_naver_by_year_authors.png)
 
 ### Publishers
-![Publishers Year](raw_naver_by_year_publishers.png)
+![Publishers Year](https://raw.githubusercontent.com/statground/Statground_Data_NAVER_Book/main/stats/raw_naver_by_year_publishers.png)
 
 </details>
 
@@ -73,13 +73,13 @@
 <summary>📆 Daily Details</summary>
 
 ### Books
-![Books Day](raw_naver_by_day.png)
+![Books Day](https://raw.githubusercontent.com/statground/Statground_Data_NAVER_Book/main/stats/raw_naver_by_day.png)
 
 ### Authors
-![Authors Day](raw_naver_by_day_authors.png)
+![Authors Day](https://raw.githubusercontent.com/statground/Statground_Data_NAVER_Book/main/stats/raw_naver_by_day_authors.png)
 
 ### Publishers
-![Publishers Day](raw_naver_by_day_publishers.png)
+![Publishers Day](https://raw.githubusercontent.com/statground/Statground_Data_NAVER_Book/main/stats/raw_naver_by_day_publishers.png)
 
 </details>
 
@@ -87,13 +87,13 @@
 <summary>⏱ Hourly Details</summary>
 
 ### Books
-![Books Hour](raw_naver_by_hour.png)
+![Books Hour](https://raw.githubusercontent.com/statground/Statground_Data_NAVER_Book/main/stats/raw_naver_by_hour.png)
 
 ### Authors
-![Authors Hour](raw_naver_by_hour_authors.png)
+![Authors Hour](https://raw.githubusercontent.com/statground/Statground_Data_NAVER_Book/main/stats/raw_naver_by_hour_authors.png)
 
 ### Publishers
-![Publishers Hour](raw_naver_by_hour_publishers.png)
+![Publishers Hour](https://raw.githubusercontent.com/statground/Statground_Data_NAVER_Book/main/stats/raw_naver_by_hour_publishers.png)
 
 </details>
 
