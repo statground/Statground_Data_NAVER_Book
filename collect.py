@@ -100,6 +100,12 @@ MAX_WORKERS = max(1, int(os.getenv("MAX_WORKERS") or "8"))
 UNICODE_RANDOM_SEED = int(os.getenv("UNICODE_RANDOM_SEED") or "20260311")
 UNICODE_BATCH_ANCHOR = os.getenv("UNICODE_BATCH_ANCHOR") or "2026-03-11T00:00:00+09:00"
 UNICODE_SINGLE_RATIO = float(os.getenv("UNICODE_SINGLE_RATIO") or "0.5")
+UNICODE_RANDOM_PROFILE = (os.getenv("UNICODE_RANDOM_PROFILE") or "naver_book_safe").strip().lower()
+UNICODE_SAFE_POOLS = [
+    s.strip().lower()
+    for s in (os.getenv("UNICODE_SAFE_POOLS") or "hangul,latin,hiragana,katakana,hani").split(",")
+    if s.strip()
+]
 
 UNICODE_EXCLUDED_RANGES = [
     (0x2100, 0x214F),   # Letterlike Symbols
@@ -110,6 +116,19 @@ UNICODE_EXCLUDED_RANGES = [
     (0x2F800, 0x2FA1F), # CJK Compatibility Ideographs Supplement
     (0x1D400, 0x1D7FF), # Mathematical Alphanumeric Symbols
 ]
+
+# NOTE:
+# - full_unicode: 기존 방식. 전체 유니코드 Letter를 훑는다.
+# - naver_book_safe(default): NAVER Book에서 실제 검색 가능성이 높고,
+#   일반 SQL 클라이언트/폰트에서 표시 가능한 범위 위주로 좁힌다.
+#   (희귀 고문자/보조평면 CJK/역사 문자 제외)
+UNICODE_SAFE_POOL_RANGES: dict[str, list[tuple[int, int]]] = {
+    "hangul": [(0xAC00, 0xD7A3)],      # Hangul Syllables only (자모 제외)
+    "latin": [(0x0041, 0x005A), (0x0061, 0x007A)],
+    "hiragana": [(0x3041, 0x3096)],
+    "katakana": [(0x30A1, 0x30FA)],
+    "hani": [(0x4E00, 0x9FFF)],       # Basic CJK only (Extension 제외)
+}
 
 
 
@@ -363,7 +382,7 @@ def _import_regex_core():
         import regex._regex_core as regex_core  # type: ignore
     except Exception as e:
         raise RuntimeError(
-            "regex package is required for unicode_random mode. Install `regex` in GitHub Actions."
+            "regex package is required for full_unicode mode. Install `regex` in GitHub Actions."
         ) from e
     return regex_core
 
@@ -408,11 +427,44 @@ def _detect_unicode_script(cp: int) -> str:
 
 
 
-def _build_unicode_term_inventory() -> tuple[list[str], dict[str, list[str]]]:
-    global UNICODE_LETTER_POOL, UNICODE_SCRIPT_POOLS
-    if UNICODE_LETTER_POOL is not None and UNICODE_SCRIPT_POOLS is not None:
-        return UNICODE_LETTER_POOL, UNICODE_SCRIPT_POOLS
+def _normalize_unicode_term(term: str) -> str:
+    if not isinstance(term, str):
+        term = str(term)
+    return unicodedata.normalize("NFC", term).strip()
 
+
+
+def _build_safe_unicode_term_inventory() -> tuple[list[str], dict[str, list[str]]]:
+    letters: list[str] = []
+    script_pools: dict[str, list[str]] = {}
+
+    selected_pools = UNICODE_SAFE_POOLS or ["hangul", "latin", "hiragana", "katakana", "hani"]
+    for pool_name in selected_pools:
+        ranges = UNICODE_SAFE_POOL_RANGES.get(pool_name)
+        if not ranges:
+            continue
+
+        chars: list[str] = []
+        for start, end in ranges:
+            for cp in range(start, end + 1):
+                if _is_excluded_unicode_letter(cp):
+                    continue
+                ch = chr(cp)
+                if not unicodedata.category(ch).startswith("L"):
+                    continue
+                chars.append(ch)
+
+        if not chars:
+            continue
+
+        letters.extend(chars)
+        script_pools[pool_name.upper()] = chars
+
+    return letters, script_pools
+
+
+
+def _build_full_unicode_term_inventory() -> tuple[list[str], dict[str, list[str]]]:
     letters: list[str] = []
     script_pools: dict[str, list[str]] = {}
 
@@ -430,6 +482,20 @@ def _build_unicode_term_inventory() -> tuple[list[str], dict[str, list[str]]]:
 
         letters.append(ch)
         script_pools.setdefault(script, []).append(ch)
+
+    return letters, script_pools
+
+
+
+def _build_unicode_term_inventory() -> tuple[list[str], dict[str, list[str]]]:
+    global UNICODE_LETTER_POOL, UNICODE_SCRIPT_POOLS
+    if UNICODE_LETTER_POOL is not None and UNICODE_SCRIPT_POOLS is not None:
+        return UNICODE_LETTER_POOL, UNICODE_SCRIPT_POOLS
+
+    if UNICODE_RANDOM_PROFILE == "full_unicode":
+        letters, script_pools = _build_full_unicode_term_inventory()
+    else:
+        letters, script_pools = _build_safe_unicode_term_inventory()
 
     UNICODE_LETTER_POOL = letters
     UNICODE_SCRIPT_POOLS = script_pools
@@ -482,21 +548,22 @@ def _pick_unicode_random_terms(batch_size: int) -> list[str]:
     single_start = (hour_index * max(1, single_target)) % len(shuffled_letters)
     single_terms = _take_cyclic(shuffled_letters, single_start, single_target)
 
-    terms = list(single_terms)
+    terms = [_normalize_unicode_term(x) for x in single_terms if _normalize_unicode_term(x)]
     seen = set(terms)
 
     eligible_scripts = [script for script, chars in script_pools.items() if len(chars) >= 2]
-    seed_material = f"{UNICODE_RANDOM_SEED}:{hour_index}:{batch_size}".encode("utf-8")
+    script_weights = [min(max(len(script_pools[script]), 128), 4096) for script in eligible_scripts]
+    seed_material = f"{UNICODE_RANDOM_SEED}:{hour_index}:{batch_size}:{UNICODE_RANDOM_PROFILE}".encode("utf-8")
     seeded_rng = random.Random(int(hashlib.sha256(seed_material).hexdigest()[:16], 16))
 
     attempts = 0
     max_attempts = max(10000, batch_size * 200)
     while len(terms) < batch_size and eligible_scripts and attempts < max_attempts:
         attempts += 1
-        script = seeded_rng.choice(eligible_scripts)
+        script = seeded_rng.choices(eligible_scripts, weights=script_weights, k=1)[0]
         chars = script_pools[script]
-        term = seeded_rng.choice(chars) + seeded_rng.choice(chars)
-        if term in seen:
+        term = _normalize_unicode_term(seeded_rng.choice(chars) + seeded_rng.choice(chars))
+        if not term or term in seen:
             continue
         seen.add(term)
         terms.append(term)
@@ -505,7 +572,8 @@ def _pick_unicode_random_terms(batch_size: int) -> list[str]:
     if len(terms) < batch_size:
         fill_start = (single_start + len(single_terms)) % len(shuffled_letters)
         for ch in _take_cyclic(shuffled_letters, fill_start, batch_size * 2):
-            if ch in seen:
+            ch = _normalize_unicode_term(ch)
+            if not ch or ch in seen:
                 continue
             seen.add(ch)
             terms.append(ch)
@@ -605,6 +673,24 @@ def _term_debug(term: str) -> str:
 
 
 
+def _sanitize_log_value(value) -> str:
+    if value is None:
+        return ""
+    value = str(value)
+    value = value.replace("|", "/")
+    value = value.replace("\r", " ").replace("\n", " ")
+    return value.strip()
+
+
+def _build_updated_log(mode: str, term: str, sort: str, start: int) -> str:
+    safe_term = _sanitize_log_value(term)
+    if mode in {"unicode_random", "unicode_letters", "unicode_letter", "unicode_char", "char", "character"}:
+        term_u = _term_debug(term)
+        return f"auto_upsert|mode={mode}|term={safe_term}|term_u={term_u}|sort={sort}|start={start}"
+    return f"auto_upsert|mode={mode}|term={safe_term}|sort={sort}|start={start}"
+
+
+
 def _collect_for_term(term: str, mode: str) -> dict:
     ch_client = get_thread_client()
     total_requests = 0
@@ -671,7 +757,7 @@ def _collect_for_term(term: str, mode: str) -> dict:
                     "created_at": created_at_value,
                     "created_log": created_log_value,
                     "updated_at": now,
-                    "updated_log": f"auto_upsert|mode={mode}|term={term}|sort={sort}|start={start}",
+                    "updated_log": _build_updated_log(mode=mode, term=term, sort=sort, start=start),
                     "title": it.get("title") or "",
                     "link": it.get("link") or "",
                     "image": it.get("image") or "",
@@ -729,9 +815,12 @@ def collect():
 
     random.shuffle(terms)
     worker_count = min(MAX_WORKERS, max(1, len(terms)))
+    extra = ""
+    if mode in {"unicode_random", "unicode_letters", "unicode_letter", "unicode_char", "char", "character"}:
+        extra = f" profile={UNICODE_RANDOM_PROFILE} pools={','.join(UNICODE_SAFE_POOLS)}"
     print(
         f"[collect] mode={mode} terms={len(terms)} workers={worker_count} "
-        f"paginate_all={int(PAGINATE_ALL)} max_start={NAVER_MAX_START} display={DISPLAY}"
+        f"paginate_all={int(PAGINATE_ALL)} max_start={NAVER_MAX_START} display={DISPLAY}{extra}"
     )
 
     total_requests = 0

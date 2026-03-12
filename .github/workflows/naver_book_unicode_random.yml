@@ -48,6 +48,9 @@ jobs:
           UNICODE_SINGLE_RATIO: '0.5'
           UNICODE_BATCH_ANCHOR: '2026-03-11T00:00:00+09:00'
           UNICODE_RANDOM_SEED: '20260311'
+          # safer default for NAVER Book: avoid historical/supplementary scripts that often render as tofu(□)
+          UNICODE_RANDOM_PROFILE: naver_book_safe
+          UNICODE_SAFE_POOLS: 'hangul,latin,hiragana,katakana,hani'
         run: python collect.py
 
       - name: OPTIMIZE raw_naver (random partition)
