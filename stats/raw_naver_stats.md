@@ -1,21 +1,21 @@
 # 수집 데이터 집계
 
-- 데이터 기준 최종 수정 시각(KST): 2026-03-17 00:47:45
+- 데이터 기준 최종 수정 시각(KST): 2026-03-17 01:13:13
 
 ## 전체
 
-- 총 고유 ISBN 수: **3,858,944**
-- 저자 수: **663,140**
-- 출판사 수: **161,526**
+- 총 고유 ISBN 수: **3,859,032**
+- 저자 수: **663,158**
+- 출판사 수: **161,527**
 
 ![Totals](https://raw.githubusercontent.com/statground/Statground_Data_NAVER_Book/main/stats/raw_naver_totals.png)
 
 ## 출간일(pubdate) 기준 통계
 
-- 출간연도(YYYY 이상) 파싱 가능 ISBN: **3,846,577**
+- 출간연도(YYYY 이상) 파싱 가능 ISBN: **3,846,665**
   - 연도만(YYYY): **0**
   - 연/월(YYYYMM): **0**
-  - 연/월/일(YYYYMMDD+): **3,846,577**
+  - 연/월/일(YYYYMMDD+): **3,846,665**
 - 출간일 파싱 불가/없음 ISBN: **12,419**
 
 ### Books (Published Date)
