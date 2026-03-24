@@ -5,7 +5,7 @@
 ## 전체
 
 - 총 고유 ISBN 수: **3,981,306**
-- 저자 수: **676,758**
+- 저자 수: **676,756**
 - 출판사 수: **166,096**
 
 ![Totals](https://raw.githubusercontent.com/statground/Statground_Data_NAVER_Book/main/stats/raw_naver_totals.png)
