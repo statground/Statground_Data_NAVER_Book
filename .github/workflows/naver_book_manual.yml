@@ -11,17 +11,17 @@ on:
 jobs:
   collect:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          python-version: "3.11"
+          toolchain: stable
+          cache: true
 
-      - name: Install dependencies
-        run: |
-          pip install requests clickhouse-connect pandas uuid6 pytz
+      - name: Install plotters system packages
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libfreetype6-dev libfontconfig1-dev
 
       - name: Run manual collector
         env:
@@ -32,7 +32,7 @@ jobs:
           CH_DATABASE: ${{ secrets.CH_DATABASE }}
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
           MANUAL_KEYWORD: ${{ github.event.inputs.keyword }}
-        run: python collect_manual.py
+        run: cargo run --release --bin collect_manual
 
       - name: OPTIMIZE raw_naver (random partition)
         env:
@@ -44,7 +44,7 @@ jobs:
           OPTIMIZE_ENABLED: '1'
           OPTIMIZE_RECENT_PARTITIONS: '6'
           OPTIMIZE_FINAL: '1'
-        run: python optimize_raw_naver_random_partition.py
+        run: cargo run --release --bin optimize_raw_naver_random_partition
 
   stats:
     name: Generate stats after collect
