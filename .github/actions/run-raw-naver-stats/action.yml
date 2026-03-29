@@ -4,15 +4,16 @@ description: Generate raw_naver charts and commit updated stats files.
 runs:
   using: composite
   steps:
-    - name: Set up Rust
-      uses: actions-rust-lang/setup-rust-toolchain@v1
+    - name: Set up Python
+      uses: actions/setup-python@v5
       with:
-        toolchain: stable
-        cache: true
+        python-version: '3.11'
 
-    - name: Install plotters system packages
+    - name: Install dependencies
       shell: bash
-      run: sudo apt-get update && sudo apt-get install -y pkg-config libfreetype6-dev libfontconfig1-dev
+      run: |
+        python -m pip install --upgrade pip
+        pip install clickhouse_connect pytz matplotlib
 
     - name: Generate charts and push safely
       shell: bash
@@ -45,7 +46,7 @@ runs:
 
           refresh_branch
           clean_stats_outputs
-          cargo run --release --bin batch_raw_naver_stats
+          python batch_raw_naver_stats.py
 
           git add -A stats
           if git diff --cached --quiet; then

@@ -1,9 +1,9 @@
-name: NAVER Book Collector (Keyword)
+name: NAVER Book Collector (Unicode Random Char)
 
 on:
   schedule:
-    # UTC 매시 20분 실행 (KST 매시 20분)
-    - cron: '20 * * * *'
+    # UTC 매시 50분 실행 (KST 매시 50분)
+    - cron: '50 * * * *'
   workflow_dispatch:
 
 jobs:
@@ -23,10 +23,10 @@ jobs:
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
           else
-            pip install requests pandas pytz nltk konlpy jpype1 uuid6 clickhouse_connect
+            pip install requests pandas pytz nltk konlpy jpype1 uuid6 clickhouse_connect regex
           fi
 
-      - name: Run collector (keyword)
+      - name: Run collector (unicode random char)
         env:
           # ClickHouse connection (set these in GitHub repo Secrets)
           CH_HOST: ${{ secrets.CH_HOST }}
@@ -40,8 +40,17 @@ jobs:
           BATCH_SIZE: '500'
           SAMPLE_ROWS: '8000'
           NAVER_DISPLAY: '100'
-          REQS_PER_TERM: '1'
-          COLLECT_MODE: keyword
+          REQS_PER_TERM: '2'
+          PAGINATE_ALL: '1'
+          NAVER_MAX_START: '1000'
+          MAX_WORKERS: '10'
+          COLLECT_MODE: unicode_random
+          UNICODE_SINGLE_RATIO: '0.5'
+          UNICODE_BATCH_ANCHOR: '2026-03-11T00:00:00+09:00'
+          UNICODE_RANDOM_SEED: '20260311'
+          # safer default for NAVER Book: avoid historical/supplementary scripts that often render as tofu(□)
+          UNICODE_RANDOM_PROFILE: naver_book_safe
+          UNICODE_SAFE_POOLS: 'hangul,latin,hiragana,katakana,hani'
         run: python collect.py
 
       - name: OPTIMIZE raw_naver (random partition)
