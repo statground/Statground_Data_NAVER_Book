@@ -1,0 +1,246 @@
+package ch
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"sort"
+	"strings"
+	"time"
+
+	"statground_naver_book_go/internal/envx"
+	"statground_naver_book_go/internal/util"
+)
+
+type Client struct {
+	Host       string
+	Port       int
+	User       string
+	Password   string
+	Database   string
+	HTTPClient *http.Client
+}
+
+func New(host string, port int, user, password, database string) *Client {
+	return &Client{
+		Host:       host,
+		Port:       port,
+		User:       user,
+		Password:   password,
+		Database:   database,
+		HTTPClient: &http.Client{Timeout: 60 * time.Second},
+	}
+}
+
+func NewFromEnv() (*Client, error) {
+	host, err := envx.Require("CH_HOST")
+	if err != nil {
+		return nil, err
+	}
+	port, err := envx.RequireInt("CH_PORT")
+	if err != nil {
+		return nil, err
+	}
+	user, err := envx.Require("CH_USER")
+	if err != nil {
+		return nil, err
+	}
+	password, err := envx.Require("CH_PASSWORD")
+	if err != nil {
+		return nil, err
+	}
+	database, err := envx.Require("CH_DATABASE")
+	if err != nil {
+		return nil, err
+	}
+	return New(host, port, user, password, database), nil
+}
+
+func (c *Client) endpoint(extra url.Values) string {
+	q := url.Values{}
+	if c.Database != "" {
+		q.Set("database", c.Database)
+	}
+	q.Set("date_time_input_format", "best_effort")
+	q.Set("input_format_skip_unknown_fields", "1")
+	q.Set("output_format_json_quote_64bit_integers", "0")
+	for key, values := range extra {
+		for _, v := range values {
+			q.Add(key, v)
+		}
+	}
+	return fmt.Sprintf("http://%s:%d/?%s", c.Host, c.Port, q.Encode())
+}
+
+func (c *Client) post(body string, extra url.Values) ([]byte, error) {
+	req, err := http.NewRequest(http.MethodPost, c.endpoint(extra), strings.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	if c.User != "" {
+		req.SetBasicAuth(c.User, c.Password)
+	}
+	req.Header.Set("Content-Type", "text/plain; charset=utf-8")
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	payload, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("clickhouse http %d: %s", resp.StatusCode, strings.TrimSpace(string(payload)))
+	}
+	return payload, nil
+}
+
+func ensureJSONEachRow(sql string) string {
+	up := strings.ToUpper(sql)
+	if strings.Contains(up, "FORMAT JSONEACHROW") {
+		return sql
+	}
+	return strings.TrimSpace(sql) + "\nFORMAT JSONEachRow"
+}
+
+func (c *Client) Exec(sql string) error {
+	_, err := c.post(strings.TrimSpace(sql), nil)
+	return err
+}
+
+func (c *Client) QueryJSONEachRow(sql string) ([]map[string]any, error) {
+	payload, err := c.post(ensureJSONEachRow(sql), nil)
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]map[string]any, 0)
+	scanner := bufio.NewScanner(bytes.NewReader(payload))
+	scanner.Buffer(make([]byte, 1024), 16*1024*1024)
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		var row map[string]any
+		if err := json.Unmarshal(line, &row); err != nil {
+			return nil, fmt.Errorf("decode json row: %w; line=%s", err, string(line))
+		}
+		rows = append(rows, row)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (c *Client) QueryScalarInt(sql string) (int64, error) {
+	rows, err := c.QueryJSONEachRow("SELECT value FROM (" + strings.TrimSpace(sql) + ")")
+	if err == nil && len(rows) > 0 {
+		if v, ok := rows[0]["value"]; ok {
+			return util.ToInt64(v), nil
+		}
+	}
+	rows, err = c.QueryJSONEachRow(strings.TrimSpace(sql) + " AS value")
+	if err != nil {
+		return 0, err
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	return util.ToInt64(rows[0]["value"]), nil
+}
+
+func (c *Client) QuerySingleRow(sql string) (map[string]any, error) {
+	rows, err := c.QueryJSONEachRow(sql)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return map[string]any{}, nil
+	}
+	return rows[0], nil
+}
+
+func (c *Client) QueryScalarValue(sql string) (any, error) {
+	row, err := c.QuerySingleRow(sql)
+	if err != nil {
+		return nil, err
+	}
+	if v, ok := row["value"]; ok {
+		return v, nil
+	}
+	if len(row) == 1 {
+		for _, v := range row {
+			return v, nil
+		}
+	}
+	return nil, nil
+}
+
+func (c *Client) QueryColumnNames(table string) (map[string]bool, error) {
+	sql := fmt.Sprintf(`
+        SELECT name
+        FROM system.columns
+        WHERE database = %s
+          AND table = %s
+    `, util.SQLString(c.Database), util.SQLString(table))
+	rows, err := c.QueryJSONEachRow(sql)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		name := strings.TrimSpace(util.ToString(row["name"]))
+		if name != "" {
+			out[name] = true
+		}
+	}
+	return out, nil
+}
+
+func normalizeValue(v any) any {
+	switch x := v.(type) {
+	case time.Time:
+		return util.FormatCHDateTime64Millis(x)
+	default:
+		return x
+	}
+}
+
+func (c *Client) InsertJSONEachRow(table string, rows []map[string]any) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	colSet := map[string]struct{}{}
+	for _, row := range rows {
+		for k := range row {
+			colSet[k] = struct{}{}
+		}
+	}
+	columns := make([]string, 0, len(colSet))
+	for col := range colSet {
+		columns = append(columns, col)
+	}
+	sort.Strings(columns)
+
+	var buf bytes.Buffer
+	fmt.Fprintf(&buf, "INSERT INTO %s (%s) FORMAT JSONEachRow\n", table, strings.Join(columns, ", "))
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	for _, row := range rows {
+		normalized := make(map[string]any, len(columns))
+		for _, col := range columns {
+			normalized[col] = normalizeValue(row[col])
+		}
+		if err := enc.Encode(normalized); err != nil {
+			return err
+		}
+	}
+	_, err := c.post(buf.String(), nil)
+	return err
+}

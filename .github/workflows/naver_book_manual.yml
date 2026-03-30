@@ -1,4 +1,4 @@
-name: NAVER Book Manual Search
+name: NAVER Book Manual Search (Go)
 
 on:
   workflow_dispatch:
@@ -11,17 +11,17 @@ on:
 jobs:
   collect:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          python-version: "3.11"
+          go-version: '1.23.2'
+          cache: true
 
-      - name: Install dependencies
-        run: |
-          pip install requests clickhouse-connect pandas uuid6 pytz
+      - name: Build
+        run: go build ./...
 
       - name: Run manual collector
         env:
@@ -32,7 +32,7 @@ jobs:
           CH_DATABASE: ${{ secrets.CH_DATABASE }}
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
           MANUAL_KEYWORD: ${{ github.event.inputs.keyword }}
-        run: python collect_manual.py
+        run: go run ./cmd/collect_manual
 
       - name: OPTIMIZE raw_naver (random partition)
         env:
@@ -44,7 +44,7 @@ jobs:
           OPTIMIZE_ENABLED: '1'
           OPTIMIZE_RECENT_PARTITIONS: '6'
           OPTIMIZE_FINAL: '1'
-        run: python optimize_raw_naver_random_partition.py
+        run: go run ./cmd/optimize_raw_naver_random_partition
 
   stats:
     name: Generate stats after collect
