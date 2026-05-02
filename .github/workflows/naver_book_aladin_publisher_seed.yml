@@ -1,75 +1,88 @@
-name: NAVER Book Collector (Aladin Publisher Seed, Go)
+name: NAVER Book Collector - Aladin Publisher Seed Kafka
 
 on:
   schedule:
     - cron: '30 18 * * *'
-  workflow_dispatch:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: statground-book-naver-aladin-publisher-seed
+  cancel-in-progress: false
 
 jobs:
   collect:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v6
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - name: Setup Go
+        uses: actions/setup-go@v6
         with:
-          go-version: '1.23.2'
+          go-version-file: go.mod
           cache: true
 
-      - name: Build
-        run: go build ./...
-
-      - name: Run batch (Aladin publishers -> Naver -> ClickHouse)
+      - name: Validate required repository secrets
         env:
-          CH_HOST: ${{ secrets.CH_HOST }}
-          CH_PORT: ${{ secrets.CH_PORT }}
-          CH_USER: ${{ secrets.CH_USER }}
-          CH_PASSWORD: ${{ secrets.CH_PASSWORD }}
-          CH_DATABASE: ${{ secrets.CH_DATABASE }}
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
-          ALADIN_PUBLISHER_LIST_URL: 'https://www.aladin.co.kr/aladdin/PublisherList.aspx'
-          ALADIN_MAX_WORKERS: '6'
-          ALADIN_CACHE_TABLE: 'raw_aladin_publisher_cache'
-          PUBLISHER_SAMPLE_N: '100'
-          NAVER_DISPLAY: '100'
-          REQS_PER_TERM: '1'
-          NAVER_MAX_WORKERS: '10'
-          RAW_NAVER_TABLE: 'raw_naver'
-        run: go run ./cmd/batch_aladin_publisher_seed
+          KAFKA_BROKERS: ${{ secrets.KAFKA_BROKERS }}
+          KAFKA_USERNAME: ${{ secrets.KAFKA_USERNAME || secrets.KAFKA_EXTERNAL_USER }}
+          KAFKA_PASSWORD: ${{ secrets.KAFKA_PASSWORD || secrets.KAFKA_EXTERNAL_PASSWORD }}
+        run: |
+          test -n "$NAVER_API_KEYS" || { echo "NAVER_API_KEYS secret is required"; exit 1; }
+          test -n "$KAFKA_BROKERS" || { echo "KAFKA_BROKERS secret is required"; exit 1; }
+          test -n "$KAFKA_USERNAME" || { echo "Kafka SASL username is required. Add either KAFKA_USERNAME or KAFKA_EXTERNAL_USER repository secret"; exit 1; }
+          test -n "$KAFKA_PASSWORD" || { echo "Kafka SASL password is required. Add either KAFKA_PASSWORD or KAFKA_EXTERNAL_PASSWORD repository secret"; exit 1; }
+          case ",$KAFKA_BROKERS," in
+            *,127.0.0.1:*|*,localhost:*|*,0.0.0.0:*|*,[::1]:*)
+              echo "KAFKA_BROKERS must be a public IP/domain endpoint, not a loopback address"
+              exit 1
+              ;;
+          esac
 
-      - name: OPTIMIZE raw_naver (random partition)
+      - name: Resolve Go modules and checksums
         env:
+          GOPROXY: https://proxy.golang.org,direct
+        run: |
+          go mod download all
+          go mod verify
+
+      - name: Build active NAVER Book crawler commands
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+        run: |
+          go build -mod=mod ./cmd/collect ./cmd/collect_manual ./cmd/collect_unicode_random_char ./cmd/batch_aladin_publisher_seed
+
+      - name: Collect Aladin publisher seed and NAVER books via Kafka
+        env:
+          INGEST_MODE: kafka
+          KAFKA_BROKERS: ${{ secrets.KAFKA_BROKERS }}
+          KAFKA_USERNAME: ${{ secrets.KAFKA_USERNAME || secrets.KAFKA_EXTERNAL_USER }}
+          KAFKA_PASSWORD: ${{ secrets.KAFKA_PASSWORD || secrets.KAFKA_EXTERNAL_PASSWORD }}
+          KAFKA_TOPIC: book.events
+          PRODUCER_SOURCE: github_actions
+          PRODUCER_IP: "::"
+          RAW_NAVER_TABLE: naver_book_raw
+          ALADIN_CACHE_TABLE: Data_Book_NAVER_Log.aladin_publisher_cache
+          NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
           CH_HOST: ${{ secrets.CH_HOST }}
           CH_PORT: ${{ secrets.CH_PORT }}
           CH_USER: ${{ secrets.CH_USER }}
           CH_PASSWORD: ${{ secrets.CH_PASSWORD }}
-          CH_DATABASE: ${{ secrets.CH_DATABASE }}
-          OPTIMIZE_ENABLED: '1'
-          OPTIMIZE_RECENT_PARTITIONS: '6'
-          OPTIMIZE_FINAL: '1'
-        run: go run ./cmd/optimize_raw_naver_random_partition
-
-  stats:
-    name: Generate stats after collect
-    needs: collect
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    concurrency:
-      group: statground-book-raw-naver-stats
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: ${{ github.ref_name }}
-
-      - name: Generate stats and push
-        uses: ./.github/actions/run-raw-naver-stats
-        env:
-          CH_HOST: ${{ secrets.CH_HOST }}
-          CH_PORT: ${{ secrets.CH_PORT }}
-          CH_USER: ${{ secrets.CH_USER }}
-          CH_PASSWORD: ${{ secrets.CH_PASSWORD }}
-          CH_DATABASE: ${{ secrets.CH_DATABASE }}
+          CH_DATABASE: Data_Book_NAVER_Raw
+          KAFKA_CLIENT_ID: statground-naver-book-aladin-publisher-seed
+          PUBLISHER_SAMPLE_N: "100"
+          ALADIN_MAX_WORKERS: "6"
+          ALADIN_SLEEP_MIN: "0.05"
+          ALADIN_SLEEP_MAX: "0.20"
+          NAVER_MAX_WORKERS: "10"
+          NAVER_SLEEP_MIN: "0.05"
+          NAVER_SLEEP_MAX: "0.20"
+          NAVER_DISPLAY: "100"
+          REQS_PER_TERM: "1"
+        run: |
+          go run -mod=mod ./cmd/batch_aladin_publisher_seed

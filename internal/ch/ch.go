@@ -36,6 +36,18 @@ func New(host string, port int, user, password, database string) *Client {
 	}
 }
 
+func NewOptionalFromEnv() (*Client, error) {
+	host := envx.String("CH_HOST", envx.String("CLICKHOUSE_HOST", ""))
+	if strings.TrimSpace(host) == "" {
+		return nil, nil
+	}
+	port := envx.Int("CH_PORT", envx.Int("CLICKHOUSE_PORT", 8123))
+	user := envx.String("CH_USER", envx.String("CLICKHOUSE_USER", "default"))
+	password := envx.String("CH_PASSWORD", envx.String("CLICKHOUSE_PASSWORD", ""))
+	database := envx.String("CH_DATABASE", envx.String("CLICKHOUSE_DATABASE", "Data_Book_NAVER_Raw"))
+	return New(host, port, user, password, database), nil
+}
+
 func NewFromEnv() (*Client, error) {
 	host, err := envx.Require("CH_HOST")
 	if err != nil {

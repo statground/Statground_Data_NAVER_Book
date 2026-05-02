@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	"statground_naver_book_go/internal/ch"
 	"statground_naver_book_go/internal/collector"
 	"statground_naver_book_go/internal/envx"
+	"statground_naver_book_go/internal/kafkaingest"
 	"statground_naver_book_go/internal/naver"
 	"statground_naver_book_go/internal/util"
 )
@@ -24,30 +27,16 @@ func main() {
 	}
 }
 
-func ensureAladinCacheTable(client *ch.Client, table string) error {
-	ddl := fmt.Sprintf(`
-        CREATE TABLE IF NOT EXISTS %s
-        (
-          publisher String COMMENT '알라딘 출판사명(원문)',
-          collected_at DateTime64(3, 'Asia/Seoul') COMMENT '수집 시각 (Asia/Seoul)',
-          detected_last_page UInt32 COMMENT '수집 당시 알라딘 최대 페이지',
-          run_uuid UUID COMMENT '배치 실행 UUID v7 (OLAP 전용, SSOT 아님)',
-          source LowCardinality(String) COMMENT '수집 출처 (aladin)'
-        )
-        ENGINE = MergeTree
-        PARTITION BY toYYYYMM(collected_at)
-        ORDER BY (collected_at, detected_last_page, publisher)
-        COMMENT '알라딘 출판사 목록 캐시/로그 (OLAP 전용, SSOT 아님). 배치 효율 목적 캐시';
-    `, table)
-	return client.Exec(ddl)
-}
-
 func loadCachedPublishersIfFresh(client *ch.Client, cacheTable string, currentLastPage int) ([]string, error) {
+	if client == nil || strings.TrimSpace(cacheTable) == "" || currentLastPage <= 0 {
+		return nil, nil
+	}
 	row, err := client.QuerySingleRow(fmt.Sprintf(`
         SELECT ifNull(max(detected_last_page), 0) AS last_page
         FROM %s
     `, cacheTable))
 	if err != nil {
+		fmt.Printf("[CACHE] load skipped table=%s error=%v\n", cacheTable, err)
 		return nil, nil
 	}
 	cachedLastPage := int(util.ToInt64(row["last_page"]))
@@ -60,6 +49,7 @@ func loadCachedPublishersIfFresh(client *ch.Client, cacheTable string, currentLa
         WHERE detected_last_page = %d
     `, cacheTable, currentLastPage))
 	if err != nil {
+		fmt.Printf("[CACHE] publisher query skipped table=%s error=%v\n", cacheTable, err)
 		return nil, nil
 	}
 	pubs := make([]string, 0, len(rows))
@@ -79,23 +69,65 @@ func loadCachedPublishersIfFresh(client *ch.Client, cacheTable string, currentLa
 	return pubs, nil
 }
 
-func savePublishersCache(client *ch.Client, cacheTable string, publishers []string, detectedLastPage int, runUUID string) error {
-	now := util.FormatCHDateTime64Millis(util.NowKST())
-	rows := make([]map[string]any, 0, len(publishers))
+func publishPublishersCache(pub *kafkaingest.Publisher, sourceURL string, publishers []string, detectedLastPage int, runUUID string) error {
+	if pub == nil || len(publishers) == 0 || detectedLastPage <= 0 {
+		return nil
+	}
+	nowStr := util.FormatCHDateTime64Millis(util.NowKST())
+	const chunkSize = 1000
+	events := make([]kafkaingest.Event, 0, chunkSize)
+	flush := func() error {
+		if len(events) == 0 {
+			return nil
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		if err := pub.Publish(ctx, events); err != nil {
+			return err
+		}
+		events = events[:0]
+		return nil
+	}
+
+	seen := map[string]struct{}{}
 	for _, publisher := range publishers {
 		publisher = strings.TrimSpace(publisher)
 		if publisher == "" {
 			continue
 		}
-		rows = append(rows, map[string]any{
+		if _, ok := seen[publisher]; ok {
+			continue
+		}
+		seen[publisher] = struct{}{}
+		eventURL := sourceURL
+		if strings.Contains(eventURL, "?") {
+			eventURL += "&publisher=" + url.QueryEscape(publisher)
+		} else {
+			eventURL += "?publisher=" + url.QueryEscape(publisher)
+		}
+		payload := map[string]any{
 			"publisher":          publisher,
-			"collected_at":       now,
+			"collected_at":       nowStr,
 			"detected_last_page": detectedLastPage,
 			"run_uuid":           runUUID,
 			"source":             "aladin",
-		})
+		}
+		ev, err := pub.NewEvent("book.aladin.publisher_cache.v1", "", eventURL, nowStr, payload)
+		if err != nil {
+			return err
+		}
+		events = append(events, ev)
+		if len(events) >= chunkSize {
+			if err := flush(); err != nil {
+				return err
+			}
+		}
 	}
-	return client.InsertJSONEachRow(cacheTable, rows)
+	if err := flush(); err != nil {
+		return err
+	}
+	fmt.Printf("[CACHE] published aladin publisher cache events=%d last_page=%d topic=%s\n", len(seen), detectedLastPage, pub.Cfg.KafkaTopic)
+	return nil
 }
 
 func samplePublishers(items []string, n int, r *rand.Rand) []string {
@@ -116,7 +148,7 @@ func samplePublishers(items []string, n int, r *rand.Rand) []string {
 }
 
 func run() error {
-	client, err := ch.NewFromEnv()
+	client, err := ch.NewOptionalFromEnv()
 	if err != nil {
 		return err
 	}
@@ -125,12 +157,12 @@ func run() error {
 		return err
 	}
 
-	rawNaverTable := envx.String("RAW_NAVER_TABLE", "raw_naver")
+	rawNaverTable := envx.String("RAW_NAVER_TABLE", "naver_book_raw")
 	aladinURL := envx.String("ALADIN_PUBLISHER_LIST_URL", "https://www.aladin.co.kr/aladdin/PublisherList.aspx")
 	aladinMaxWorkers := envx.Int("ALADIN_MAX_WORKERS", 6)
 	aladinSleepMin := envx.Float("ALADIN_SLEEP_MIN", 0.05)
 	aladinSleepMax := envx.Float("ALADIN_SLEEP_MAX", 0.20)
-	cacheTable := envx.String("ALADIN_CACHE_TABLE", "raw_aladin_publisher_cache")
+	cacheTable := envx.String("ALADIN_CACHE_TABLE", "Data_Book_NAVER_Log.aladin_publisher_cache")
 	publisherSampleN := envx.Int("PUBLISHER_SAMPLE_N", 100)
 	display := envx.Int("NAVER_DISPLAY", 100)
 	naverMaxWorkers := envx.Int("NAVER_MAX_WORKERS", 10)
@@ -138,11 +170,15 @@ func run() error {
 	naverSleepMax := envx.Float("NAVER_SLEEP_MAX", 0.20)
 	reqsPerTerm := envx.Int("REQS_PER_TERM", 1)
 
-	runUUID := util.UUIDv7()
-	if err := ensureAladinCacheTable(client, cacheTable); err != nil {
+	baseCollector, err := collector.New(client, rawNaverTable, keys, time.Now().UnixNano())
+	if err != nil {
+		return err
+	}
+	if err := baseCollector.ValidateIngest(context.Background()); err != nil {
 		return err
 	}
 
+	runUUID := util.UUIDv7()
 	_, currentLastPage, err := aladin.DetectCntAndLastPage(aladinURL)
 	if err != nil {
 		return err
@@ -153,17 +189,31 @@ func run() error {
 		return err
 	}
 	if len(publishers) > 0 {
-		fmt.Printf("[CACHE] use cached publishers for last_page=%d: %d\n", currentLastPage, len(publishers))
+		fmt.Printf("[CACHE] use cached publishers table=%s last_page=%d publishers=%d\n", cacheTable, currentLastPage, len(publishers))
 	} else {
 		rr := rand.New(rand.NewSource(time.Now().UnixNano()))
 		publishers, _, err = aladin.CrawlPublishersDynamic(aladinURL, aladinMaxWorkers, aladinSleepMin, aladinSleepMax, rr)
 		if err != nil {
 			return err
 		}
-		if err := savePublishersCache(client, cacheTable, publishers, currentLastPage, runUUID); err != nil {
+		cleaned := make([]string, 0, len(publishers))
+		seen := map[string]struct{}{}
+		for _, publisher := range publishers {
+			publisher = strings.TrimSpace(publisher)
+			if publisher == "" {
+				continue
+			}
+			if _, ok := seen[publisher]; ok {
+				continue
+			}
+			seen[publisher] = struct{}{}
+			cleaned = append(cleaned, publisher)
+		}
+		publishers = cleaned
+		fmt.Printf("[ALADIN] crawled publishers=%d last_page=%d\n", len(publishers), currentLastPage)
+		if err := publishPublishersCache(baseCollector.Publisher, aladinURL, publishers, currentLastPage, runUUID); err != nil {
 			return err
 		}
-		fmt.Printf("[CACHE] saved publishers: %d (last_page=%d)\n", len(publishers), currentLastPage)
 	}
 	if len(publishers) == 0 {
 		return fmt.Errorf("no publishers collected from Aladin")
@@ -171,12 +221,6 @@ func run() error {
 
 	sampled := samplePublishers(publishers, publisherSampleN, rand.New(rand.NewSource(time.Now().UnixNano())))
 	fmt.Printf("[SAMPLE] picked %d publishers\n", len(sampled))
-
-	baseCollector, err := collector.New(client, rawNaverTable, keys, time.Now().UnixNano())
-	if err != nil {
-		return err
-	}
-	_ = baseCollector
 
 	if naverMaxWorkers <= 0 {
 		naverMaxWorkers = 1

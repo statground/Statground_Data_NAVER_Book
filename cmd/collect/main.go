@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 	"os"
@@ -21,7 +22,7 @@ func main() {
 }
 
 func run() error {
-	client, err := ch.NewFromEnv()
+	client, err := ch.NewOptionalFromEnv()
 	if err != nil {
 		return err
 	}
@@ -36,8 +37,13 @@ func run() error {
 	display := envx.Int("NAVER_DISPLAY", 100)
 	reqsPerTerm := envx.Int("REQS_PER_TERM", 1)
 
-	c, err := collector.New(client, "raw_naver", keys, time.Now().UnixNano())
+	rawNaverTable := envx.String("RAW_NAVER_TABLE", "naver_book_raw")
+
+	c, err := collector.New(client, rawNaverTable, keys, time.Now().UnixNano())
 	if err != nil {
+		return err
+	}
+	if err := c.ValidateIngest(context.Background()); err != nil {
 		return err
 	}
 
