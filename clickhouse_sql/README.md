@@ -10,6 +10,7 @@ The correct namespace for this repository is provider-scoped book data:
 - `Data_Book_NAVER_Log`
 - `Data_Book_NAVER_Raw`
 - `Data_Book_NAVER_Mart`
+- `Data_Book_NAVER_Service`
 
 This is **not** a prediction-domain schema. It is a NAVER book provider schema under the `Data_Book` domain.
 
@@ -24,7 +25,7 @@ clickhouse_data_book_naver_events_v1
 ## Standard fresh execution order
 
 1. `01_create_data_book_naver_on_cluster.sql`
-   - Creates `Data_Book_NAVER_Log`, `Data_Book_NAVER_Raw`, `Data_Book_NAVER_Mart` on `statground_cluster`.
+   - Creates `Data_Book_NAVER_Log`, `Data_Book_NAVER_Raw`, `Data_Book_NAVER_Mart`, `Data_Book_NAVER_Service` on `statground_cluster`.
    - Creates Replicated local tables, Distributed entry tables, Kafka queue, Kafka parse-error tables, and Materialized Views.
    - Includes NAVER raw/log tables plus support/legacy tables currently needed by this NAVER book repository:
      - `Data_Book_NAVER_Raw.legacy_book_catalog`
@@ -33,6 +34,9 @@ clickhouse_data_book_naver_events_v1
      - `Data_Book_NAVER_Log.book_kafka_parse_error`
      - `Data_Book_NAVER_Raw.shotalk_search_result`
    - GitHub Actions only publishes Kafka events; statistics are stored in ClickHouse mart tables.
+   - Application serving tables are kept under `Data_Book_NAVER_Service`:
+     - `Data_Book_NAVER_Service.naver_book_latest`
+     - `Data_Book_NAVER_Service.naver_book_recent`
 
 2. `02_migrate_old_statground_book.sql`
    - Local migration for:
@@ -83,6 +87,10 @@ Recommended order:
 
 5. Optional: `09_rebuild_data_book_naver_mart_from_raw.sql`
    - Use only when raw rows existed before mart MVs were created or when you intentionally want a mart rebuild.
+
+6. Optional: `12_create_service_recent_read_model.sql`
+   - Use this on existing clusters where `Data_Book_NAVER_Service.naver_book_latest` exists but the recent-list read model is missing.
+   - Adds `Data_Book_NAVER_Service.naver_book_recent` with a 30-day TTL and grants app/Trino read access.
 
 ## If v4 `Data_Prediction_Book_*` was already created
 
