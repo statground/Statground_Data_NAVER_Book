@@ -167,6 +167,30 @@ jobs:
         run: |
           go run -mod=mod ./cmd/collect
 
+      - name: Collect NAVER books via Kafka (R package sample)
+        env:
+          INGEST_MODE: kafka
+          KAFKA_BROKERS: ${{ secrets.KAFKA_BROKERS }}
+          KAFKA_USERNAME: ${{ secrets.KAFKA_USERNAME || secrets.KAFKA_EXTERNAL_USER }}
+          KAFKA_PASSWORD: ${{ secrets.KAFKA_PASSWORD || secrets.KAFKA_EXTERNAL_PASSWORD }}
+          KAFKA_TOPIC: book.events
+          PRODUCER_SOURCE: github_actions
+          PRODUCER_IP: "::"
+          RAW_NAVER_TABLE: naver_book_raw
+          NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
+          CH_HOST: ${{ secrets.CH_HOST }}
+          CH_PORT: ${{ secrets.CH_PORT }}
+          CH_USER: ${{ secrets.CH_USER }}
+          CH_PASSWORD: ${{ secrets.CH_PASSWORD }}
+          CH_DATABASE: Data_Book_NAVER_Raw
+          KAFKA_CLIENT_ID: statground-naver-book-r-package
+          COLLECT_MODE: r_package
+          R_PACKAGE_SAMPLE_SIZE: "10"
+          NAVER_DISPLAY: "100"
+          REQS_PER_TERM: "1"
+        run: |
+          go run -mod=mod ./cmd/collect
+
       - name: Collect NAVER books via Kafka (manual)
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.manual_keyword != '' }}
         env:

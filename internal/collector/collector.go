@@ -34,6 +34,13 @@ type Collector struct {
 	Publisher *kafkaingest.Publisher
 }
 
+type RPackageCandidate struct {
+	PackageName   string
+	Repository    string
+	LatestVersion string
+	Title         string
+}
+
 func New(client *ch.Client, table string, keys []naver.APIKey, seed int64) (*Collector, error) {
 	if table == "" {
 		table = "naver_book_raw"
@@ -74,6 +81,73 @@ func (c *Collector) SampleRows(limit int) ([]map[string]any, error) {
 	return rawnaver.SampleTitleAuthorPublisher(c.Client, c.Table, limit)
 }
 
+func (c *Collector) SampleRPackages(limit int) ([]RPackageCandidate, error) {
+	if c.Client == nil {
+		return nil, fmt.Errorf("ClickHouse client is required for r_package collection mode")
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	sql := fmt.Sprintf(`
+        SELECT package_name, repository, latest_version, title
+        FROM Data_R_Package_Mart.v_package_catalog_latest
+        WHERE notEmpty(package_name)
+        ORDER BY rand()
+        LIMIT %d
+        SETTINGS distributed_product_mode = 'global'
+    `, limit)
+	rows, err := c.Client.QueryJSONEachRow(sql)
+	if err != nil {
+		sql = fmt.Sprintf(`
+            SELECT package_name, repository, latest_version, title
+            FROM
+	            (
+	                SELECT package_key,
+	                       any(package_name) AS package_name,
+	                       argMax(repository, identity_sort_key) AS repository,
+	                       argMax(latest_version, identity_sort_key) AS latest_version,
+	                       argMax(title, identity_sort_key) AS title
+	                  FROM
+	                (
+	                    SELECT lowerUTF8(package_name) AS package_key,
+	                           package_name,
+	                           repository,
+	                           latest_version,
+	                           title,
+	                           (
+	                               multiIf(repository = 'CRAN', 3, repository = 'Bioconductor', 2, repository = 'R-universe', 1, 0),
+	                               version
+	                           ) AS identity_sort_key
+	                      FROM Data_R_Package_Service.package_current
+	                     WHERE notEmpty(package_name)
+	                )
+	                 GROUP BY package_key
+	            )
+            ORDER BY rand()
+            LIMIT %d
+            SETTINGS distributed_product_mode = 'global'
+        `, limit)
+		rows, err = c.Client.QueryJSONEachRow(sql)
+		if err != nil {
+			return nil, err
+		}
+	}
+	out := make([]RPackageCandidate, 0, len(rows))
+	for _, row := range rows {
+		packageName := strings.TrimSpace(util.ToString(row["package_name"]))
+		if packageName == "" {
+			continue
+		}
+		out = append(out, RPackageCandidate{
+			PackageName:   packageName,
+			Repository:    strings.TrimSpace(util.ToString(row["repository"])),
+			LatestVersion: strings.TrimSpace(util.ToString(row["latest_version"])),
+			Title:         strings.TrimSpace(util.ToString(row["title"])),
+		})
+	}
+	return out, nil
+}
+
 func (c *Collector) CollectTerm(term, mode string, reqsPerTerm, display int) error {
 	term = terms.SanitizeKeyword(term, c.Rand)
 	if display <= 0 {
@@ -101,6 +175,42 @@ func (c *Collector) CollectTerm(term, mode string, reqsPerTerm, display int) err
 		}
 	}
 	return nil
+}
+
+func (c *Collector) CollectRPackageBooks(sampleSize, reqsPerTerm, display int) error {
+	if sampleSize <= 0 {
+		sampleSize = 10
+	}
+	packages, err := c.SampleRPackages(sampleSize)
+	if err != nil {
+		return err
+	}
+	for _, pkg := range packages {
+		query := c.rPackageBookQuery(pkg)
+		if query == "" {
+			continue
+		}
+		if err := c.CollectTerm(query, "r_package", reqsPerTerm, display); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Collector) rPackageBookQuery(pkg RPackageCandidate) string {
+	name := strings.TrimSpace(pkg.PackageName)
+	if name == "" {
+		return ""
+	}
+	templates := []string{
+		"%s with R",
+		"%s R package",
+		"%s R 패키지",
+	}
+	if c.Rand == nil {
+		return fmt.Sprintf(templates[0], name)
+	}
+	return fmt.Sprintf(templates[c.Rand.Intn(len(templates))], name)
 }
 
 func (c *Collector) CollectManual(keyword string) error {
