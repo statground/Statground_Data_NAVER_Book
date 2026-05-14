@@ -53,7 +53,7 @@ jobs:
           PY
           case ",$KAFKA_BROKERS," in
             *,180.66.240.243:50004,*)
-              echo "KAFKA_BROKERS still contains old broker endpoint 180.66.240.243:50004"
+              echo "KAFKA_BROKERS still contains a retired broker endpoint"
               exit 1
               ;;
             *,127.0.0.1:*|*,localhost:*|*,0.0.0.0:*|*,[::1]:*)
@@ -87,11 +87,6 @@ jobs:
           RAW_NAVER_TABLE: naver_book_raw
           ALADIN_CACHE_TABLE: Data_Book_NAVER_Log.aladin_publisher_cache
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
-          CH_HOST: ${{ secrets.CH_HOST }}
-          CH_PORT: ${{ secrets.CH_PORT }}
-          CH_USER: ${{ secrets.CH_USER }}
-          CH_PASSWORD: ${{ secrets.CH_PASSWORD }}
-          CH_DATABASE: Data_Book_NAVER_Raw
           KAFKA_CLIENT_ID: statground-naver-book-aladin-publisher-seed
           PUBLISHER_SAMPLE_N: "100"
           ALADIN_MAX_WORKERS: "6"
@@ -116,11 +111,6 @@ jobs:
           PRODUCER_IP: "::"
           RAW_NAVER_TABLE: naver_book_raw
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
-          CH_HOST: ${{ secrets.CH_HOST }}
-          CH_PORT: ${{ secrets.CH_PORT }}
-          CH_USER: ${{ secrets.CH_USER }}
-          CH_PASSWORD: ${{ secrets.CH_PASSWORD }}
-          CH_DATABASE: Data_Book_NAVER_Raw
           KAFKA_CLIENT_ID: statground-naver-book-author
           COLLECT_MODE: author
           BATCH_SIZE: "500"
@@ -141,11 +131,6 @@ jobs:
           PRODUCER_IP: "::"
           RAW_NAVER_TABLE: naver_book_raw
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
-          CH_HOST: ${{ secrets.CH_HOST }}
-          CH_PORT: ${{ secrets.CH_PORT }}
-          CH_USER: ${{ secrets.CH_USER }}
-          CH_PASSWORD: ${{ secrets.CH_PASSWORD }}
-          CH_DATABASE: Data_Book_NAVER_Raw
           KAFKA_CLIENT_ID: statground-naver-book-keyword
           COLLECT_MODE: keyword
           BATCH_SIZE: "500"
@@ -166,11 +151,6 @@ jobs:
           PRODUCER_IP: "::"
           RAW_NAVER_TABLE: naver_book_raw
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
-          CH_HOST: ${{ secrets.CH_HOST }}
-          CH_PORT: ${{ secrets.CH_PORT }}
-          CH_USER: ${{ secrets.CH_USER }}
-          CH_PASSWORD: ${{ secrets.CH_PASSWORD }}
-          CH_DATABASE: Data_Book_NAVER_Raw
           KAFKA_CLIENT_ID: statground-naver-book-publisher
           COLLECT_MODE: publisher
           BATCH_SIZE: "500"
@@ -191,11 +171,6 @@ jobs:
           PRODUCER_IP: "::"
           RAW_NAVER_TABLE: naver_book_raw
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
-          CH_HOST: ${{ secrets.CH_HOST }}
-          CH_PORT: ${{ secrets.CH_PORT }}
-          CH_USER: ${{ secrets.CH_USER }}
-          CH_PASSWORD: ${{ secrets.CH_PASSWORD }}
-          CH_DATABASE: Data_Book_NAVER_Raw
           KAFKA_CLIENT_ID: statground-naver-book-r-package
           COLLECT_MODE: r_package
           R_PACKAGE_SAMPLE_SIZE: "10"
@@ -216,11 +191,6 @@ jobs:
           PRODUCER_IP: "::"
           RAW_NAVER_TABLE: naver_book_raw
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
-          CH_HOST: ${{ secrets.CH_HOST }}
-          CH_PORT: ${{ secrets.CH_PORT }}
-          CH_USER: ${{ secrets.CH_USER }}
-          CH_PASSWORD: ${{ secrets.CH_PASSWORD }}
-          CH_DATABASE: Data_Book_NAVER_Raw
           KAFKA_CLIENT_ID: statground-naver-book-manual
           MANUAL_KEYWORD: ${{ inputs.manual_keyword }}
         run: |

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"statground_naver_book_go/internal/ch"
+	"statground_naver_book_go/internal/envx"
 	"statground_naver_book_go/internal/kafkaingest"
 	"statground_naver_book_go/internal/naver"
 	"statground_naver_book_go/internal/rawnaver"
@@ -39,6 +40,29 @@ type RPackageCandidate struct {
 	Repository    string
 	LatestVersion string
 	Title         string
+}
+
+var defaultRPackageFallbackNames = []string{
+	"dplyr",
+	"ggplot2",
+	"data.table",
+	"shiny",
+	"tidyr",
+	"readr",
+	"stringr",
+	"purrr",
+	"lubridate",
+	"caret",
+	"xgboost",
+	"randomForest",
+	"lme4",
+	"survival",
+	"sf",
+	"plotly",
+	"rmarkdown",
+	"knitr",
+	"httr",
+	"jsonlite",
 }
 
 func New(client *ch.Client, table string, keys []naver.APIKey, seed int64) (*Collector, error) {
@@ -82,11 +106,13 @@ func (c *Collector) SampleRows(limit int) ([]map[string]any, error) {
 }
 
 func (c *Collector) SampleRPackages(limit int) ([]RPackageCandidate, error) {
-	if c.Client == nil {
-		return nil, fmt.Errorf("ClickHouse client is required for r_package collection mode")
-	}
 	if limit <= 0 {
 		limit = 10
+	}
+	if c.Client == nil {
+		out := fallbackRPackageCandidates(limit)
+		fmt.Printf("[warn] r_package source catalog unavailable; using %d fallback R package candidates for Kafka-only run\n", len(out))
+		return out, nil
 	}
 	sql := fmt.Sprintf(`
         SELECT package_name, repository, latest_version, title
@@ -146,6 +172,37 @@ func (c *Collector) SampleRPackages(limit int) ([]RPackageCandidate, error) {
 		})
 	}
 	return out, nil
+}
+
+func fallbackRPackageCandidates(limit int) []RPackageCandidate {
+	rawNames := envx.String("R_PACKAGE_FALLBACK_PACKAGES", "")
+	names := make([]string, 0)
+	for _, name := range strings.Split(rawNames, ",") {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		names = defaultRPackageFallbackNames
+	}
+	if limit > 0 && len(names) > limit {
+		names = names[:limit]
+	}
+	out := make([]RPackageCandidate, 0, len(names))
+	seen := map[string]bool{}
+	for _, name := range names {
+		key := strings.ToLower(strings.TrimSpace(name))
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, RPackageCandidate{
+			PackageName: name,
+			Repository:  "fallback",
+		})
+	}
+	return out
 }
 
 func (c *Collector) CollectTerm(term, mode string, reqsPerTerm, display int) error {
