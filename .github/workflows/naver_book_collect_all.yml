@@ -73,7 +73,7 @@ jobs:
         env:
           GOPROXY: https://proxy.golang.org,direct
         run: |
-          go build -mod=mod ./cmd/collect ./cmd/collect_manual ./cmd/batch_aladin_publisher_seed
+          go build -mod=mod ./cmd/collect ./cmd/collect_manual ./cmd/batch_aladin_publisher_seed ./cmd/refresh_webr_book_catalog
 
       - name: Collect Aladin publisher seed and NAVER books via Kafka
         env:
@@ -195,3 +195,20 @@ jobs:
           MANUAL_KEYWORD: ${{ inputs.manual_keyword }}
         run: |
           go run -mod=mod ./cmd/collect_manual
+
+      - name: Refresh Web-R R book catalog
+        env:
+          CH_HOST: ${{ secrets.CLICKHOUSE_HOST || secrets.CH_HOST }}
+          CH_PORT: ${{ secrets.CLICKHOUSE_PORT || secrets.CH_PORT }}
+          CH_USER: ${{ secrets.CLICKHOUSE_USER || secrets.CH_USER }}
+          CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD || secrets.CH_PASSWORD }}
+          CH_DATABASE: webr_book
+          WEBR_BOOK_REFRESH_SETTLE_SECONDS: "30"
+          WEBR_BOOK_REFRESH_TIMEOUT_SECONDS: "300"
+        run: |
+          if [ -z "$CH_HOST" ] || [ -z "$CH_USER" ] || [ -z "$CH_PASSWORD" ]; then
+            echo "Skipping Web-R book catalog refresh because ClickHouse secrets are not configured"
+            exit 0
+          fi
+          export CH_PORT="${CH_PORT:-8123}"
+          go run -mod=mod ./cmd/refresh_webr_book_catalog
