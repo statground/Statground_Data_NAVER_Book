@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"strings"
 	"time"
 
 	"statground_naver_book_go/internal/ch"
@@ -52,6 +53,18 @@ func run() error {
 	if mode == "r_package" {
 		return c.CollectRPackageBooks(rPackageSampleSize, reqsPerTerm, display)
 	}
+	if mode == "fixed_keyword" {
+		keywords := splitFixedKeywords(envx.String("FIXED_KEYWORDS", ""))
+		if len(keywords) == 0 {
+			return fmt.Errorf("FIXED_KEYWORDS is required for fixed_keyword mode")
+		}
+		for _, term := range keywords {
+			if err := c.CollectTerm(term, "keyword", reqsPerTerm, display); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	if mode == "mixed" {
 		sample, err := c.SampleRows(100)
 		if err != nil {
@@ -72,4 +85,25 @@ func run() error {
 		}
 	}
 	return nil
+}
+
+func splitFixedKeywords(raw string) []string {
+	seen := map[string]struct{}{}
+	fields := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == '\n' || r == '\r' || r == '\t' || r == ';'
+	})
+	out := make([]string, 0, len(fields))
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		key := strings.ToLower(field)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, field)
+	}
+	return out
 }

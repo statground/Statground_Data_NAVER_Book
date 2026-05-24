@@ -140,6 +140,25 @@ jobs:
         run: |
           go run -mod=mod ./cmd/collect
 
+      - name: Collect NAVER books via Kafka (Web-R review keywords)
+        env:
+          INGEST_MODE: kafka
+          KAFKA_BROKERS: ${{ secrets.KAFKA_BROKERS2 || secrets.KAFKA_BROKERS }}
+          KAFKA_USERNAME: ${{ secrets.KAFKA_USERNAME2 || secrets.KAFKA_USERNAME || secrets.KAFKA_EXTERNAL_USER }}
+          KAFKA_PASSWORD: ${{ secrets.KAFKA_PASSWORD2 || secrets.KAFKA_PASSWORD || secrets.KAFKA_EXTERNAL_PASSWORD }}
+          KAFKA_TOPIC: book.events
+          PRODUCER_SOURCE: github_actions
+          PRODUCER_IP: "::"
+          RAW_NAVER_TABLE: naver_book_raw
+          NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
+          KAFKA_CLIENT_ID: statground-naver-book-webr-review-keyword
+          COLLECT_MODE: fixed_keyword
+          FIXED_KEYWORDS: "빅데이터 분석 기사, ADsP, ADP"
+          NAVER_DISPLAY: "100"
+          REQS_PER_TERM: "1"
+        run: |
+          go run -mod=mod ./cmd/collect
+
       - name: Collect NAVER books via Kafka (publisher)
         env:
           INGEST_MODE: kafka
