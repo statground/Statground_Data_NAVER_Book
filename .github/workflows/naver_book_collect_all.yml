@@ -153,7 +153,7 @@ jobs:
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
           KAFKA_CLIENT_ID: statground-naver-book-webr-review-keyword
           COLLECT_MODE: fixed_keyword
-          FIXED_KEYWORDS: "빅데이터 분석 기사, ADsP, ADP"
+          FIXED_KEYWORDS: "빅데이터 분석 기사, 사회조사분석사, ADsP, ADP"
           NAVER_DISPLAY: "100"
           REQS_PER_TERM: "1"
         run: |
