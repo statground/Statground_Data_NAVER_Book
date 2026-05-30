@@ -15,7 +15,7 @@ permissions:
 
 concurrency:
   group: statground-book-naver-all
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   collect_all:
