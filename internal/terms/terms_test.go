@@ -45,6 +45,19 @@ func TestExtractMorphKeywordsStripsKoreanParticles(t *testing.T) {
 	}
 }
 
+func TestExtractMorphKeywordsKeepsPhrasesBeforeBroadSingles(t *testing.T) {
+	got := ExtractMorphKeywordsFromText("데이터 분석 실무와 통계 이야기")
+	if contains(got, "데이터") || contains(got, "분석") || contains(got, "통계") {
+		t.Fatalf("expected broad single words to be skipped, got %v", got)
+	}
+	if !contains(got, "데이터 분석") {
+		t.Fatalf("expected specific adjacent phrase 데이터 분석, got %v", got)
+	}
+	if !contains(got, "데이터 분석 실무") {
+		t.Fatalf("expected specific three-token phrase 데이터 분석 실무, got %v", got)
+	}
+}
+
 func contains(items []string, want string) bool {
 	for _, item := range items {
 		if item == want {

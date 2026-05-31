@@ -31,11 +31,14 @@ func SampleTitleAuthorPublisher(client *ch.Client, table string, limit int) ([]m
 		limit = 1000
 	}
 	sql := fmt.Sprintf(`
+        WITH toUInt64(intDiv(toUInt32(now('Asia/Seoul')), 3600)) AS sample_salt
         SELECT title, description, author, publisher
         FROM %s
         WHERE notEmpty(title)
-        ORDER BY rand()
+          AND cityHash64(title, description, author, publisher, sample_salt) %% 997 = 0
+        ORDER BY cityHash64(title, description, author, publisher, sample_salt)
         LIMIT %d
+        SETTINGS max_execution_time = 20, timeout_overflow_mode = 'break'
     `, table, limit)
 	return client.QueryJSONEachRow(sql)
 }

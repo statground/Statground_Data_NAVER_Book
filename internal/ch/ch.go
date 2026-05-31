@@ -19,6 +19,8 @@ import (
 type Client struct {
 	Host       string
 	Port       int
+	Protocol   string
+	HTTPPath   string
 	User       string
 	Password   string
 	Database   string
@@ -26,9 +28,13 @@ type Client struct {
 }
 
 func New(host string, port int, user, password, database string) *Client {
+	protocol := envx.String("CH_PROTOCOL", envx.String("CLICKHOUSE_PROTOCOL", "http"))
+	httpPath := envx.String("CH_HTTP_URL_PATH", envx.String("CLICKHOUSE_HTTP_URL_PATH", ""))
 	return &Client{
 		Host:       host,
 		Port:       port,
+		Protocol:   protocol,
+		HTTPPath:   httpPath,
 		User:       user,
 		Password:   password,
 		Database:   database,
@@ -49,27 +55,47 @@ func NewOptionalFromEnv() (*Client, error) {
 }
 
 func NewFromEnv() (*Client, error) {
-	host, err := envx.Require("CH_HOST")
+	host, err := requireStringAny("CH_HOST", "CLICKHOUSE_HOST")
 	if err != nil {
 		return nil, err
 	}
-	port, err := envx.RequireInt("CH_PORT")
+	port, err := requireIntAny("CH_PORT", "CLICKHOUSE_PORT")
 	if err != nil {
 		return nil, err
 	}
-	user, err := envx.Require("CH_USER")
+	user, err := requireStringAny("CH_USER", "CLICKHOUSE_USER")
 	if err != nil {
 		return nil, err
 	}
-	password, err := envx.Require("CH_PASSWORD")
+	password, err := requireStringAny("CH_PASSWORD", "CLICKHOUSE_PASSWORD")
 	if err != nil {
 		return nil, err
 	}
-	database, err := envx.Require("CH_DATABASE")
+	database, err := requireStringAny("CH_DATABASE", "CLICKHOUSE_DATABASE")
 	if err != nil {
 		return nil, err
 	}
 	return New(host, port, user, password, database), nil
+}
+
+func requireStringAny(names ...string) (string, error) {
+	for _, name := range names {
+		value := envx.String(name, "")
+		if strings.TrimSpace(value) != "" {
+			return value, nil
+		}
+	}
+	return "", fmt.Errorf("missing required environment variable: %s", strings.Join(names, " or "))
+}
+
+func requireIntAny(names ...string) (int, error) {
+	for _, name := range names {
+		value := envx.Int(name, 0)
+		if value > 0 {
+			return value, nil
+		}
+	}
+	return 0, fmt.Errorf("missing required integer environment variable: %s", strings.Join(names, " or "))
 }
 
 func (c *Client) endpoint(extra url.Values) string {
@@ -85,7 +111,76 @@ func (c *Client) endpoint(extra url.Values) string {
 			q.Add(key, v)
 		}
 	}
-	return fmt.Sprintf("http://%s:%d/?%s", c.Host, c.Port, q.Encode())
+	return c.baseURL() + "?" + q.Encode()
+}
+
+func (c *Client) baseURL() string {
+	host := strings.TrimSpace(c.Host)
+	protocol := strings.TrimSpace(c.Protocol)
+	if protocol == "" {
+		protocol = "http"
+	}
+	path := normalizeHTTPPath(c.HTTPPath)
+	if strings.Contains(host, "://") {
+		parsed, err := url.Parse(host)
+		if err == nil && parsed.Scheme != "" && parsed.Host != "" {
+			if c.HTTPPath == "" {
+				path = normalizeHTTPPath(parsed.Path)
+			}
+			return (&url.URL{Scheme: parsed.Scheme, Host: parsed.Host, Path: path}).String()
+		}
+	}
+	host = normalizeHostPort(host, c.Port)
+	return (&url.URL{Scheme: protocol, Host: host, Path: path}).String()
+}
+
+func normalizeHTTPPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "/"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return strings.TrimRight(path, "/") + "/"
+}
+
+func normalizeHostPort(host string, port int) string {
+	host = strings.TrimSpace(strings.TrimRight(host, "/"))
+	if host == "" {
+		return ""
+	}
+	if port <= 0 {
+		port = 8123
+	}
+	if strings.HasPrefix(host, "[") {
+		if strings.Contains(host, "]:") {
+			return host
+		}
+		return fmt.Sprintf("%s:%d", host, port)
+	}
+	if strings.Count(host, ":") == 1 {
+		parts := strings.Split(host, ":")
+		if len(parts) == 2 && allDigits(parts[1]) {
+			return host
+		}
+	}
+	if strings.Contains(host, ":") {
+		return fmt.Sprintf("[%s]:%d", host, port)
+	}
+	return fmt.Sprintf("%s:%d", host, port)
+}
+
+func allDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *Client) post(body string, extra url.Values) ([]byte, error) {

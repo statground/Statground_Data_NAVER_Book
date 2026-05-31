@@ -23,6 +23,12 @@ var koreanKeywordStopwords = map[string]struct{}{
 	"활용": {},
 }
 
+var broadSingleKeywordStopwords = map[string]struct{}{
+	"과학": {}, "교육": {}, "기술": {}, "데이터": {}, "문명": {}, "분석": {},
+	"세계": {}, "역사": {}, "연구": {}, "이론": {}, "이야기": {}, "지식": {},
+	"통계": {}, "학습": {},
+}
+
 var englishKeywordStopwords = map[string]struct{}{
 	"book": {}, "books": {}, "edition": {}, "guide": {}, "handbook": {},
 	"introduction": {}, "manual": {}, "primer": {}, "series": {}, "using": {},
@@ -73,6 +79,15 @@ func ExtractMorphKeywordsFromText(text string) []string {
 	}
 	seen := map[string]struct{}{}
 	out := make([]string, 0)
+	for i := 0; i+2 < len(tokens); i++ {
+		left := tokens[i]
+		mid := tokens[i+1]
+		right := tokens[i+2]
+		if left.Script != mid.Script || mid.Script != right.Script {
+			continue
+		}
+		addKeyword(&out, seen, left.Text+" "+mid.Text+" "+right.Text)
+	}
 	for i := 0; i+1 < len(tokens); i++ {
 		left := tokens[i]
 		right := tokens[i+1]
@@ -158,6 +173,11 @@ func addKeyword(out *[]string, seen map[string]struct{}, token string) {
 	token = strings.Join(strings.Fields(strings.TrimSpace(token)), " ")
 	if token == "" {
 		return
+	}
+	if !strings.Contains(token, " ") {
+		if _, ok := broadSingleKeywordStopwords[token]; ok {
+			return
+		}
 	}
 	if _, ok := seen[token]; ok {
 		return

@@ -115,6 +115,8 @@ jobs:
           CH_PORT: ${{ secrets.CLICKHOUSE_PORT || secrets.CH_PORT }}
           CH_USER: ${{ secrets.CLICKHOUSE_USER || secrets.CH_USER }}
           CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD || secrets.CH_PASSWORD }}
+          CH_PROTOCOL: ${{ secrets.CLICKHOUSE_PROTOCOL || secrets.CH_PROTOCOL || 'http' }}
+          CH_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH || secrets.CH_HTTP_URL_PATH }}
           CH_DATABASE: Data_Book_NAVER_Raw
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
           KAFKA_CLIENT_ID: statground-naver-book-author
@@ -141,6 +143,8 @@ jobs:
           CH_PORT: ${{ secrets.CLICKHOUSE_PORT || secrets.CH_PORT }}
           CH_USER: ${{ secrets.CLICKHOUSE_USER || secrets.CH_USER }}
           CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD || secrets.CH_PASSWORD }}
+          CH_PROTOCOL: ${{ secrets.CLICKHOUSE_PROTOCOL || secrets.CH_PROTOCOL || 'http' }}
+          CH_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH || secrets.CH_HTTP_URL_PATH }}
           CH_DATABASE: Data_Book_NAVER_Raw
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
           KAFKA_CLIENT_ID: statground-naver-book-keyword
@@ -186,6 +190,8 @@ jobs:
           CH_PORT: ${{ secrets.CLICKHOUSE_PORT || secrets.CH_PORT }}
           CH_USER: ${{ secrets.CLICKHOUSE_USER || secrets.CH_USER }}
           CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD || secrets.CH_PASSWORD }}
+          CH_PROTOCOL: ${{ secrets.CLICKHOUSE_PROTOCOL || secrets.CH_PROTOCOL || 'http' }}
+          CH_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH || secrets.CH_HTTP_URL_PATH }}
           CH_DATABASE: Data_Book_NAVER_Raw
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
           KAFKA_CLIENT_ID: statground-naver-book-publisher
@@ -212,6 +218,8 @@ jobs:
           CH_PORT: ${{ secrets.CLICKHOUSE_PORT || secrets.CH_PORT }}
           CH_USER: ${{ secrets.CLICKHOUSE_USER || secrets.CH_USER }}
           CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD || secrets.CH_PASSWORD }}
+          CH_PROTOCOL: ${{ secrets.CLICKHOUSE_PROTOCOL || secrets.CH_PROTOCOL || 'http' }}
+          CH_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH || secrets.CH_HTTP_URL_PATH }}
           CH_DATABASE: Data_Book_NAVER_Raw
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
           KAFKA_CLIENT_ID: statground-naver-book-r-package
@@ -245,6 +253,8 @@ jobs:
           CH_PORT: ${{ secrets.CLICKHOUSE_PORT || secrets.CH_PORT }}
           CH_USER: ${{ secrets.CLICKHOUSE_USER || secrets.CH_USER }}
           CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD || secrets.CH_PASSWORD }}
+          CH_PROTOCOL: ${{ secrets.CLICKHOUSE_PROTOCOL || secrets.CH_PROTOCOL || 'http' }}
+          CH_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH || secrets.CH_HTTP_URL_PATH }}
           CH_DATABASE: webr_book
           WEBR_BOOK_REFRESH_SETTLE_SECONDS: "30"
           WEBR_BOOK_REFRESH_TIMEOUT_SECONDS: "300"
