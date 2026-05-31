@@ -110,6 +110,12 @@ jobs:
           PRODUCER_SOURCE: github_actions
           PRODUCER_IP: "::"
           RAW_NAVER_TABLE: naver_book_raw
+          BOOK_SAMPLE_TABLE: Data_Book_NAVER_Service.naver_book_latest
+          CH_HOST: ${{ secrets.CLICKHOUSE_HOST || secrets.CH_HOST }}
+          CH_PORT: ${{ secrets.CLICKHOUSE_PORT || secrets.CH_PORT }}
+          CH_USER: ${{ secrets.CLICKHOUSE_USER || secrets.CH_USER }}
+          CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD || secrets.CH_PASSWORD }}
+          CH_DATABASE: Data_Book_NAVER_Raw
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
           KAFKA_CLIENT_ID: statground-naver-book-author
           COLLECT_MODE: author
@@ -130,6 +136,12 @@ jobs:
           PRODUCER_SOURCE: github_actions
           PRODUCER_IP: "::"
           RAW_NAVER_TABLE: naver_book_raw
+          BOOK_SAMPLE_TABLE: Data_Book_NAVER_Service.naver_book_latest
+          CH_HOST: ${{ secrets.CLICKHOUSE_HOST || secrets.CH_HOST }}
+          CH_PORT: ${{ secrets.CLICKHOUSE_PORT || secrets.CH_PORT }}
+          CH_USER: ${{ secrets.CLICKHOUSE_USER || secrets.CH_USER }}
+          CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD || secrets.CH_PASSWORD }}
+          CH_DATABASE: Data_Book_NAVER_Raw
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
           KAFKA_CLIENT_ID: statground-naver-book-keyword
           COLLECT_MODE: keyword
@@ -169,6 +181,12 @@ jobs:
           PRODUCER_SOURCE: github_actions
           PRODUCER_IP: "::"
           RAW_NAVER_TABLE: naver_book_raw
+          BOOK_SAMPLE_TABLE: Data_Book_NAVER_Service.naver_book_latest
+          CH_HOST: ${{ secrets.CLICKHOUSE_HOST || secrets.CH_HOST }}
+          CH_PORT: ${{ secrets.CLICKHOUSE_PORT || secrets.CH_PORT }}
+          CH_USER: ${{ secrets.CLICKHOUSE_USER || secrets.CH_USER }}
+          CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD || secrets.CH_PASSWORD }}
+          CH_DATABASE: Data_Book_NAVER_Raw
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
           KAFKA_CLIENT_ID: statground-naver-book-publisher
           COLLECT_MODE: publisher
@@ -189,6 +207,12 @@ jobs:
           PRODUCER_SOURCE: github_actions
           PRODUCER_IP: "::"
           RAW_NAVER_TABLE: naver_book_raw
+          BOOK_SAMPLE_TABLE: Data_Book_NAVER_Service.naver_book_latest
+          CH_HOST: ${{ secrets.CLICKHOUSE_HOST || secrets.CH_HOST }}
+          CH_PORT: ${{ secrets.CLICKHOUSE_PORT || secrets.CH_PORT }}
+          CH_USER: ${{ secrets.CLICKHOUSE_USER || secrets.CH_USER }}
+          CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD || secrets.CH_PASSWORD }}
+          CH_DATABASE: Data_Book_NAVER_Raw
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
           KAFKA_CLIENT_ID: statground-naver-book-r-package
           COLLECT_MODE: r_package

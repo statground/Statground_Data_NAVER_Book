@@ -79,12 +79,26 @@ func run() error {
 		return err
 	}
 	picked := terms.PickUniqueTerms(mode, batchSize, sample, r)
+	if len(picked) == 0 {
+		fmt.Printf("[warn] %s collection skipped because existing book sample terms are unavailable; configure optional CH_* or CLICKHOUSE_* secrets and BOOK_SAMPLE_TABLE to avoid static fallback bias\n", mode)
+		return nil
+	}
+	fmt.Printf("[sample] mode=%s sample_rows=%d picked_terms=%d sample_terms=%s\n", mode, len(sample), len(picked), strings.Join(sampleStrings(picked, 12), ", "))
 	for _, term := range picked {
 		if err := c.CollectTerm(term, mode, reqsPerTerm, display); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func sampleStrings(values []string, limit int) []string {
+	if limit <= 0 || len(values) <= limit {
+		return values
+	}
+	out := make([]string, limit)
+	copy(out, values[:limit])
+	return out
 }
 
 func splitFixedKeywords(raw string) []string {

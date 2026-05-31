@@ -102,7 +102,20 @@ func (c *Collector) SampleRows(limit int) ([]map[string]any, error) {
 	if c.Client == nil {
 		return []map[string]any{}, nil
 	}
-	return rawnaver.SampleTitleAuthorPublisher(c.Client, c.Table, limit)
+	sampleTable := strings.TrimSpace(envx.String("BOOK_SAMPLE_TABLE", "Data_Book_NAVER_Service.naver_book_latest"))
+	if sampleTable == "" {
+		sampleTable = c.Table
+	}
+	rows, err := rawnaver.SampleTitleAuthorPublisher(c.Client, sampleTable, limit)
+	if err != nil && sampleTable != c.Table {
+		fmt.Printf("[warn] existing book sample skipped table=%s error=%v; retrying raw table=%s\n", sampleTable, err, c.Table)
+		rows, err = rawnaver.SampleTitleAuthorPublisher(c.Client, c.Table, limit)
+	}
+	if err != nil {
+		fmt.Printf("[warn] existing book sample unavailable error=%v\n", err)
+		return []map[string]any{}, nil
+	}
+	return rows, nil
 }
 
 func (c *Collector) SampleRPackages(limit int) ([]RPackageCandidate, error) {

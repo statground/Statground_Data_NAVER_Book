@@ -10,10 +10,36 @@ import (
 
 var (
 	fallbackKeywords = []string{"통계", "데이터", "Statistics", "Data"}
-	reKoreanToken    = regexp.MustCompile(`[가-힣]{2,}`)
-	reEnglishToken   = regexp.MustCompile(`[A-Za-z][A-Za-z0-9_\-']{3,}`)
+	reMorphToken     = regexp.MustCompile(`[가-힣]+|[A-Za-z][A-Za-z0-9_\-']{2,}`)
+	reKoreanOnly     = regexp.MustCompile(`^[가-힣]+$`)
 	reSplitAuthor    = regexp.MustCompile(`\^+`)
 )
+
+var koreanKeywordStopwords = map[string]struct{}{
+	"개정판": {}, "공식": {}, "교재": {}, "기본서": {}, "기초": {}, "대한민국": {},
+	"문제": {}, "문제집": {}, "베스트": {}, "북스": {}, "비법": {}, "사전": {},
+	"세트": {}, "시리즈": {}, "실전": {}, "완벽": {}, "워크북": {}, "입문": {},
+	"최신": {}, "최신판": {}, "특별판": {}, "편집부": {}, "한국": {}, "핸드북": {},
+	"활용": {},
+}
+
+var englishKeywordStopwords = map[string]struct{}{
+	"book": {}, "books": {}, "edition": {}, "guide": {}, "handbook": {},
+	"introduction": {}, "manual": {}, "primer": {}, "series": {}, "using": {},
+	"with": {}, "workbook": {},
+}
+
+var koreanKeywordSuffixes = []string{
+	"으로부터", "으로써", "으로서", "에서", "에게", "부터", "까지", "처럼",
+	"보다", "으로", "라고", "라는", "하고", "하며", "하게", "하기", "하는",
+	"한다", "했다", "이며", "이고", "은", "는", "이", "가", "을", "를",
+	"의", "에", "도", "만", "와", "과", "로",
+}
+
+type morphToken struct {
+	Text   string
+	Script string
+}
 
 func Fallback() []string {
 	out := make([]string, len(fallbackKeywords))
@@ -37,33 +63,107 @@ func RandomFallback(r *rand.Rand) string {
 }
 
 func ExtractKeywordsFromTitle(title string) []string {
-	title = util.StripHTML(title)
-	if strings.TrimSpace(title) == "" {
+	return ExtractMorphKeywordsFromText(title)
+}
+
+func ExtractMorphKeywordsFromText(text string) []string {
+	tokens := morphTokensFromText(text)
+	if len(tokens) == 0 {
 		return nil
 	}
 	seen := map[string]struct{}{}
 	out := make([]string, 0)
-	for _, token := range reKoreanToken.FindAllString(title, -1) {
-		token = strings.TrimSpace(token)
-		if len([]rune(token)) < 2 {
+	for i := 0; i+1 < len(tokens); i++ {
+		left := tokens[i]
+		right := tokens[i+1]
+		if left.Script != right.Script {
 			continue
 		}
-		if _, ok := seen[token]; !ok {
-			seen[token] = struct{}{}
-			out = append(out, token)
-		}
+		addKeyword(&out, seen, left.Text+" "+right.Text)
 	}
-	for _, token := range reEnglishToken.FindAllString(title, -1) {
-		token = strings.TrimSpace(token)
-		if len(token) < 4 {
-			continue
-		}
-		if _, ok := seen[token]; !ok {
-			seen[token] = struct{}{}
-			out = append(out, token)
+	for _, token := range tokens {
+		addKeyword(&out, seen, token.Text)
+	}
+	return out
+}
+
+func ExtractKeywordsFromBookRows(rows []map[string]any) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0)
+	for _, row := range rows {
+		text := strings.TrimSpace(strings.Join([]string{
+			util.ToString(row["title"]),
+			util.ToString(row["description"]),
+		}, " "))
+		for _, token := range ExtractMorphKeywordsFromText(text) {
+			addKeyword(&out, seen, token)
 		}
 	}
 	return out
+}
+
+func morphTokensFromText(text string) []morphToken {
+	text = util.StripHTML(text)
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	out := make([]morphToken, 0)
+	for _, raw := range reMorphToken.FindAllString(text, -1) {
+		if reKoreanOnly.MatchString(raw) {
+			token := cleanKoreanKeyword(raw)
+			if token == "" {
+				continue
+			}
+			out = append(out, morphToken{Text: token, Script: "ko"})
+			continue
+		}
+		token := cleanEnglishKeyword(raw)
+		if token == "" {
+			continue
+		}
+		out = append(out, morphToken{Text: token, Script: "en"})
+	}
+	return out
+}
+
+func cleanKoreanKeyword(token string) string {
+	token = strings.TrimSpace(token)
+	for _, suffix := range koreanKeywordSuffixes {
+		if strings.HasSuffix(token, suffix) && len([]rune(token)) > len([]rune(suffix))+1 {
+			token = strings.TrimSuffix(token, suffix)
+			break
+		}
+	}
+	if len([]rune(token)) < 2 {
+		return ""
+	}
+	if _, ok := koreanKeywordStopwords[token]; ok {
+		return ""
+	}
+	return token
+}
+
+func cleanEnglishKeyword(token string) string {
+	token = strings.Trim(strings.ToLower(strings.TrimSpace(token)), "-_'")
+	if len(token) < 4 {
+		return ""
+	}
+	if _, ok := englishKeywordStopwords[token]; ok {
+		return ""
+	}
+	return token
+}
+
+func addKeyword(out *[]string, seen map[string]struct{}, token string) {
+	token = strings.Join(strings.Fields(strings.TrimSpace(token)), " ")
+	if token == "" {
+		return
+	}
+	if _, ok := seen[token]; ok {
+		return
+	}
+	seen[token] = struct{}{}
+	*out = append(*out, token)
 }
 
 func ExtractKeywordsFromTitles(titles []string) []string {
@@ -152,11 +252,7 @@ func GenerateKeyword(sampleRows []map[string]any, r *rand.Rand) string {
 		}
 		return SanitizeKeyword(RandomChoice(ExtractPublishers(publishers), r), r)
 	default:
-		titles := make([]string, 0, len(sampleRows))
-		for _, row := range sampleRows {
-			titles = append(titles, util.ToString(row["title"]))
-		}
-		return SanitizeKeyword(RandomChoice(ExtractKeywordsFromTitles(titles), r), r)
+		return SanitizeKeyword(RandomChoice(ExtractKeywordsFromBookRows(sampleRows), r), r)
 	}
 }
 
@@ -165,11 +261,7 @@ func PickUniqueTerms(mode string, batchSize int, sampleRows []map[string]any, r 
 		return nil
 	}
 	if len(sampleRows) == 0 {
-		fallbacks := Fallback()
-		if batchSize < len(fallbacks) {
-			return fallbacks[:batchSize]
-		}
-		return fallbacks
+		return nil
 	}
 
 	mode = strings.ToLower(strings.TrimSpace(mode))
@@ -188,14 +280,10 @@ func PickUniqueTerms(mode string, batchSize int, sampleRows []map[string]any, r 
 		}
 		pool = ExtractPublishers(items)
 	default:
-		items := make([]string, 0, len(sampleRows))
-		for _, row := range sampleRows {
-			items = append(items, util.ToString(row["title"]))
-		}
-		pool = ExtractKeywordsFromTitles(items)
+		pool = ExtractKeywordsFromBookRows(sampleRows)
 	}
 	if len(pool) == 0 {
-		pool = Fallback()
+		return nil
 	}
 	shuffled := make([]string, len(pool))
 	copy(shuffled, pool)

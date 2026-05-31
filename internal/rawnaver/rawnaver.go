@@ -27,7 +27,16 @@ func FilterRowByColumns(row map[string]any, columns map[string]bool) map[string]
 }
 
 func SampleTitleAuthorPublisher(client *ch.Client, table string, limit int) ([]map[string]any, error) {
-	sql := fmt.Sprintf("SELECT title, author, publisher FROM %s ORDER BY rand() LIMIT %d", table, limit)
+	if limit <= 0 {
+		limit = 1000
+	}
+	sql := fmt.Sprintf(`
+        SELECT title, description, author, publisher
+        FROM %s
+        WHERE notEmpty(title)
+        ORDER BY rand()
+        LIMIT %d
+    `, table, limit)
 	return client.QueryJSONEachRow(sql)
 }
 
