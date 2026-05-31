@@ -30,14 +30,16 @@ type shardReport struct {
 }
 
 type registry struct {
-	Schema       string          `json:"schema"`
-	Language     string          `json:"language"`
-	GeneratedAt  string          `json:"generated_at"`
-	PathPattern  string          `json:"path_pattern"`
-	Shards       []registryShard `json:"shards"`
-	TotalItems   uint64          `json:"total_items"`
-	ShardCount   int             `json:"shard_count"`
-	RegistryNote string          `json:"registry_note,omitempty"`
+	Schema             string          `json:"schema"`
+	Language           string          `json:"language"`
+	GeneratedAt        string          `json:"generated_at"`
+	PathPattern        string          `json:"path_pattern"`
+	DetailPathPattern  string          `json:"detail_path_pattern"`
+	ListArchivePattern string          `json:"list_archive_pattern"`
+	Shards             []registryShard `json:"shards"`
+	TotalItems         uint64          `json:"total_items"`
+	ShardCount         int             `json:"shard_count"`
+	RegistryNote       string          `json:"registry_note,omitempty"`
 }
 
 type registryShard struct {
@@ -131,8 +133,10 @@ func run() error {
 	reg.Language = report.Language
 	reg.GeneratedAt = now
 	reg.PathPattern = "books/{language}/items/{h0}/{h1}/{h2}/{h3}/{isbn}.json"
+	reg.DetailPathPattern = "books/{language}/items/{h0}/{h1}/{h2}/{h3}/{isbn}.json"
+	reg.ListArchivePattern = "books/{language}/lists/{yyyy}/{mm}/{dd}/{kind}.json"
 	reg.ShardCount = len(reg.Shards)
-	reg.RegistryNote = "Book item payloads are encrypted; registry contains only shard routing metadata."
+	reg.RegistryNote = "Root repo contains registry and future list archives; ISBN detail payloads are encrypted in detail shard repositories."
 
 	body, err := json.MarshalIndent(reg, "", "  ")
 	if err != nil {

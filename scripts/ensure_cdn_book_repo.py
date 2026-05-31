@@ -77,6 +77,12 @@ def request_json(method: str, path: str, token: str, payload: dict[str, object] 
         if allow_404 and exc.code == 404:
             return None
         detail = exc.read(300).decode("utf-8", errors="replace")
+        if method == "POST" and path.startswith("/orgs/") and exc.code in {403, 404}:
+            raise SystemExit(
+                f"GitHub API {method} {path} failed: HTTP {exc.code}. "
+                "The token can access existing repositories but cannot create a new repository in this organization. "
+                "Pre-create the shard repository or grant organization repository creation permission."
+            ) from exc
         raise SystemExit(f"GitHub API {method} {path} failed: HTTP {exc.code}: {redact(detail)}") from exc
     except urllib.error.URLError as exc:
         raise SystemExit(f"GitHub API {method} {path} failed: {exc.__class__.__name__}") from exc

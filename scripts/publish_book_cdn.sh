@@ -3,13 +3,14 @@ set -euo pipefail
 
 ROOT_REPO="${BOOK_CDN_ROOT_REPO:-statground/Statground_CDN_Book}"
 ROOT_DIR="${BOOK_CDN_ROOT_DIR:-Statground_CDN_Book}"
-SHARD_REPO_PREFIX="${BOOK_CDN_SHARD_REPO_PREFIX:-statground/Statground_CDN_Book_}"
-SHARD_DIR_TEMPLATE="${BOOK_CDN_SHARD_DIR_TEMPLATE:-Statground_CDN_Book_%s}"
+SHARD_REPO_PREFIX="${BOOK_CDN_SHARD_REPO_PREFIX:-statground/Statground_CDN_Book_Detail_}"
+SHARD_DIR_TEMPLATE="${BOOK_CDN_SHARD_DIR_TEMPLATE:-Statground_CDN_Book_Detail_%s}"
 BRANCH="${BOOK_CDN_BRANCH:-main}"
 LANGUAGE="${BOOK_CDN_LANGUAGE:-ko}"
 REGISTRY_PATH="${BOOK_CDN_REGISTRY_PATH:-books/${LANGUAGE}/registry.json}"
 REPORT_PATH="${BOOK_CDN_REPORT_PATH:-book_cdn_export_report.json}"
 PREFIXES="${BOOK_CDN_HASH_PREFIXES:-0123456789abcdef}"
+EXPORT_OUTPUT_ROOT="${BOOK_CDN_OUTPUT_ROOT:-.book_cdn_export}"
 
 if [[ -z "${STATGROUND_CDN_BOOK_ADMIN_TOKEN:-}" ]]; then
   echo "STATGROUND_CDN_BOOK_ADMIN_TOKEN secret is required"
@@ -69,7 +70,10 @@ token_remote() {
 prepare_repo() {
   local repo="$1"
   local dir="$2"
-  python scripts/ensure_cdn_book_repo.py --repo "$repo" --description "Statground encrypted NAVER Book CDN"
+  if ! python scripts/ensure_cdn_book_repo.py --repo "$repo" --description "Statground encrypted NAVER Book CDN"; then
+    echo "::error::Unable to create or access ${repo}. Pre-create it as a public repository or update STATGROUND_CDN_BOOK_ADMIN_TOKEN with statground org repository creation and contents write permissions."
+    return 1
+  fi
   if [[ -d "$dir/.git" ]]; then
     git -C "$dir" remote set-url origin "$(token_remote "$repo")"
     git -C "$dir" fetch origin "$BRANCH" || true
@@ -107,25 +111,30 @@ commit_repo_path() {
 prepare_repo "$ROOT_REPO" "$ROOT_DIR"
 PREFIXES="$(normalize_prefixes "$PREFIXES" "${ROOT_DIR}/${REGISTRY_PATH}")"
 IFS=',' read -r -a PREFIX_LIST <<< "$PREFIXES"
-for prefix in "${PREFIX_LIST[@]}"; do
-  prepare_repo "${SHARD_REPO_PREFIX}${prefix}" "$(printf "$SHARD_DIR_TEMPLATE" "$prefix")"
-done
+
+rm -rf "$EXPORT_OUTPUT_ROOT"
+mkdir -p "$EXPORT_OUTPUT_ROOT"
 
 export BOOK_CDN_LANGUAGE="$LANGUAGE"
 export BOOK_CDN_REPORT_PATH="$REPORT_PATH"
 export BOOK_CDN_SHARD_DIR_TEMPLATE="$SHARD_DIR_TEMPLATE"
 export BOOK_CDN_SHARD_REPO_PREFIX="$SHARD_REPO_PREFIX"
 export BOOK_CDN_HASH_PREFIXES="$PREFIXES"
-export BOOK_CDN_OUTPUT_ROOT="${BOOK_CDN_OUTPUT_ROOT:-.}"
+export BOOK_CDN_OUTPUT_ROOT="$EXPORT_OUTPUT_ROOT"
 
 go run -mod=mod ./cmd/export_book_cdn
 
 commits=""
 for prefix in "${PREFIX_LIST[@]}"; do
-  dir="$(printf "$SHARD_DIR_TEMPLATE" "$prefix")"
-  if [[ ! -d "${dir}/books" ]]; then
+  export_dir="${EXPORT_OUTPUT_ROOT}/$(printf "$SHARD_DIR_TEMPLATE" "$prefix")"
+  if [[ ! -d "${export_dir}/books" ]]; then
     continue
   fi
+  repo="${SHARD_REPO_PREFIX}${prefix}"
+  dir="$(printf "$SHARD_DIR_TEMPLATE" "$prefix")"
+  prepare_repo "$repo" "$dir"
+  mkdir -p "${dir}/books"
+  cp -a "${export_dir}/books/." "${dir}/books/"
   sha="$(commit_repo_path "$dir" "Refresh encrypted NAVER Book CDN shard ${prefix}" books)"
   if [[ -n "$sha" ]]; then
     if [[ -n "$commits" ]]; then

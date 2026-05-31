@@ -32,7 +32,7 @@ const (
 	keyPurpose        = "statground.book.cdn.v1"
 	defaultTable      = "Data_Book_NAVER_Service.naver_book_latest"
 	defaultLanguage   = "ko"
-	defaultShardOwner = "statground/Statground_CDN_Book_"
+	defaultShardOwner = "statground/Statground_CDN_Book_Detail_"
 )
 
 var reISBNToken = regexp.MustCompile(`[0-9Xx][0-9Xx\-\s]{6,24}[0-9Xx]`)
