@@ -245,42 +245,6 @@ func (c *Client) QueryJSONEachRow(sql string) ([]map[string]any, error) {
 	return rows, nil
 }
 
-func (c *Client) QueryJSONEachRowStream(sql string, handle func(map[string]any) error) error {
-	req, err := http.NewRequest(http.MethodPost, c.endpoint(nil), strings.NewReader(ensureJSONEachRow(sql)))
-	if err != nil {
-		return err
-	}
-	if c.User != "" {
-		req.SetBasicAuth(c.User, c.Password)
-	}
-	req.Header.Set("Content-Type", "text/plain; charset=utf-8")
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		payload, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("clickhouse http %d: %s", resp.StatusCode, strings.TrimSpace(string(payload)))
-	}
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 1024), 64*1024*1024)
-	for scanner.Scan() {
-		line := bytes.TrimSpace(scanner.Bytes())
-		if len(line) == 0 {
-			continue
-		}
-		var row map[string]any
-		if err := json.Unmarshal(line, &row); err != nil {
-			return fmt.Errorf("decode json row: %w; line_prefix=%s", err, truncateForError(line, 512))
-		}
-		if err := handle(row); err != nil {
-			return err
-		}
-	}
-	return scanner.Err()
-}
-
 func truncateForError(value []byte, limit int) string {
 	if limit <= 0 || len(value) <= limit {
 		return string(value)

@@ -73,7 +73,7 @@ jobs:
         env:
           GOPROXY: https://proxy.golang.org,direct
         run: |
-          go build -mod=mod ./cmd/collect ./cmd/collect_manual ./cmd/batch_aladin_publisher_seed ./cmd/refresh_webr_book_catalog ./cmd/export_book_cdn ./cmd/update_book_cdn_registry ./cmd/record_book_cdn_release
+          go build -mod=mod ./cmd/collect ./cmd/collect_manual ./cmd/batch_aladin_publisher_seed ./cmd/refresh_webr_book_catalog
 
       - name: Collect Aladin publisher seed and NAVER books via Kafka
         env:
@@ -265,27 +265,3 @@ jobs:
           fi
           export CH_PORT="${CH_PORT:-8123}"
           go run -mod=mod ./cmd/refresh_webr_book_catalog
-
-      - name: Publish updated encrypted NAVER Book CDN
-        env:
-          STATGROUND_CDN_BOOK_ADMIN_TOKEN: ${{ secrets.STATGROUND_CDN_BOOK_ADMIN_TOKEN }}
-          STATGROUND_BOOK_CONTENT_KEY: ${{ secrets.STATGROUND_BOOK_CONTENT_KEY }}
-          CH_HOST: ${{ secrets.CLICKHOUSE_HOST || secrets.CH_HOST }}
-          CH_PORT: ${{ secrets.CLICKHOUSE_PORT || secrets.CH_PORT }}
-          CH_USER: ${{ secrets.CLICKHOUSE_USER || secrets.CH_USER }}
-          CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD || secrets.CH_PASSWORD }}
-          CH_PROTOCOL: ${{ secrets.CLICKHOUSE_PROTOCOL || secrets.CH_PROTOCOL || 'http' }}
-          CH_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH || secrets.CH_HTTP_URL_PATH }}
-          CH_DATABASE: Data_Book_NAVER_Service
-          BOOK_CDN_TABLE: Data_Book_NAVER_Service.naver_book_latest
-          BOOK_CDN_HASH_PREFIXES: registry
-          BOOK_CDN_SINCE_HOURS: "12"
-          BOOK_CDN_MAX_ROWS: "0"
-          BOOK_CDN_CLICKHOUSE_TIMEOUT_SECONDS: "1800"
-          BOOK_CDN_CLICKHOUSE_MAX_EXECUTION_SECONDS: "1500"
-        run: |
-          if [ -z "$STATGROUND_CDN_BOOK_ADMIN_TOKEN" ] || [ -z "$STATGROUND_BOOK_CONTENT_KEY" ]; then
-            echo "Skipping encrypted book CDN publish because CDN secrets are not configured"
-            exit 0
-          fi
-          scripts/publish_book_cdn.sh
