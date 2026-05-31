@@ -1,0 +1,64 @@
+name: NAVER Book CDN Export
+
+on:
+  workflow_dispatch:
+    inputs:
+      hash_prefixes:
+        description: "Hex shard prefixes to export, e.g. 0, 0123, a0,a1, or all"
+        required: false
+        default: "0"
+      since_hours:
+        description: "Only export rows updated within this many hours. 0 exports all matching rows."
+        required: false
+        default: "0"
+      max_rows:
+        description: "Optional safety limit. 0 means no explicit limit."
+        required: false
+        default: "0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: statground-book-cdn-export-${{ github.event.inputs.hash_prefixes || 'manual' }}
+  cancel-in-progress: false
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build book CDN commands
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+        run: |
+          go mod download all
+          go mod verify
+          go build -mod=mod ./cmd/export_book_cdn ./cmd/update_book_cdn_registry ./cmd/record_book_cdn_release
+
+      - name: Publish encrypted NAVER Book CDN
+        env:
+          STATGROUND_CDN_BOOK_ADMIN_TOKEN: ${{ secrets.STATGROUND_CDN_BOOK_ADMIN_TOKEN }}
+          STATGROUND_BOOK_CONTENT_KEY: ${{ secrets.STATGROUND_BOOK_CONTENT_KEY }}
+          CH_HOST: ${{ secrets.CLICKHOUSE_HOST || secrets.CH_HOST }}
+          CH_PORT: ${{ secrets.CLICKHOUSE_PORT || secrets.CH_PORT }}
+          CH_USER: ${{ secrets.CLICKHOUSE_USER || secrets.CH_USER }}
+          CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD || secrets.CH_PASSWORD }}
+          CH_PROTOCOL: ${{ secrets.CLICKHOUSE_PROTOCOL || secrets.CH_PROTOCOL || 'http' }}
+          CH_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH || secrets.CH_HTTP_URL_PATH }}
+          CH_DATABASE: Data_Book_NAVER_Service
+          BOOK_CDN_TABLE: Data_Book_NAVER_Service.naver_book_latest
+          BOOK_CDN_HASH_PREFIXES: ${{ inputs.hash_prefixes }}
+          BOOK_CDN_SINCE_HOURS: ${{ inputs.since_hours }}
+          BOOK_CDN_MAX_ROWS: ${{ inputs.max_rows }}
+        run: |
+          scripts/publish_book_cdn.sh
