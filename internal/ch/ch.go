@@ -235,7 +235,7 @@ func (c *Client) QueryJSONEachRow(sql string) ([]map[string]any, error) {
 		}
 		var row map[string]any
 		if err := json.Unmarshal(line, &row); err != nil {
-			return nil, fmt.Errorf("decode json row: %w; line=%s", err, string(line))
+			return nil, fmt.Errorf("decode json row: %w; line_prefix=%s", err, truncateForError(line, 512))
 		}
 		rows = append(rows, row)
 	}
@@ -264,7 +264,7 @@ func (c *Client) QueryJSONEachRowStream(sql string, handle func(map[string]any) 
 		return fmt.Errorf("clickhouse http %d: %s", resp.StatusCode, strings.TrimSpace(string(payload)))
 	}
 	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 1024), 16*1024*1024)
+	scanner.Buffer(make([]byte, 1024), 64*1024*1024)
 	for scanner.Scan() {
 		line := bytes.TrimSpace(scanner.Bytes())
 		if len(line) == 0 {
@@ -272,13 +272,20 @@ func (c *Client) QueryJSONEachRowStream(sql string, handle func(map[string]any) 
 		}
 		var row map[string]any
 		if err := json.Unmarshal(line, &row); err != nil {
-			return fmt.Errorf("decode json row: %w; line=%s", err, string(line))
+			return fmt.Errorf("decode json row: %w; line_prefix=%s", err, truncateForError(line, 512))
 		}
 		if err := handle(row); err != nil {
 			return err
 		}
 	}
 	return scanner.Err()
+}
+
+func truncateForError(value []byte, limit int) string {
+	if limit <= 0 || len(value) <= limit {
+		return string(value)
+	}
+	return string(value[:limit]) + "...(truncated)"
 }
 
 func (c *Client) QueryScalarInt(sql string) (int64, error) {

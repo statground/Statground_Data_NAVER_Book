@@ -60,5 +60,7 @@ jobs:
           BOOK_CDN_HASH_PREFIXES: ${{ inputs.hash_prefixes }}
           BOOK_CDN_SINCE_HOURS: ${{ inputs.since_hours }}
           BOOK_CDN_MAX_ROWS: ${{ inputs.max_rows }}
+          BOOK_CDN_CLICKHOUSE_TIMEOUT_SECONDS: "3600"
+          BOOK_CDN_CLICKHOUSE_MAX_EXECUTION_SECONDS: "3300"
         run: |
           scripts/publish_book_cdn.sh

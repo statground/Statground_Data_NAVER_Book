@@ -281,6 +281,8 @@ jobs:
           BOOK_CDN_HASH_PREFIXES: registry
           BOOK_CDN_SINCE_HOURS: "12"
           BOOK_CDN_MAX_ROWS: "0"
+          BOOK_CDN_CLICKHOUSE_TIMEOUT_SECONDS: "1800"
+          BOOK_CDN_CLICKHOUSE_MAX_EXECUTION_SECONDS: "1500"
         run: |
           if [ -z "$STATGROUND_CDN_BOOK_ADMIN_TOKEN" ] || [ -z "$STATGROUND_BOOK_CONTENT_KEY" ]; then
             echo "Skipping encrypted book CDN publish because CDN secrets are not configured"

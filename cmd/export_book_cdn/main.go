@@ -104,6 +104,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	httpTimeoutSeconds := envx.Int("BOOK_CDN_CLICKHOUSE_TIMEOUT_SECONDS", 3600)
+	if httpTimeoutSeconds > 0 {
+		client.HTTPClient.Timeout = time.Duration(httpTimeoutSeconds) * time.Second
+	}
 	secret := strings.TrimSpace(os.Getenv("STATGROUND_BOOK_CONTENT_KEY"))
 	if secret == "" {
 		return errors.New("STATGROUND_BOOK_CONTENT_KEY is required")
@@ -123,6 +127,7 @@ func run() error {
 	prefixes := parsePrefixes(envx.String("BOOK_CDN_HASH_PREFIXES", "0123456789abcdef"))
 	sinceHours := envx.Int("BOOK_CDN_SINCE_HOURS", 8)
 	maxRows := envx.Int("BOOK_CDN_MAX_ROWS", 0)
+	maxExecutionSeconds := envx.Int("BOOK_CDN_CLICKHOUSE_MAX_EXECUTION_SECONDS", 3300)
 	reportPath := envx.String("BOOK_CDN_REPORT_PATH", "book_cdn_export_report.json")
 
 	report := exportReport{
@@ -144,7 +149,7 @@ func run() error {
 		}
 	}
 
-	sql := buildExportSQL(table, sinceHours, maxRows, prefixes)
+	sql := buildExportSQL(table, sinceHours, maxRows, prefixes, maxExecutionSeconds)
 	err = client.QueryJSONEachRowStream(sql, func(row map[string]any) error {
 		report.Rows++
 		rawISBN := rowString(row, "isbn")
@@ -206,7 +211,7 @@ func run() error {
 	return nil
 }
 
-func buildExportSQL(table string, sinceHours, maxRows int, prefixes map[string]bool) string {
+func buildExportSQL(table string, sinceHours, maxRows int, prefixes map[string]bool, maxExecutionSeconds int) string {
 	where := "WHERE notEmpty(isbn)"
 	if sinceHours > 0 {
 		where += fmt.Sprintf("\n  AND toString(updated_at) >= formatDateTime(now64(3, 'Asia/Seoul') - INTERVAL %d HOUR, '%%Y-%%m-%%d %%H:%%i:%%S', 'Asia/Seoul')", sinceHours)
@@ -214,6 +219,9 @@ func buildExportSQL(table string, sinceHours, maxRows int, prefixes map[string]b
 	limit := ""
 	if maxRows > 0 {
 		limit = fmt.Sprintf("\nLIMIT %d", maxRows)
+	}
+	if maxExecutionSeconds <= 0 {
+		maxExecutionSeconds = 3300
 	}
 	return fmt.Sprintf(`
 SELECT
@@ -231,8 +239,8 @@ SELECT
 FROM %s
 %s
 %s
-SETTINGS max_threads = 2, max_execution_time = 900, timeout_overflow_mode = 'break'
-`, table, where, limit)
+SETTINGS max_threads = 2, max_execution_time = %d, timeout_overflow_mode = 'break'
+`, table, where, limit, maxExecutionSeconds)
 }
 
 func payloadFromRow(row map[string]any, aliases []string) bookPayload {
