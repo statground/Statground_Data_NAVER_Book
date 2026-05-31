@@ -278,7 +278,7 @@ jobs:
           CH_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH || secrets.CH_HTTP_URL_PATH }}
           CH_DATABASE: Data_Book_NAVER_Service
           BOOK_CDN_TABLE: Data_Book_NAVER_Service.naver_book_latest
-          BOOK_CDN_HASH_PREFIXES: all
+          BOOK_CDN_HASH_PREFIXES: registry
           BOOK_CDN_SINCE_HOURS: "12"
           BOOK_CDN_MAX_ROWS: "0"
         run: |

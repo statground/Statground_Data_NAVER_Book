@@ -25,12 +25,27 @@ if [[ -z "${CH_HOST:-${CLICKHOUSE_HOST:-}}" ]] || [[ -z "${CH_USER:-${CLICKHOUSE
 fi
 
 normalize_prefixes() {
-  python3 - "$1" <<'PY'
+  python3 - "$1" "${2:-}" <<'PY'
+import json
 import re
 import sys
 
 raw = sys.argv[1].strip().lower()
-if raw in ("", "all", "*"):
+registry_path = sys.argv[2].strip() if len(sys.argv) > 2 else ""
+if raw in ("registry", "existing"):
+    tokens = []
+    try:
+        with open(registry_path, encoding="utf-8") as f:
+            registry = json.load(f)
+        for shard in registry.get("shards", []):
+            prefix = str(shard.get("prefix", "")).strip().lower()
+            if prefix:
+                tokens.append(prefix)
+    except Exception:
+        tokens = []
+    if not tokens:
+        tokens = list("0123456789abcdef")
+elif raw in ("", "all", "*"):
     tokens = list("0123456789abcdef")
 elif re.search(r"[,\s]", raw):
     tokens = [token for token in re.split(r"[,\s]+", raw) if token]
@@ -89,9 +104,9 @@ commit_repo_path() {
   git -C "$dir" rev-parse HEAD
 }
 
-PREFIXES="$(normalize_prefixes "$PREFIXES")"
-IFS=',' read -r -a PREFIX_LIST <<< "$PREFIXES"
 prepare_repo "$ROOT_REPO" "$ROOT_DIR"
+PREFIXES="$(normalize_prefixes "$PREFIXES" "${ROOT_DIR}/${REGISTRY_PATH}")"
+IFS=',' read -r -a PREFIX_LIST <<< "$PREFIXES"
 for prefix in "${PREFIX_LIST[@]}"; do
   prepare_repo "${SHARD_REPO_PREFIX}${prefix}" "$(printf "$SHARD_DIR_TEMPLATE" "$prefix")"
 done
