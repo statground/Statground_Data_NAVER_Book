@@ -147,7 +147,7 @@ func run() error {
 	sql := buildExportSQL(table, sinceHours, maxRows, prefixes)
 	err = client.QueryJSONEachRowStream(sql, func(row map[string]any) error {
 		report.Rows++
-		rawISBN := util.ToString(row["isbn"])
+		rawISBN := rowString(row, "isbn")
 		aliases := normalizeISBNs(rawISBN)
 		if len(aliases) == 0 {
 			report.SkippedNoISBN++
@@ -217,17 +217,17 @@ func buildExportSQL(table string, sinceHours, maxRows int, prefixes map[string]b
 	}
 	return fmt.Sprintf(`
 SELECT
-    ifNull(toString(uuid), '') AS uuid,
-    trim(BOTH ' ' FROM ifNull(isbn, '')) AS isbn,
-    trim(BOTH ' ' FROM ifNull(title, '')) AS title,
-    trim(BOTH ' ' FROM ifNull(author, '')) AS author,
-    trim(BOTH ' ' FROM ifNull(publisher, '')) AS publisher,
-    trim(BOTH ' ' FROM ifNull(pubdate, '')) AS pubdate,
-    trim(BOTH ' ' FROM ifNull(description, '')) AS description,
-    trim(BOTH ' ' FROM ifNull(image, '')) AS cover_url,
-    trim(BOTH ' ' FROM ifNull(link, '')) AS link,
+    base64Encode(ifNull(toString(uuid), '')) AS uuid_b64,
+    base64Encode(trim(BOTH ' ' FROM ifNull(isbn, ''))) AS isbn_b64,
+    base64Encode(trim(BOTH ' ' FROM ifNull(title, ''))) AS title_b64,
+    base64Encode(trim(BOTH ' ' FROM ifNull(author, ''))) AS author_b64,
+    base64Encode(trim(BOTH ' ' FROM ifNull(publisher, ''))) AS publisher_b64,
+    base64Encode(trim(BOTH ' ' FROM ifNull(pubdate, ''))) AS pubdate_b64,
+    base64Encode(trim(BOTH ' ' FROM ifNull(description, ''))) AS description_b64,
+    base64Encode(trim(BOTH ' ' FROM ifNull(image, ''))) AS cover_url_b64,
+    base64Encode(trim(BOTH ' ' FROM ifNull(link, ''))) AS link_b64,
     toUInt64(version) AS version,
-    left(toString(updated_at), 19) AS updated_at
+    base64Encode(left(toString(updated_at), 19)) AS updated_at_b64
 FROM %s
 %s
 %s
@@ -249,18 +249,27 @@ func payloadFromRow(row map[string]any, aliases []string) bookPayload {
 		CanonicalISBN: canonical,
 		ISBN:          canonical,
 		ISBNAliases:   aliases,
-		ISBNRaw:       util.ToString(row["isbn"]),
-		UUID:          util.ToString(row["uuid"]),
-		Title:         util.ToString(row["title"]),
-		Author:        util.ToString(row["author"]),
-		Publisher:     util.ToString(row["publisher"]),
-		Pubdate:       util.ToString(row["pubdate"]),
-		Description:   util.ToString(row["description"]),
-		CoverURL:      util.ToString(row["cover_url"]),
-		Link:          util.ToString(row["link"]),
+		ISBNRaw:       rowString(row, "isbn"),
+		UUID:          rowString(row, "uuid"),
+		Title:         rowString(row, "title"),
+		Author:        rowString(row, "author"),
+		Publisher:     rowString(row, "publisher"),
+		Pubdate:       rowString(row, "pubdate"),
+		Description:   rowString(row, "description"),
+		CoverURL:      rowString(row, "cover_url"),
+		Link:          rowString(row, "link"),
 		Version:       toUint64(row["version"]),
-		UpdatedAt:     util.ToString(row["updated_at"]),
+		UpdatedAt:     rowString(row, "updated_at"),
 	}
+}
+
+func rowString(row map[string]any, key string) string {
+	if value := util.ToString(row[key+"_b64"]); strings.TrimSpace(value) != "" {
+		if decoded, err := base64.StdEncoding.DecodeString(value); err == nil {
+			return string(decoded)
+		}
+	}
+	return util.ToString(row[key])
 }
 
 func writeEncryptedIfChanged(path, aadPath string, plain []byte, payloadTag string, key []byte) (bool, bool, error) {
