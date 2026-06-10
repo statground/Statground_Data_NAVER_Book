@@ -17,6 +17,7 @@ import (
 	"statground_naver_book_go/internal/envx"
 	"statground_naver_book_go/internal/kafkaingest"
 	"statground_naver_book_go/internal/naver"
+	"statground_naver_book_go/internal/terms"
 	"statground_naver_book_go/internal/util"
 )
 
@@ -55,8 +56,8 @@ func loadCachedPublishersIfFresh(client *ch.Client, cacheTable string, currentLa
 	pubs := make([]string, 0, len(rows))
 	seen := map[string]struct{}{}
 	for _, row := range rows {
-		pub := strings.TrimSpace(util.ToString(row["publisher"]))
-		if pub == "" {
+		pub := terms.NormalizePublisher(util.ToString(row["publisher"]))
+		if !terms.IsPublisherSearchCandidate(pub) {
 			continue
 		}
 		if _, ok := seen[pub]; ok {
@@ -67,6 +68,26 @@ func loadCachedPublishersIfFresh(client *ch.Client, cacheTable string, currentLa
 	}
 	sort.Strings(pubs)
 	return pubs, nil
+}
+
+func cleanPublisherSeeds(publishers []string) ([]string, int) {
+	cleaned := make([]string, 0, len(publishers))
+	seen := map[string]struct{}{}
+	skipped := 0
+	for _, publisher := range publishers {
+		publisher = terms.NormalizePublisher(publisher)
+		if !terms.IsPublisherSearchCandidate(publisher) {
+			skipped++
+			continue
+		}
+		if _, ok := seen[publisher]; ok {
+			skipped++
+			continue
+		}
+		seen[publisher] = struct{}{}
+		cleaned = append(cleaned, publisher)
+	}
+	return cleaned, skipped
 }
 
 func publishPublishersCache(pub *kafkaingest.Publisher, sourceURL string, publishers []string, detectedLastPage int, runUUID string) error {
@@ -169,6 +190,7 @@ func run() error {
 	naverSleepMin := envx.Float("NAVER_SLEEP_MIN", 0.05)
 	naverSleepMax := envx.Float("NAVER_SLEEP_MAX", 0.20)
 	reqsPerTerm := envx.Int("REQS_PER_TERM", 1)
+	publisherMaxTotal := envx.Int("ALADIN_PUBLISHER_MAX_TOTAL", 5000)
 
 	baseCollector, err := collector.New(client, rawNaverTable, keys, time.Now().UnixNano())
 	if err != nil {
@@ -196,21 +218,9 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		cleaned := make([]string, 0, len(publishers))
-		seen := map[string]struct{}{}
-		for _, publisher := range publishers {
-			publisher = strings.TrimSpace(publisher)
-			if publisher == "" {
-				continue
-			}
-			if _, ok := seen[publisher]; ok {
-				continue
-			}
-			seen[publisher] = struct{}{}
-			cleaned = append(cleaned, publisher)
-		}
-		publishers = cleaned
-		fmt.Printf("[ALADIN] crawled publishers=%d last_page=%d\n", len(publishers), currentLastPage)
+		var skipped int
+		publishers, skipped = cleanPublisherSeeds(publishers)
+		fmt.Printf("[ALADIN] crawled publishers=%d skipped=%d last_page=%d\n", len(publishers), skipped, currentLastPage)
 		if err := publishPublishersCache(baseCollector.Publisher, aladinURL, publishers, currentLastPage, runUUID); err != nil {
 			return err
 		}
@@ -243,7 +253,7 @@ func run() error {
 				return
 			}
 			for publisher := range jobs {
-				if err := coll.CollectPublisherAllPages(publisher, reqsPerTerm, display, naverSleepMin, naverSleepMax); err != nil {
+				if err := coll.CollectPublisherAllPages(publisher, reqsPerTerm, display, naverSleepMin, naverSleepMax, publisherMaxTotal); err != nil {
 					errs <- err
 					continue
 				}

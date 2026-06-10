@@ -97,6 +97,7 @@ jobs:
           NAVER_SLEEP_MAX: "0.20"
           NAVER_DISPLAY: "100"
           REQS_PER_TERM: "1"
+          ALADIN_PUBLISHER_MAX_TOTAL: "5000"
         run: |
           go run -mod=mod ./cmd/batch_aladin_publisher_seed
 

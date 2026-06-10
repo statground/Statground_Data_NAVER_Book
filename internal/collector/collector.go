@@ -313,7 +313,7 @@ func (c *Collector) CollectManual(keyword string) error {
 	return nil
 }
 
-func (c *Collector) CollectPublisherAllPages(publisher string, reqsPerTerm, display int, sleepMin, sleepMax float64) error {
+func (c *Collector) CollectPublisherAllPages(publisher string, reqsPerTerm, display int, sleepMin, sleepMax float64, maxTotal int) error {
 	publisher = strings.TrimSpace(publisher)
 	if publisher == "" {
 		return nil
@@ -342,6 +342,13 @@ func (c *Collector) CollectPublisherAllPages(publisher string, reqsPerTerm, disp
 			if err != nil {
 				_ = c.publishSearchLog(meta, "ERROR", 0, err.Error(), fmt.Sprintf("aladin_publisher_seed_error|publisher=%s|sort=%s|start=%d", publisher, sort, start))
 				return err
+			}
+			if start == 1 && maxTotal > 0 && t > maxTotal {
+				if err := c.publishSearchLog(meta, "SKIP", 0, "", fmt.Sprintf("aladin_publisher_seed_skip|publisher=%s|sort=%s|total=%d|max_total=%d", publisher, sort, t, maxTotal)); err != nil {
+					return err
+				}
+				fmt.Printf("[SKIP] publisher=%q sort=%s total=%d max_total=%d\n", publisher, sort, t, maxTotal)
+				break
 			}
 			if err := c.publishSearchLog(meta, "OK", len(items), "", fmt.Sprintf("aladin_publisher_seed_search|publisher=%s|sort=%s|start=%d", publisher, sort, start)); err != nil {
 				return err

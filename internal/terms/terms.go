@@ -4,6 +4,7 @@ import (
 	"math/rand"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"statground_naver_book_go/internal/util"
 )
@@ -13,6 +14,7 @@ var (
 	reMorphToken     = regexp.MustCompile(`[가-힣]+|[A-Za-z][A-Za-z0-9_\-']{2,}`)
 	reKoreanOnly     = regexp.MustCompile(`^[가-힣]+$`)
 	reSplitAuthor    = regexp.MustCompile(`\^+`)
+	reHangul         = regexp.MustCompile(`[가-힣]`)
 )
 
 var koreanKeywordStopwords = map[string]struct{}{
@@ -33,6 +35,12 @@ var englishKeywordStopwords = map[string]struct{}{
 	"book": {}, "books": {}, "edition": {}, "guide": {}, "handbook": {},
 	"introduction": {}, "manual": {}, "primer": {}, "series": {}, "using": {},
 	"with": {}, "workbook": {},
+}
+
+var genericEnglishPublisherSeeds = map[string]struct{}{
+	"book": {}, "books": {}, "company": {}, "group": {}, "inc": {}, "llc": {},
+	"ltd": {}, "media": {}, "press": {}, "pub": {}, "publisher": {},
+	"publishing": {},
 }
 
 var koreanKeywordSuffixes = []string{
@@ -224,13 +232,49 @@ func ExtractAuthors(values []string) []string {
 	return out
 }
 
+func NormalizePublisher(value string) string {
+	value = util.StripHTML(value)
+	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	return value
+}
+
+func IsPublisherSearchCandidate(value string) bool {
+	value = NormalizePublisher(value)
+	if len([]rune(value)) < 2 {
+		return false
+	}
+	compact := compactPublisherToken(value)
+	if compact == "" {
+		return false
+	}
+	if reHangul.MatchString(value) {
+		return true
+	}
+	if len([]rune(compact)) <= 2 {
+		return false
+	}
+	if _, ok := genericEnglishPublisherSeeds[compact]; ok {
+		return false
+	}
+	return true
+}
+
+func compactPublisherToken(value string) string {
+	var b strings.Builder
+	for _, r := range value {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(unicode.ToLower(r))
+		}
+	}
+	return b.String()
+}
+
 func ExtractPublishers(values []string) []string {
 	seen := map[string]struct{}{}
 	out := make([]string, 0)
 	for _, value := range values {
-		value = util.StripHTML(value)
-		value = strings.TrimSpace(value)
-		if len([]rune(value)) < 2 {
+		value = NormalizePublisher(value)
+		if !IsPublisherSearchCandidate(value) {
 			continue
 		}
 		if _, ok := seen[value]; ok {

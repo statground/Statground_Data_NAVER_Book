@@ -58,6 +58,16 @@ func TestExtractMorphKeywordsKeepsPhrasesBeforeBroadSingles(t *testing.T) {
 	}
 }
 
+func TestExtractPublishersSkipsTooBroadLatinSeeds(t *testing.T) {
+	got := ExtractPublishers([]string{"iN", "IT", "다함", "출판iN", "RHK"})
+	if contains(got, "iN") || contains(got, "IT") {
+		t.Fatalf("expected short latin publisher seeds to be skipped, got %v", got)
+	}
+	if !contains(got, "다함") || !contains(got, "출판iN") || !contains(got, "RHK") {
+		t.Fatalf("expected usable publisher names to be kept, got %v", got)
+	}
+}
+
 func contains(items []string, want string) bool {
 	for _, item := range items {
 		if item == want {
