@@ -176,6 +176,25 @@ jobs:
         run: |
           go run -mod=mod ./cmd/collect
 
+      - name: Collect NAVER books via Kafka (MirType language learning keywords)
+        env:
+          INGEST_MODE: kafka
+          KAFKA_BROKERS: ${{ secrets.KAFKA_BROKERS2 || secrets.KAFKA_BROKERS }}
+          KAFKA_USERNAME: ${{ secrets.KAFKA_USERNAME2 || secrets.KAFKA_USERNAME || secrets.KAFKA_EXTERNAL_USER }}
+          KAFKA_PASSWORD: ${{ secrets.KAFKA_PASSWORD2 || secrets.KAFKA_PASSWORD || secrets.KAFKA_EXTERNAL_PASSWORD }}
+          KAFKA_TOPIC: book.events
+          PRODUCER_SOURCE: github_actions
+          PRODUCER_IP: "::"
+          RAW_NAVER_TABLE: naver_book_raw
+          NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
+          KAFKA_CLIENT_ID: statground-naver-book-mirtype-language-learning
+          COLLECT_MODE: fixed_keyword
+          FIXED_KEYWORDS: "외국어 학습, 제2외국어, 언어 학습, 언어 공부, 어학 교재, 영어 회화, 영어 문법, 영어 단어, 영어 독해, 영어 듣기, 영어 말하기, TOEIC, TOEFL, IELTS, OPIC, 일본어 기초, 일본어 회화, JLPT, 중국어 회화, 중국어 문법, HSK, 한국어 학습, TOPIK, 러시아어 기초, 러시아어 회화, 스페인어 회화, 프랑스어 회화, 독일어 회화, 이탈리아어 회화, 포르투갈어 회화, 베트남어 회화, 태국어 회화, 아랍어 기초, 힌디어 기초, 인도네시아어 기초, 라틴어 기초, language learning, foreign language vocabulary, grammar workbook, conversation practice"
+          NAVER_DISPLAY: "100"
+          REQS_PER_TERM: "1"
+        run: |
+          go run -mod=mod ./cmd/collect
+
       - name: Collect NAVER books via Kafka (publisher)
         env:
           INGEST_MODE: kafka
@@ -248,7 +267,7 @@ jobs:
         run: |
           go run -mod=mod ./cmd/collect_manual
 
-      - name: Refresh Web-R R book catalog
+      - name: Refresh Web-R and MirType book catalogs
         env:
           CH_HOST: ${{ secrets.CLICKHOUSE_HOST || secrets.CH_HOST }}
           CH_PORT: ${{ secrets.CLICKHOUSE_PORT || secrets.CH_PORT }}
@@ -259,9 +278,12 @@ jobs:
           CH_DATABASE: webr_book
           WEBR_BOOK_REFRESH_SETTLE_SECONDS: "30"
           WEBR_BOOK_REFRESH_TIMEOUT_SECONDS: "300"
+          MIRTYPE_BOOK_REFRESH_ENABLED: "true"
+          MIRTYPE_BOOK_REFRESH_VIEW: mirtype_book.mv_naver_language_book_catalog_refresh
+          MIRTYPE_BOOK_COUNT_VIEW: mirtype_book.v_naver_language_book_catalog
         run: |
           if [ -z "$CH_HOST" ] || [ -z "$CH_USER" ] || [ -z "$CH_PASSWORD" ]; then
-            echo "Skipping Web-R book catalog refresh because ClickHouse secrets are not configured"
+            echo "Skipping Web-R and MirType book catalog refresh because ClickHouse secrets are not configured"
             exit 0
           fi
           export CH_PORT="${CH_PORT:-8123}"

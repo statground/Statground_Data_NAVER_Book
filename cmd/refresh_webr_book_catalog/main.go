@@ -38,18 +38,27 @@ func run() error {
 	}
 	client.HTTPClient.Timeout = time.Duration(timeoutSeconds) * time.Second
 
-	refreshView := envx.String("WEBR_BOOK_REFRESH_VIEW", "webr_book.mv_naver_r_book_catalog_refresh")
-	countView := envx.String("WEBR_BOOK_COUNT_VIEW", "webr_book.v_naver_r_book_catalog")
-	if err := validateQualifiedIdentifier(refreshView, "WEBR_BOOK_REFRESH_VIEW"); err != nil {
+	if err := refreshCatalog(client, "webr-book", envx.String("WEBR_BOOK_REFRESH_VIEW", "webr_book.mv_naver_r_book_catalog_refresh"), envx.String("WEBR_BOOK_COUNT_VIEW", "webr_book.v_naver_r_book_catalog")); err != nil {
 		return err
 	}
-	if err := validateQualifiedIdentifier(countView, "WEBR_BOOK_COUNT_VIEW"); err != nil {
-		return err
+	if mirtypeRefreshEnabled() {
+		if err := refreshCatalog(client, "mirtype-book", envx.String("MIRTYPE_BOOK_REFRESH_VIEW", "mirtype_book.mv_naver_language_book_catalog_refresh"), envx.String("MIRTYPE_BOOK_COUNT_VIEW", "mirtype_book.v_naver_language_book_catalog")); err != nil {
+			return err
+		}
 	}
+	return nil
+}
 
-	fmt.Printf("[webr-book] refreshing view=%s\n", refreshView)
+func refreshCatalog(client *ch.Client, label, refreshView, countView string) error {
+	if err := validateQualifiedIdentifier(refreshView, strings.ToUpper(strings.ReplaceAll(label, "-", "_"))+"_REFRESH_VIEW"); err != nil {
+		return err
+	}
+	if err := validateQualifiedIdentifier(countView, strings.ToUpper(strings.ReplaceAll(label, "-", "_"))+"_COUNT_VIEW"); err != nil {
+		return err
+	}
+	fmt.Printf("[%s] refreshing view=%s\n", label, refreshView)
 	if err := client.Exec("SYSTEM REFRESH VIEW " + refreshView); err != nil {
-		return fmt.Errorf("refresh Web-R book catalog: %w", err)
+		return fmt.Errorf("refresh %s catalog: %w", label, err)
 	}
 
 	rows, err := client.QueryJSONEachRow(fmt.Sprintf(`
@@ -58,14 +67,19 @@ func run() error {
           FROM %s
     `, countView))
 	if err != nil {
-		return fmt.Errorf("verify Web-R book catalog refresh: %w", err)
+		return fmt.Errorf("verify %s catalog refresh: %w", label, err)
 	}
 	if len(rows) == 0 {
-		fmt.Println("[webr-book] refresh ok row_count=0 latest_batch=")
+		fmt.Printf("[%s] refresh ok row_count=0 latest_batch=\n", label)
 		return nil
 	}
-	fmt.Printf("[webr-book] refresh ok row_count=%d latest_batch=%s\n", util.ToInt64(rows[0]["row_count"]), strings.TrimSpace(util.ToString(rows[0]["latest_batch"])))
+	fmt.Printf("[%s] refresh ok row_count=%d latest_batch=%s\n", label, util.ToInt64(rows[0]["row_count"]), strings.TrimSpace(util.ToString(rows[0]["latest_batch"])))
 	return nil
+}
+
+func mirtypeRefreshEnabled() bool {
+	value := strings.ToLower(strings.TrimSpace(envx.String("MIRTYPE_BOOK_REFRESH_ENABLED", "")))
+	return value == "1" || value == "true" || value == "yes" || strings.TrimSpace(envx.String("MIRTYPE_BOOK_REFRESH_VIEW", "")) != ""
 }
 
 func validateQualifiedIdentifier(value, envName string) error {
