@@ -1,10 +1,13 @@
 package aladin
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"html"
 	"io"
 	"math/rand"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -12,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"statground_naver_book_go/internal/envx"
 )
 
 var (
@@ -21,6 +26,20 @@ var (
 	reEndAnchor   = regexp.MustCompile(`(?is)<a[^>]*href=["']([^"']*Page_Set\('\d+'\)[^"']*)["'][^>]*>\s*끝\s*</a>`)
 	rePublisherTD = regexp.MustCompile(`(?is)<td[^>]*class=["'][^"']*c2b_center[^"']*["'][^>]*>(.*?)</td>`)
 	reTags        = regexp.MustCompile(`(?is)<[^>]+>`)
+
+	aladinHTTPClient = &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          64,
+			MaxIdleConnsPerHost:   16,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: time.Second,
+		},
+	}
 )
 
 func Headers(baseURL string) http.Header {
@@ -106,46 +125,17 @@ func FetchPage(page int, cnt string, baseURL string, sleepMin, sleepMax float64,
 	form := url.Values{}
 	form.Set("page", fmt.Sprintf("%d", page))
 	form.Set("cnt", cnt)
-	req, err := http.NewRequest(http.MethodPost, baseURL, strings.NewReader(form.Encode()))
+	payload, err := fetchHTMLWithClient(aladinHTTPClient, http.MethodPost, baseURL, form.Encode(), "application/x-www-form-urlencoded", r)
 	if err != nil {
 		return 0, nil, err
-	}
-	req.Header = Headers(baseURL)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, nil, err
-	}
-	defer resp.Body.Close()
-	payload, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0, nil, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return 0, nil, aladinHTTPStatusError(resp.StatusCode, payload)
 	}
 	return page, ExtractPublishers(string(payload)), nil
 }
 
 func DetectCntAndLastPage(baseURL string) (string, int, error) {
-	req, err := http.NewRequest(http.MethodGet, baseURL, nil)
+	payload, err := fetchHTMLWithClient(aladinHTTPClient, http.MethodGet, baseURL, "", "", nil)
 	if err != nil {
 		return "", 0, err
-	}
-	req.Header = Headers(baseURL)
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", 0, err
-	}
-	defer resp.Body.Close()
-	payload, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", 0, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", 0, aladinHTTPStatusError(resp.StatusCode, payload)
 	}
 	html := string(payload)
 	cnt := ParseCnt(html)
@@ -157,6 +147,61 @@ func DetectCntAndLastPage(baseURL string) (string, int, error) {
 		return "", 0, fmt.Errorf("failed to detect Aladin last page")
 	}
 	return cnt, last, nil
+}
+
+func fetchHTMLWithClient(client *http.Client, method, baseURL, body, contentType string, r *rand.Rand) ([]byte, error) {
+	if client == nil {
+		client = aladinHTTPClient
+	}
+	attempts := envx.Int("ALADIN_HTTP_ATTEMPTS", 3)
+	if attempts <= 0 {
+		attempts = 1
+	}
+	backoffMin := durationSecondsEnv("ALADIN_HTTP_BACKOFF_MIN", 500*time.Millisecond)
+	backoffMax := durationSecondsEnv("ALADIN_HTTP_BACKOFF_MAX", 4*time.Second)
+
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		payload, retryable, err := fetchHTMLOnce(client, method, baseURL, body, contentType)
+		if err == nil {
+			return payload, nil
+		}
+		lastErr = err
+		if !retryable || attempt == attempts {
+			return nil, err
+		}
+		delay := retryDelay(attempt, backoffMin, backoffMax, r)
+		fmt.Printf("[warn] aladin retry attempt=%d/%d reason=%s delay=%s\n", attempt+1, attempts, aladinRetryReason(err), delay)
+		time.Sleep(delay)
+	}
+	return nil, lastErr
+}
+
+func fetchHTMLOnce(client *http.Client, method, baseURL, body, contentType string) ([]byte, bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), durationSecondsEnv("ALADIN_HTTP_TIMEOUT", 30*time.Second))
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, method, baseURL, strings.NewReader(body))
+	if err != nil {
+		return nil, false, err
+	}
+	req.Header = Headers(baseURL)
+	if strings.TrimSpace(contentType) != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, retryableHTTPError(err), err
+	}
+	defer resp.Body.Close()
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, retryableHTTPError(err), err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, retryableHTTPStatus(resp.StatusCode), aladinHTTPStatusError(resp.StatusCode, payload)
+	}
+	return payload, false, nil
 }
 
 func aladinHTTPStatusError(status int, payload []byte) error {
@@ -180,6 +225,92 @@ func compactHTTPBody(payload []byte) string {
 		body = strings.TrimSpace(body[:maxLen]) + "..."
 	}
 	return body
+}
+
+func retryableHTTPStatus(status int) bool {
+	return status == http.StatusTooManyRequests ||
+		status == http.StatusInternalServerError ||
+		status == http.StatusBadGateway ||
+		status == http.StatusServiceUnavailable ||
+		status == http.StatusGatewayTimeout
+}
+
+func retryableHTTPError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary()) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "eof") ||
+		strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "temporary")
+}
+
+func durationSecondsEnv(name string, fallback time.Duration) time.Duration {
+	seconds := envx.Float(name, fallback.Seconds())
+	if seconds <= 0 {
+		return fallback
+	}
+	return time.Duration(seconds * float64(time.Second))
+}
+
+func retryDelay(attempt int, minDelay, maxDelay time.Duration, r *rand.Rand) time.Duration {
+	if minDelay <= 0 {
+		minDelay = 500 * time.Millisecond
+	}
+	if maxDelay <= 0 {
+		maxDelay = 4 * time.Second
+	}
+	if maxDelay < minDelay {
+		maxDelay = minDelay
+	}
+	delay := minDelay
+	for i := 1; i < attempt; i++ {
+		if delay >= maxDelay/2 {
+			delay = maxDelay
+			break
+		}
+		delay *= 2
+	}
+	if delay > maxDelay {
+		delay = maxDelay
+	}
+	jitterBase := delay / 4
+	if jitterBase <= 0 {
+		return delay
+	}
+	if r == nil {
+		return delay + time.Duration(rand.Int63n(int64(jitterBase)))
+	}
+	return delay + time.Duration(r.Int63n(int64(jitterBase)))
+}
+
+func aladinRetryReason(err error) string {
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "aladin http 429"):
+		return "rate_limited"
+	case strings.Contains(msg, "aladin http 500"),
+		strings.Contains(msg, "aladin http 502"),
+		strings.Contains(msg, "aladin http 503"),
+		strings.Contains(msg, "aladin http 504"):
+		return "unavailable"
+	case strings.Contains(msg, "timeout"):
+		return "timeout"
+	case strings.Contains(msg, "connection reset"), strings.Contains(msg, "connection refused"), strings.Contains(msg, "broken pipe"), strings.Contains(msg, "eof"):
+		return "network"
+	default:
+		return "temporary"
+	}
 }
 
 func CrawlPublishersDynamic(baseURL string, maxWorkers int, sleepMin, sleepMax float64, r *rand.Rand) ([]string, int, error) {

@@ -235,16 +235,19 @@ func (c *Collector) CollectTerm(term, mode string, reqsPerTerm, display int) err
 		total, items, err := naver.FetchItems(term, sort, 1, display, c.Keys, c.Rand)
 		meta := SearchMeta{Mode: mode, Query: term, Sort: sort, Start: 1, Display: display, Total: total}
 		if err != nil {
-			_ = c.publishSearchLog(meta, "ERROR", 0, err.Error(), fmt.Sprintf("auto_search_error|mode=%s|term=%s|sort=%s", mode, term, sort))
-			return err
-		}
-		if err := c.publishSearchLog(meta, "OK", len(items), "", fmt.Sprintf("auto_search|mode=%s|term=%s|sort=%s", mode, term, sort)); err != nil {
+			_ = c.publishSearchLogBestEffort(meta, "ERROR", 0, err.Error(), fmt.Sprintf("auto_search_error|mode=%s|term=%s|sort=%s", mode, term, sort))
 			return err
 		}
 		if len(items) == 0 {
+			if err := c.publishSearchLogBestEffort(meta, "OK", len(items), "", fmt.Sprintf("auto_search|mode=%s|term=%s|sort=%s", mode, term, sort)); err != nil {
+				return err
+			}
 			continue
 		}
 		if err := c.upsertItems(items, fmt.Sprintf("auto_upsert|mode=%s|term=%s|sort=%s", mode, term, sort), "github_actions_auto", false, meta); err != nil {
+			return err
+		}
+		if err := c.publishSearchLogBestEffort(meta, "OK", len(items), "", fmt.Sprintf("auto_search|mode=%s|term=%s|sort=%s", mode, term, sort)); err != nil {
 			return err
 		}
 	}
@@ -297,16 +300,19 @@ func (c *Collector) CollectManual(keyword string) error {
 			total, items, err := naver.FetchItems(keyword, sort, start, 100, c.Keys, c.Rand)
 			meta := SearchMeta{Mode: "manual", Query: keyword, Sort: sort, Start: start, Display: 100, Total: total}
 			if err != nil {
-				_ = c.publishSearchLog(meta, "ERROR", 0, err.Error(), fmt.Sprintf("manual_search_error|keyword=%s|sort=%s|start=%d", keyword, sort, start))
-				return err
-			}
-			if err := c.publishSearchLog(meta, "OK", len(items), "", fmt.Sprintf("manual_search|keyword=%s|sort=%s|start=%d", keyword, sort, start)); err != nil {
+				_ = c.publishSearchLogBestEffort(meta, "ERROR", 0, err.Error(), fmt.Sprintf("manual_search_error|keyword=%s|sort=%s|start=%d", keyword, sort, start))
 				return err
 			}
 			if len(items) == 0 {
+				if err := c.publishSearchLogBestEffort(meta, "OK", len(items), "", fmt.Sprintf("manual_search|keyword=%s|sort=%s|start=%d", keyword, sort, start)); err != nil {
+					return err
+				}
 				break
 			}
 			if err := c.upsertItems(items, fmt.Sprintf("manual_upsert|keyword=%s|sort=%s|start=%d", keyword, sort, start), "github_actions_manual", true, meta); err != nil {
+				return err
+			}
+			if err := c.publishSearchLogBestEffort(meta, "OK", len(items), "", fmt.Sprintf("manual_search|keyword=%s|sort=%s|start=%d", keyword, sort, start)); err != nil {
 				return err
 			}
 			if len(items) < 100 {
@@ -344,23 +350,26 @@ func (c *Collector) CollectPublisherAllPages(publisher string, reqsPerTerm, disp
 			}
 			meta := SearchMeta{Mode: "aladin_publisher_seed", Query: publisher, Sort: sort, Start: start, Display: display, Total: t}
 			if err != nil {
-				_ = c.publishSearchLog(meta, "ERROR", 0, err.Error(), fmt.Sprintf("aladin_publisher_seed_error|publisher=%s|sort=%s|start=%d", publisher, sort, start))
+				_ = c.publishSearchLogBestEffort(meta, "ERROR", 0, err.Error(), fmt.Sprintf("aladin_publisher_seed_error|publisher=%s|sort=%s|start=%d", publisher, sort, start))
 				return err
 			}
 			if start == 1 && maxTotal > 0 && t > maxTotal {
-				if err := c.publishSearchLog(meta, "SKIP", 0, "", fmt.Sprintf("aladin_publisher_seed_skip|publisher=%s|sort=%s|total=%d|max_total=%d", publisher, sort, t, maxTotal)); err != nil {
+				if err := c.publishSearchLogBestEffort(meta, "SKIP", 0, "", fmt.Sprintf("aladin_publisher_seed_skip|publisher=%s|sort=%s|total=%d|max_total=%d", publisher, sort, t, maxTotal)); err != nil {
 					return err
 				}
 				fmt.Printf("[SKIP] publisher=%q sort=%s total=%d max_total=%d\n", publisher, sort, t, maxTotal)
 				break
 			}
-			if err := c.publishSearchLog(meta, "OK", len(items), "", fmt.Sprintf("aladin_publisher_seed_search|publisher=%s|sort=%s|start=%d", publisher, sort, start)); err != nil {
-				return err
-			}
 			if len(items) == 0 {
+				if err := c.publishSearchLogBestEffort(meta, "OK", len(items), "", fmt.Sprintf("aladin_publisher_seed_search|publisher=%s|sort=%s|start=%d", publisher, sort, start)); err != nil {
+					return err
+				}
 				break
 			}
 			if err := c.upsertItems(items, fmt.Sprintf("aladin_publisher_seed|publisher=%s|sort=%s|start=%d", publisher, sort, start), "github_actions_auto", false, meta); err != nil {
+				return err
+			}
+			if err := c.publishSearchLogBestEffort(meta, "OK", len(items), "", fmt.Sprintf("aladin_publisher_seed_search|publisher=%s|sort=%s|start=%d", publisher, sort, start)); err != nil {
 				return err
 			}
 			fetched += len(items)
@@ -502,6 +511,10 @@ func (c *Collector) upsertItems(items []naver.BookItem, updatedLog, defaultCreat
 }
 
 func (c *Collector) publishSearchLog(meta SearchMeta, status string, fetchedCount int, errText, collectLog string) error {
+	return c.publishSearchLogWithTimeout(meta, status, fetchedCount, errText, collectLog, publishTimeoutDuration("KAFKA_LOG_PUBLISH_TIMEOUT_SECONDS", 45*time.Second))
+}
+
+func (c *Collector) publishSearchLogWithTimeout(meta SearchMeta, status string, fetchedCount int, errText, collectLog string, timeout time.Duration) error {
 	nowStr := util.FormatCHDateTime64Millis(util.NowKST())
 	payload := map[string]any{
 		"log_uuid":       util.UUIDv7(),
@@ -524,9 +537,23 @@ func (c *Collector) publishSearchLog(meta SearchMeta, status string, fetchedCoun
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), publishTimeoutDuration("KAFKA_LOG_PUBLISH_TIMEOUT_SECONDS", 45*time.Second))
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	return c.Publisher.Publish(ctx, []kafkaingest.Event{ev})
+}
+
+func (c *Collector) publishSearchLogBestEffort(meta SearchMeta, status string, fetchedCount int, errText, collectLog string) error {
+	required := searchLogRequired()
+	timeout := publishTimeoutDuration("KAFKA_LOG_PUBLISH_TIMEOUT_SECONDS", 45*time.Second)
+	if !required {
+		timeout = searchLogBestEffortTimeout()
+	}
+	err := c.publishSearchLogWithTimeout(meta, status, fetchedCount, errText, collectLog, timeout)
+	if err == nil || required {
+		return err
+	}
+	fmt.Printf("[warn] search log publish skipped mode=%s query=%q sort=%s start=%d status=%s error=%s\n", meta.Mode, meta.Query, meta.Sort, meta.Start, status, ShortOperationalError(err))
+	return nil
 }
 
 func publishTimeoutDuration(envName string, fallback time.Duration) time.Duration {
@@ -553,6 +580,19 @@ func IngestPreflightRequired() bool {
 
 func ShouldSkipIngestPreflightError(err error) bool {
 	return err != nil && !IngestPreflightRequired() && IsRetryableOperationalError(err)
+}
+
+func searchLogRequired() bool {
+	value := strings.ToLower(strings.TrimSpace(envx.String("SEARCH_LOG_REQUIRED", "true")))
+	return value != "0" && value != "false" && value != "no" && value != "off"
+}
+
+func searchLogBestEffortTimeout() time.Duration {
+	fallback := publishTimeoutDuration("KAFKA_LOG_PUBLISH_TIMEOUT_SECONDS", 45*time.Second)
+	if fallback > 8*time.Second {
+		fallback = 8 * time.Second
+	}
+	return publishTimeoutDuration("KAFKA_LOG_BEST_EFFORT_TIMEOUT_SECONDS", fallback)
 }
 
 func shouldDisableExistingLookup(err error) bool {

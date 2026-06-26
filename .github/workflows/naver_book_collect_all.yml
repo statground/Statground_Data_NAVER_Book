@@ -27,6 +27,7 @@ jobs:
       KAFKA_WRITE_BACKOFF_MAX: "20.0"
       KAFKA_RAW_PUBLISH_TIMEOUT_SECONDS: "120"
       KAFKA_LOG_PUBLISH_TIMEOUT_SECONDS: "90"
+      KAFKA_LOG_BEST_EFFORT_TIMEOUT_SECONDS: "8"
       KAFKA_PREFLIGHT_REQUIRED: "false"
       COLLECT_TERM_REQUIRED: "false"
       COLLECT_REQUIRE_SUCCESSFUL_TERM: "false"
@@ -34,6 +35,10 @@ jobs:
       COLLECT_SLEEP_MIN: "0.05"
       COLLECT_SLEEP_MAX: "0.20"
       EXISTING_ISBN_LOOKUP_ENABLED: "false"
+      SEARCH_LOG_REQUIRED: "false"
+      NAVER_API_ATTEMPTS: "3"
+      NAVER_API_BACKOFF_MIN: "0.5"
+      NAVER_API_BACKOFF_MAX: "4.0"
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -112,6 +117,9 @@ jobs:
           ALADIN_PUBLISHER_CACHE_REQUIRED: "false"
           ALADIN_PUBLISHER_COLLECTION_REQUIRED: "false"
           ALADIN_CACHE_PUBLISH_TIMEOUT_SECONDS: "20"
+          ALADIN_HTTP_ATTEMPTS: "3"
+          ALADIN_HTTP_BACKOFF_MIN: "0.5"
+          ALADIN_HTTP_BACKOFF_MAX: "4.0"
           PUBLISHER_SAMPLE_N: "30"
           ALADIN_MAX_WORKERS: "6"
           ALADIN_SLEEP_MIN: "0.05"
@@ -290,6 +298,7 @@ jobs:
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
           KAFKA_CLIENT_ID: statground-naver-book-manual
           KAFKA_PREFLIGHT_REQUIRED: "true"
+          SEARCH_LOG_REQUIRED: "true"
           MANUAL_KEYWORD: ${{ inputs.manual_keyword }}
         run: |
           go run -mod=mod ./cmd/collect_manual
