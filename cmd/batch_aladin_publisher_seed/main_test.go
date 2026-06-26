@@ -74,9 +74,27 @@ func TestAladinPublisherCacheRequiredDefaultsOptional(t *testing.T) {
 	}
 }
 
+func TestAladinPublisherCollectionRequiredDefaultsOptional(t *testing.T) {
+	t.Setenv("ALADIN_PUBLISHER_COLLECTION_REQUIRED", "")
+	if aladinPublisherCollectionRequired() {
+		t.Fatal("publisher collection should be optional by default")
+	}
+	t.Setenv("ALADIN_PUBLISHER_COLLECTION_REQUIRED", "required")
+	if !aladinPublisherCollectionRequired() {
+		t.Fatal("publisher collection should be required when explicitly enabled")
+	}
+}
+
 func TestShortOperationalErrorClassifiesAccessDenied(t *testing.T) {
 	err := fmt.Errorf("clickhouse http 500: DB::Exception: Not enough privileges. (ACCESS_DENIED)")
 	if got := shortOperationalError(err); got != "access_denied" {
 		t.Fatalf("shortOperationalError = %q, want access_denied", got)
+	}
+}
+
+func TestShortOperationalErrorClassifiesKafkaLeaderUnavailable(t *testing.T) {
+	err := fmt.Errorf(`kafka.(*Client).Produce: fetch request error: topic partition has no leader (topic="book.events" partition=2)`)
+	if got := shortOperationalError(err); got != "kafka_leader_unavailable" {
+		t.Fatalf("shortOperationalError = %q, want kafka_leader_unavailable", got)
 	}
 }

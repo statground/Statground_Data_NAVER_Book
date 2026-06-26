@@ -121,6 +121,10 @@ func aladinPublisherCacheRequired() bool {
 	return boolEnv("ALADIN_PUBLISHER_CACHE_REQUIRED", false)
 }
 
+func aladinPublisherCollectionRequired() bool {
+	return boolEnv("ALADIN_PUBLISHER_COLLECTION_REQUIRED", false)
+}
+
 func boolEnv(name string, fallback bool) bool {
 	defaultValue := "false"
 	if fallback {
@@ -181,6 +185,10 @@ func shortOperationalError(err error) string {
 		return "access_denied"
 	case strings.Contains(msg, "timeout") || strings.Contains(msg, "context deadline exceeded"):
 		return "timeout"
+	case strings.Contains(msg, "not leader") || strings.Contains(msg, "no leader") || strings.Contains(msg, "leader-metadata"):
+		return "kafka_leader_unavailable"
+	case strings.Contains(msg, "too many simultaneous queries"):
+		return "clickhouse_too_many_queries"
 	case strings.Contains(msg, "eof"):
 		return "eof"
 	default:
@@ -446,11 +454,22 @@ func collectSampledPublishers(client *ch.Client, rawNaverTable string, keys []na
 	wg.Wait()
 	close(errs)
 
+	failed := 0
+	var firstErr error
 	for err := range errs {
 		if err != nil {
-			return err
+			failed++
+			if firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
-	fmt.Printf("[FINISH] completed publishers: %d/%d\n", progress.done, len(sampled))
+	if failed > 0 {
+		if aladinPublisherCollectionRequired() {
+			return fmt.Errorf("aladin publisher seed failed publishers=%d/%d first_error=%s", failed, len(sampled), shortOperationalError(firstErr))
+		}
+		fmt.Printf("[WARN] aladin publisher seed had failed publishers=%d/%d first_error=%s; continuing because ALADIN_PUBLISHER_COLLECTION_REQUIRED=false\n", failed, len(sampled), shortOperationalError(firstErr))
+	}
+	fmt.Printf("[FINISH] completed publishers: %d/%d failed=%d\n", progress.done, len(sampled), failed)
 	return nil
 }
