@@ -46,6 +46,10 @@ func run() error {
 		return err
 	}
 	if err := c.ValidateIngest(context.Background()); err != nil {
+		if collector.ShouldSkipIngestPreflightError(err) {
+			fmt.Printf("[SKIP] %s collection skipped because Kafka preflight is temporarily unavailable error=%s\n", mode, collector.ShortOperationalError(err))
+			return nil
+		}
 		return err
 	}
 

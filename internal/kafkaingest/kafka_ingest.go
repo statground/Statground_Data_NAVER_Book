@@ -363,7 +363,13 @@ func isRetryableKafkaErrorText(message string) bool {
 		strings.Contains(msg, "leader not available") ||
 		strings.Contains(msg, "metadata are likely out of date") ||
 		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "connection refused") ||
 		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "failed to dial") ||
+		strings.Contains(msg, "failed to open connection") ||
+		strings.Contains(msg, "no route to host") ||
+		strings.Contains(msg, "network is unreachable") ||
+		strings.Contains(msg, "temporary failure in name resolution") ||
 		strings.Contains(msg, "i/o timeout") ||
 		strings.Contains(msg, "eof")
 }
@@ -380,7 +386,15 @@ func kafkaRetryReason(err error) string {
 		return "leader-not-available"
 	case strings.Contains(msg, "timeout"):
 		return "timeout"
-	case strings.Contains(msg, "eof"), strings.Contains(msg, "connection reset"), strings.Contains(msg, "broken pipe"):
+	case strings.Contains(msg, "eof"),
+		strings.Contains(msg, "connection reset"),
+		strings.Contains(msg, "connection refused"),
+		strings.Contains(msg, "broken pipe"),
+		strings.Contains(msg, "failed to dial"),
+		strings.Contains(msg, "failed to open connection"),
+		strings.Contains(msg, "no route to host"),
+		strings.Contains(msg, "network is unreachable"),
+		strings.Contains(msg, "temporary failure in name resolution"):
 		return "network"
 	default:
 		return "temporary-kafka-error"

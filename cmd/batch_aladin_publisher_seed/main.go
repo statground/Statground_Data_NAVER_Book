@@ -342,6 +342,10 @@ func run() error {
 		return err
 	}
 	if err := baseCollector.ValidateIngest(context.Background()); err != nil {
+		if collector.ShouldSkipIngestPreflightError(err) {
+			fmt.Printf("[SKIP] aladin publisher seed skipped because Kafka preflight is temporarily unavailable error=%s\n", collector.ShortOperationalError(err))
+			return nil
+		}
 		return err
 	}
 

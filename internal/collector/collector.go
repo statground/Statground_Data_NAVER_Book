@@ -546,6 +546,15 @@ func existingISBNLookupEnabled() bool {
 	return value != "0" && value != "false" && value != "no" && value != "off"
 }
 
+func IngestPreflightRequired() bool {
+	value := strings.ToLower(strings.TrimSpace(envx.String("KAFKA_PREFLIGHT_REQUIRED", "true")))
+	return value != "0" && value != "false" && value != "no" && value != "off"
+}
+
+func ShouldSkipIngestPreflightError(err error) bool {
+	return err != nil && !IngestPreflightRequired() && IsRetryableOperationalError(err)
+}
+
 func shouldDisableExistingLookup(err error) bool {
 	if err == nil {
 		return false

@@ -27,6 +27,7 @@ jobs:
       KAFKA_WRITE_BACKOFF_MAX: "20.0"
       KAFKA_RAW_PUBLISH_TIMEOUT_SECONDS: "120"
       KAFKA_LOG_PUBLISH_TIMEOUT_SECONDS: "90"
+      KAFKA_PREFLIGHT_REQUIRED: "false"
       COLLECT_TERM_REQUIRED: "false"
       COLLECT_MAX_CONSECUTIVE_FAILURES: "20"
       COLLECT_SLEEP_MIN: "0.05"
@@ -285,6 +286,7 @@ jobs:
           RAW_NAVER_TABLE: naver_book_raw
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
           KAFKA_CLIENT_ID: statground-naver-book-manual
+          KAFKA_PREFLIGHT_REQUIRED: "true"
           MANUAL_KEYWORD: ${{ inputs.manual_keyword }}
         run: |
           go run -mod=mod ./cmd/collect_manual
