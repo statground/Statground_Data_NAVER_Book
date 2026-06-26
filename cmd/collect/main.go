@@ -51,19 +51,28 @@ func run() error {
 
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	if mode == "r_package" {
-		return c.CollectRPackageBooks(rPackageSampleSize, reqsPerTerm, display)
+		packages, err := c.SampleRPackages(rPackageSampleSize)
+		if err != nil {
+			return err
+		}
+		queries := make([]string, 0, len(packages))
+		for _, pkg := range packages {
+			if query := c.RPackageBookQuery(pkg); query != "" {
+				queries = append(queries, query)
+			}
+		}
+		return runTermCollection(mode, queries, r, func(term string) error {
+			return c.CollectTerm(term, mode, reqsPerTerm, display)
+		})
 	}
 	if mode == "fixed_keyword" {
 		keywords := splitFixedKeywords(envx.String("FIXED_KEYWORDS", ""))
 		if len(keywords) == 0 {
 			return fmt.Errorf("FIXED_KEYWORDS is required for fixed_keyword mode")
 		}
-		for _, term := range keywords {
-			if err := c.CollectTerm(term, "keyword", reqsPerTerm, display); err != nil {
-				return err
-			}
-		}
-		return nil
+		return runTermCollection(mode, keywords, r, func(term string) error {
+			return c.CollectTerm(term, "keyword", reqsPerTerm, display)
+		})
 	}
 	if mode == "mixed" {
 		sample, err := c.SampleRows(100)
@@ -71,7 +80,9 @@ func run() error {
 			return err
 		}
 		term := terms.GenerateKeyword(sample, r)
-		return c.CollectTerm(term, mode, reqsPerTerm, display)
+		return runTermCollection(mode, []string{term}, r, func(term string) error {
+			return c.CollectTerm(term, mode, reqsPerTerm, display)
+		})
 	}
 
 	sample, err := c.SampleRows(sampleRows)
@@ -84,12 +95,80 @@ func run() error {
 		return nil
 	}
 	fmt.Printf("[sample] mode=%s sample_rows=%d picked_terms=%d sample_terms=%s\n", mode, len(sample), len(picked), strings.Join(sampleStrings(picked, 12), ", "))
+	return runTermCollection(mode, picked, r, func(term string) error {
+		return c.CollectTerm(term, mode, reqsPerTerm, display)
+	})
+}
+
+func runTermCollection(mode string, picked []string, r *rand.Rand, collect func(string) error) error {
+	required := collectTermRequired()
+	maxConsecutiveFailures := envx.Int("COLLECT_MAX_CONSECUTIVE_FAILURES", 20)
+	sleepMin := envx.Float("COLLECT_SLEEP_MIN", envx.Float("NAVER_SLEEP_MIN", 0))
+	sleepMax := envx.Float("COLLECT_SLEEP_MAX", envx.Float("NAVER_SLEEP_MAX", 0))
+
+	successes := 0
+	failures := 0
+	consecutiveFailures := 0
+	var firstErr error
+
 	for _, term := range picked {
-		if err := c.CollectTerm(term, mode, reqsPerTerm, display); err != nil {
-			return err
+		if err := collect(term); err != nil {
+			if required || !collector.IsRetryableOperationalError(err) {
+				return err
+			}
+			if firstErr == nil {
+				firstErr = err
+			}
+			failures++
+			consecutiveFailures++
+			fmt.Printf("[warn] %s term skipped term=%q error=%s consecutive_failures=%d\n", mode, term, collector.ShortOperationalError(err), consecutiveFailures)
+			if maxConsecutiveFailures > 0 && consecutiveFailures >= maxConsecutiveFailures {
+				if successes == 0 {
+					return fmt.Errorf("%s collection stopped after %d consecutive retryable failures with no successful terms; first_error=%s", mode, consecutiveFailures, collector.ShortOperationalError(firstErr))
+				}
+				fmt.Printf("[warn] %s collection stopped early after %d consecutive retryable failures successes=%d failures=%d\n", mode, consecutiveFailures, successes, failures)
+				break
+			}
+			continue
 		}
+		successes++
+		consecutiveFailures = 0
+		sleepBetweenTerms(r, sleepMin, sleepMax)
+	}
+
+	if len(picked) > 0 && successes == 0 && failures > 0 {
+		return fmt.Errorf("%s collection had no successful terms failures=%d first_error=%s", mode, failures, collector.ShortOperationalError(firstErr))
+	}
+	if failures > 0 {
+		fmt.Printf("[warn] %s collection completed with retryable failures=%d successes=%d\n", mode, failures, successes)
 	}
 	return nil
+}
+
+func collectTermRequired() bool {
+	value := strings.ToLower(strings.TrimSpace(envx.String("COLLECT_TERM_REQUIRED", "true")))
+	return value != "0" && value != "false" && value != "no" && value != "off"
+}
+
+func sleepBetweenTerms(r *rand.Rand, minV, maxV float64) {
+	if maxV <= 0 {
+		return
+	}
+	if minV < 0 {
+		minV = 0
+	}
+	if maxV < minV {
+		maxV = minV
+	}
+	seconds := minV
+	if maxV > minV {
+		if r == nil {
+			seconds += rand.Float64() * (maxV - minV)
+		} else {
+			seconds += r.Float64() * (maxV - minV)
+		}
+	}
+	time.Sleep(time.Duration(seconds * float64(time.Second)))
 }
 
 func sampleStrings(values []string, limit int) []string {

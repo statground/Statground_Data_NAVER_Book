@@ -2,6 +2,7 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net/url"
@@ -33,6 +34,9 @@ type Collector struct {
 	Keys      []naver.APIKey
 	Rand      *rand.Rand
 	Publisher *kafkaingest.Publisher
+
+	existingLookupDisabled      bool
+	existingLookupDisableLogged bool
 }
 
 type RPackageCandidate struct {
@@ -71,11 +75,11 @@ func New(client *ch.Client, table string, keys []naver.APIKey, seed int64) (*Col
 	}
 
 	columns := map[string]bool{}
-	if client != nil {
+	if client != nil && existingISBNLookupEnabled() {
 		if cols, err := client.QueryColumnNames(table); err == nil {
 			columns = cols
 		} else {
-			fmt.Printf("[warn] ClickHouse column lookup skipped table=%s.%s error=%v\n", client.Database, table, err)
+			fmt.Printf("[warn] ClickHouse column lookup skipped table=raw error=%s\n", ShortOperationalError(err))
 		}
 	}
 
@@ -108,11 +112,11 @@ func (c *Collector) SampleRows(limit int) ([]map[string]any, error) {
 	}
 	rows, err := rawnaver.SampleTitleAuthorPublisher(c.Client, sampleTable, limit)
 	if err != nil && sampleTable != c.Table {
-		fmt.Printf("[warn] existing book sample skipped table=%s error=%v; retrying raw table=%s\n", sampleTable, err, c.Table)
+		fmt.Printf("[warn] existing book sample skipped table=sample error=%s; retrying raw table\n", ShortOperationalError(err))
 		rows, err = rawnaver.SampleTitleAuthorPublisher(c.Client, c.Table, limit)
 	}
 	if err != nil {
-		fmt.Printf("[warn] existing book sample unavailable error=%v\n", err)
+		fmt.Printf("[warn] existing book sample unavailable error=%s\n", ShortOperationalError(err))
 		return []map[string]any{}, nil
 	}
 	return rows, nil
@@ -256,7 +260,7 @@ func (c *Collector) CollectRPackageBooks(sampleSize, reqsPerTerm, display int) e
 		return err
 	}
 	for _, pkg := range packages {
-		query := c.rPackageBookQuery(pkg)
+		query := c.RPackageBookQuery(pkg)
 		if query == "" {
 			continue
 		}
@@ -267,7 +271,7 @@ func (c *Collector) CollectRPackageBooks(sampleSize, reqsPerTerm, display int) e
 	return nil
 }
 
-func (c *Collector) rPackageBookQuery(pkg RPackageCandidate) string {
+func (c *Collector) RPackageBookQuery(pkg RPackageCandidate) string {
 	name := strings.TrimSpace(pkg.PackageName)
 	if name == "" {
 		return ""
@@ -405,11 +409,19 @@ func (c *Collector) upsertItems(items []naver.BookItem, updatedLog, defaultCreat
 	}
 
 	existingMap := map[string]rawnaver.ExistingInfo{}
-	if c.Client != nil && len(c.Columns) > 0 {
+	if c.shouldLookupExistingISBNs() {
 		var err error
 		existingMap, err = rawnaver.BuildExistingMap(c.Client, c.Table, c.Columns, isbns)
 		if err != nil {
-			fmt.Printf("[warn] existing ISBN lookup skipped table=%s.%s error=%v\n", c.Client.Database, c.Table, err)
+			category := ShortOperationalError(err)
+			fmt.Printf("[warn] existing ISBN lookup skipped table=raw error=%s\n", category)
+			if shouldDisableExistingLookup(err) {
+				c.existingLookupDisabled = true
+				if !c.existingLookupDisableLogged {
+					c.existingLookupDisableLogged = true
+					fmt.Printf("[warn] existing ISBN lookup disabled for this run after error=%s\n", category)
+				}
+			}
 			existingMap = map[string]rawnaver.ExistingInfo{}
 		}
 	}
@@ -419,7 +431,7 @@ func (c *Collector) upsertItems(items []naver.BookItem, updatedLog, defaultCreat
 		var err error
 		uuidMap, err = rawnaver.BuildUUIDMap(c.Client, c.Table, isbns)
 		if err != nil {
-			fmt.Printf("[warn] UUID lookup skipped table=%s.%s error=%v\n", c.Client.Database, c.Table, err)
+			fmt.Printf("[warn] UUID lookup skipped table=raw error=%s\n", ShortOperationalError(err))
 			uuidMap = map[string]string{}
 		}
 	}
@@ -480,7 +492,7 @@ func (c *Collector) upsertItems(items []naver.BookItem, updatedLog, defaultCreat
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), publishTimeoutDuration("KAFKA_RAW_PUBLISH_TIMEOUT_SECONDS", 90*time.Second))
 	defer cancel()
 	if err := c.Publisher.Publish(ctx, events); err != nil {
 		return err
@@ -512,9 +524,95 @@ func (c *Collector) publishSearchLog(meta SearchMeta, status string, fetchedCoun
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), publishTimeoutDuration("KAFKA_LOG_PUBLISH_TIMEOUT_SECONDS", 45*time.Second))
 	defer cancel()
 	return c.Publisher.Publish(ctx, []kafkaingest.Event{ev})
+}
+
+func publishTimeoutDuration(envName string, fallback time.Duration) time.Duration {
+	seconds := envx.Float(envName, fallback.Seconds())
+	if seconds <= 0 {
+		return fallback
+	}
+	return time.Duration(seconds * float64(time.Second))
+}
+
+func (c *Collector) shouldLookupExistingISBNs() bool {
+	return c.Client != nil && len(c.Columns) > 0 && existingISBNLookupEnabled() && !c.existingLookupDisabled
+}
+
+func existingISBNLookupEnabled() bool {
+	value := strings.ToLower(strings.TrimSpace(envx.String("EXISTING_ISBN_LOOKUP_ENABLED", "true")))
+	return value != "0" && value != "false" && value != "no" && value != "off"
+}
+
+func shouldDisableExistingLookup(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "too_many_simultaneous_queries") ||
+		strings.Contains(msg, "context deadline exceeded") ||
+		strings.Contains(msg, "client.timeout exceeded") ||
+		strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "timeout")
+}
+
+func IsRetryableOperationalError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if kafkaingest.RetryableWriteError(err) {
+		return true
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "too_many_simultaneous_queries") ||
+		strings.Contains(msg, "context deadline exceeded") ||
+		strings.Contains(msg, "client.timeout exceeded") ||
+		strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "temporary") ||
+		strings.Contains(msg, "naver api http 429") ||
+		strings.Contains(msg, "naver api http 500") ||
+		strings.Contains(msg, "naver api http 502") ||
+		strings.Contains(msg, "naver api http 503") ||
+		strings.Contains(msg, "naver api http 504")
+}
+
+func ShortOperationalError(err error) string {
+	if err == nil {
+		return ""
+	}
+	if kafkaingest.RetryableWriteError(err) {
+		return "kafka_" + kafkaingest.RetryReason(err)
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "too_many_simultaneous_queries"):
+		return "clickhouse_too_many_queries"
+	case strings.Contains(msg, "access_denied"), strings.Contains(msg, "not enough privileges"):
+		return "clickhouse_access_denied"
+	case strings.Contains(msg, "context deadline exceeded"),
+		strings.Contains(msg, "client.timeout exceeded"),
+		strings.Contains(msg, "i/o timeout"),
+		strings.Contains(msg, "timeout"):
+		return "timeout"
+	case strings.Contains(msg, "naver api http 429"):
+		return "naver_rate_limited"
+	case strings.Contains(msg, "naver api http 500"),
+		strings.Contains(msg, "naver api http 502"),
+		strings.Contains(msg, "naver api http 503"),
+		strings.Contains(msg, "naver api http 504"):
+		return "naver_unavailable"
+	case strings.Contains(msg, "connection reset"), strings.Contains(msg, "broken pipe"):
+		return "network"
+	default:
+		return "operational_error"
+	}
 }
 
 func naverSearchURL(meta SearchMeta) string {

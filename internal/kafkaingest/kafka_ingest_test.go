@@ -109,6 +109,16 @@ func TestRetryableKafkaWriteErrorRecognizesWrappedEOF(t *testing.T) {
 	}
 }
 
+func TestRetryableKafkaWriteErrorRecognizesPartitionHasNoLeaderText(t *testing.T) {
+	err := errors.New(`kafka.(*Client).Produce: fetch request error: topic partition has no leader (topic="book.events" partition=2)`)
+	if !retryableKafkaWriteError(err) {
+		t.Fatal("expected partition has no leader text to be retryable")
+	}
+	if got := kafkaRetryReason(err); got != "leader-metadata-stale" {
+		t.Fatalf("kafkaRetryReason = %q, want leader-metadata-stale", got)
+	}
+}
+
 func TestKafkaBackoffDurationCapsAtMax(t *testing.T) {
 	got := kafkaBackoffDuration(5, time.Second, 5*time.Second)
 	if got != 5*time.Second {

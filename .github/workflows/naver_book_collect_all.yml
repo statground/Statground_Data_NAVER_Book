@@ -22,9 +22,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 150
     env:
-      KAFKA_WRITE_ATTEMPTS: "5"
+      KAFKA_WRITE_ATTEMPTS: "8"
       KAFKA_WRITE_BACKOFF_MIN: "1.0"
-      KAFKA_WRITE_BACKOFF_MAX: "12.0"
+      KAFKA_WRITE_BACKOFF_MAX: "20.0"
+      KAFKA_RAW_PUBLISH_TIMEOUT_SECONDS: "120"
+      KAFKA_LOG_PUBLISH_TIMEOUT_SECONDS: "90"
+      COLLECT_TERM_REQUIRED: "false"
+      COLLECT_MAX_CONSECUTIVE_FAILURES: "20"
+      COLLECT_SLEEP_MIN: "0.05"
+      COLLECT_SLEEP_MAX: "0.20"
+      EXISTING_ISBN_LOOKUP_ENABLED: "false"
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -137,9 +144,9 @@ jobs:
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
           KAFKA_CLIENT_ID: statground-naver-book-author
           COLLECT_MODE: author
-          BATCH_SIZE: "500"
-          SAMPLE_ROWS: "8000"
-          NAVER_DISPLAY: "100"
+          BATCH_SIZE: "120"
+          SAMPLE_ROWS: "4000"
+          NAVER_DISPLAY: "50"
           REQS_PER_TERM: "1"
         run: |
           go run -mod=mod ./cmd/collect
@@ -165,9 +172,9 @@ jobs:
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
           KAFKA_CLIENT_ID: statground-naver-book-keyword
           COLLECT_MODE: keyword
-          BATCH_SIZE: "500"
-          SAMPLE_ROWS: "8000"
-          NAVER_DISPLAY: "100"
+          BATCH_SIZE: "120"
+          SAMPLE_ROWS: "4000"
+          NAVER_DISPLAY: "50"
           REQS_PER_TERM: "1"
         run: |
           go run -mod=mod ./cmd/collect
@@ -231,9 +238,9 @@ jobs:
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
           KAFKA_CLIENT_ID: statground-naver-book-publisher
           COLLECT_MODE: publisher
-          BATCH_SIZE: "500"
-          SAMPLE_ROWS: "8000"
-          NAVER_DISPLAY: "100"
+          BATCH_SIZE: "120"
+          SAMPLE_ROWS: "4000"
+          NAVER_DISPLAY: "50"
           REQS_PER_TERM: "1"
         run: |
           go run -mod=mod ./cmd/collect

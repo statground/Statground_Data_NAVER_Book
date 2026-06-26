@@ -228,6 +228,17 @@ func (p *Publisher) writeMessagesWithRetry(ctx context.Context, messages []kafka
 	return lastErr
 }
 
+func RetryableWriteError(err error) bool {
+	return retryableKafkaWriteError(err)
+}
+
+func RetryReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	return kafkaRetryReason(err)
+}
+
 func (p *Publisher) writer() *kafka.Writer {
 	w := &kafka.Writer{
 		Addr:                   kafka.TCP(p.Cfg.KafkaBrokers...),
@@ -347,6 +358,8 @@ func retryableKafkaWriteError(err error) bool {
 func isRetryableKafkaErrorText(message string) bool {
 	msg := strings.ToLower(message)
 	return strings.Contains(msg, "not leader for partition") ||
+		strings.Contains(msg, "partition has no leader") ||
+		strings.Contains(msg, "has no leader") ||
 		strings.Contains(msg, "leader not available") ||
 		strings.Contains(msg, "metadata are likely out of date") ||
 		strings.Contains(msg, "connection reset") ||
@@ -358,7 +371,10 @@ func isRetryableKafkaErrorText(message string) bool {
 func kafkaRetryReason(err error) string {
 	msg := strings.ToLower(err.Error())
 	switch {
-	case strings.Contains(msg, "not leader for partition"), strings.Contains(msg, "metadata are likely out of date"):
+	case strings.Contains(msg, "not leader for partition"),
+		strings.Contains(msg, "partition has no leader"),
+		strings.Contains(msg, "has no leader"),
+		strings.Contains(msg, "metadata are likely out of date"):
 		return "leader-metadata-stale"
 	case strings.Contains(msg, "leader not available"):
 		return "leader-not-available"

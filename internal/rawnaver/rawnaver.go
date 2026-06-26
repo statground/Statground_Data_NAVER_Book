@@ -38,7 +38,7 @@ func SampleTitleAuthorPublisher(client *ch.Client, table string, limit int) ([]m
           AND cityHash64(title, description, author, publisher, sample_salt) %% 997 = 0
         ORDER BY cityHash64(title, description, author, publisher, sample_salt)
         LIMIT %d
-        SETTINGS max_execution_time = 20, timeout_overflow_mode = 'break'
+        SETTINGS max_threads = 2, max_execution_time = 20, timeout_overflow_mode = 'break'
     `, table, limit)
 	return client.QueryJSONEachRow(sql)
 }
@@ -75,6 +75,7 @@ func BuildExistingMap(client *ch.Client, table string, columns map[string]bool, 
         WHERE isbn IN (%s)
         ORDER BY %s
         LIMIT 1 BY isbn
+        SETTINGS max_threads = 1, max_execution_time = 10, timeout_overflow_mode = 'break'
     `, table, util.QuoteStringList(cleaned), orderExpr)
 	rows, err := client.QueryJSONEachRow(sql)
 	if err != nil {
@@ -117,6 +118,7 @@ func BuildUUIDMap(client *ch.Client, table string, isbns []string) (map[string]s
         FROM %s
         WHERE isbn IN (%s)
         LIMIT 100000
+        SETTINGS max_threads = 1, max_execution_time = 10, timeout_overflow_mode = 'break'
     `, table, util.QuoteStringList(cleaned))
 	rows, err := client.QueryJSONEachRow(sql)
 	if err != nil {
