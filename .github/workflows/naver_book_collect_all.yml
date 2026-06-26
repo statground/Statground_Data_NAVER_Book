@@ -29,6 +29,7 @@ jobs:
       KAFKA_LOG_PUBLISH_TIMEOUT_SECONDS: "90"
       KAFKA_PREFLIGHT_REQUIRED: "false"
       COLLECT_TERM_REQUIRED: "false"
+      COLLECT_REQUIRE_SUCCESSFUL_TERM: "false"
       COLLECT_MAX_CONSECUTIVE_FAILURES: "20"
       COLLECT_SLEEP_MIN: "0.05"
       COLLECT_SLEEP_MAX: "0.20"
@@ -193,6 +194,7 @@ jobs:
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
           KAFKA_CLIENT_ID: statground-naver-book-webr-review-keyword
           COLLECT_MODE: fixed_keyword
+          COLLECT_MAX_CONSECUTIVE_FAILURES: "3"
           FIXED_KEYWORDS: "빅데이터 분석 기사, 사회조사분석사, ADsP, ADP"
           NAVER_DISPLAY: "100"
           REQS_PER_TERM: "1"
@@ -212,6 +214,7 @@ jobs:
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
           KAFKA_CLIENT_ID: statground-naver-book-mirtype-language-learning
           COLLECT_MODE: fixed_keyword
+          COLLECT_MAX_CONSECUTIVE_FAILURES: "3"
           FIXED_KEYWORDS: "외국어 학습, 제2외국어, 언어 학습, 언어 공부, 어학 교재, 영어 회화, 영어 문법, 영어 단어, 영어 독해, 영어 듣기, 영어 말하기, TOEIC, TOEFL, IELTS, OPIC, 일본어 기초, 일본어 회화, JLPT, 중국어 회화, 중국어 문법, HSK, 한국어 학습, TOPIK, 러시아어 기초, 러시아어 회화, 스페인어 회화, 프랑스어 회화, 독일어 회화, 이탈리아어 회화, 포르투갈어 회화, 베트남어 회화, 태국어 회화, 아랍어 기초, 힌디어 기초, 인도네시아어 기초, 라틴어 기초, language learning, foreign language vocabulary, grammar workbook, conversation practice"
           NAVER_DISPLAY: "100"
           REQS_PER_TERM: "1"

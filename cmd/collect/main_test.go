@@ -29,6 +29,7 @@ func TestRunTermCollectionContinuesRetryableErrorsWhenOptional(t *testing.T) {
 
 func TestRunTermCollectionFailsWhenAllOptionalTermsFail(t *testing.T) {
 	t.Setenv("COLLECT_TERM_REQUIRED", "false")
+	t.Setenv("COLLECT_REQUIRE_SUCCESSFUL_TERM", "true")
 	t.Setenv("COLLECT_SLEEP_MAX", "0")
 
 	err := runTermCollection("author", []string{"a", "b"}, rand.New(rand.NewSource(1)), func(string) error {
@@ -39,6 +40,38 @@ func TestRunTermCollectionFailsWhenAllOptionalTermsFail(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no successful terms") && !strings.Contains(err.Error(), "no successes") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunTermCollectionSkipsWhenAllOptionalTermsFailAndSuccessNotRequired(t *testing.T) {
+	t.Setenv("COLLECT_TERM_REQUIRED", "false")
+	t.Setenv("COLLECT_REQUIRE_SUCCESSFUL_TERM", "false")
+	t.Setenv("COLLECT_SLEEP_MAX", "0")
+
+	err := runTermCollection("fixed_keyword", []string{"a", "b"}, rand.New(rand.NewSource(1)), func(string) error {
+		return errors.New(`Kafka write errors (1/1), errors: kafka.(*Client).Produce: fetch request error: topic partition has no leader (topic="book.events" partition=2)`)
+	})
+	if err != nil {
+		t.Fatalf("expected all-retryable optional collection to skip successfully: %v", err)
+	}
+}
+
+func TestRunTermCollectionSkipsWhenConsecutiveRetryableFailuresHitLimitAndSuccessNotRequired(t *testing.T) {
+	t.Setenv("COLLECT_TERM_REQUIRED", "false")
+	t.Setenv("COLLECT_REQUIRE_SUCCESSFUL_TERM", "false")
+	t.Setenv("COLLECT_MAX_CONSECUTIVE_FAILURES", "2")
+	t.Setenv("COLLECT_SLEEP_MAX", "0")
+
+	calls := 0
+	err := runTermCollection("fixed_keyword", []string{"a", "b", "c"}, rand.New(rand.NewSource(1)), func(string) error {
+		calls++
+		return errors.New(`Kafka write errors (1/1), errors: kafka.(*Client).Produce: fetch request error: topic partition has no leader (topic="book.events" partition=2)`)
+	})
+	if err != nil {
+		t.Fatalf("expected consecutive all-retryable optional collection to skip successfully: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want stop at consecutive failure limit 2", calls)
 	}
 }
 

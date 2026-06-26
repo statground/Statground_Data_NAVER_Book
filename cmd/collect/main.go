@@ -106,6 +106,7 @@ func run() error {
 
 func runTermCollection(mode string, picked []string, r *rand.Rand, collect func(string) error) error {
 	required := collectTermRequired()
+	requireSuccessfulTerm := collectRequireSuccessfulTerm()
 	maxConsecutiveFailures := envx.Int("COLLECT_MAX_CONSECUTIVE_FAILURES", 20)
 	sleepMin := envx.Float("COLLECT_SLEEP_MIN", envx.Float("NAVER_SLEEP_MIN", 0))
 	sleepMax := envx.Float("COLLECT_SLEEP_MAX", envx.Float("NAVER_SLEEP_MAX", 0))
@@ -128,6 +129,10 @@ func runTermCollection(mode string, picked []string, r *rand.Rand, collect func(
 			fmt.Printf("[warn] %s term skipped term=%q error=%s consecutive_failures=%d\n", mode, term, collector.ShortOperationalError(err), consecutiveFailures)
 			if maxConsecutiveFailures > 0 && consecutiveFailures >= maxConsecutiveFailures {
 				if successes == 0 {
+					if !requireSuccessfulTerm {
+						fmt.Printf("[SKIP] %s collection stopped after %d consecutive retryable failures with no successful terms; first_error=%s\n", mode, consecutiveFailures, collector.ShortOperationalError(firstErr))
+						return nil
+					}
 					return fmt.Errorf("%s collection stopped after %d consecutive retryable failures with no successful terms; first_error=%s", mode, consecutiveFailures, collector.ShortOperationalError(firstErr))
 				}
 				fmt.Printf("[warn] %s collection stopped early after %d consecutive retryable failures successes=%d failures=%d\n", mode, consecutiveFailures, successes, failures)
@@ -141,6 +146,10 @@ func runTermCollection(mode string, picked []string, r *rand.Rand, collect func(
 	}
 
 	if len(picked) > 0 && successes == 0 && failures > 0 {
+		if !requireSuccessfulTerm {
+			fmt.Printf("[SKIP] %s collection had no successful terms but all failures were retryable failures=%d first_error=%s\n", mode, failures, collector.ShortOperationalError(firstErr))
+			return nil
+		}
 		return fmt.Errorf("%s collection had no successful terms failures=%d first_error=%s", mode, failures, collector.ShortOperationalError(firstErr))
 	}
 	if failures > 0 {
@@ -151,6 +160,11 @@ func runTermCollection(mode string, picked []string, r *rand.Rand, collect func(
 
 func collectTermRequired() bool {
 	value := strings.ToLower(strings.TrimSpace(envx.String("COLLECT_TERM_REQUIRED", "true")))
+	return value != "0" && value != "false" && value != "no" && value != "off"
+}
+
+func collectRequireSuccessfulTerm() bool {
+	value := strings.ToLower(strings.TrimSpace(envx.String("COLLECT_REQUIRE_SUCCESSFUL_TERM", "true")))
 	return value != "0" && value != "false" && value != "no" && value != "off"
 }
 
