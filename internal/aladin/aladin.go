@@ -123,7 +123,7 @@ func FetchPage(page int, cnt string, baseURL string, sleepMin, sleepMax float64,
 		return 0, nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return 0, nil, fmt.Errorf("aladin http %d: %s", resp.StatusCode, strings.TrimSpace(string(payload)))
+		return 0, nil, aladinHTTPStatusError(resp.StatusCode, payload)
 	}
 	return page, ExtractPublishers(string(payload)), nil
 }
@@ -145,7 +145,7 @@ func DetectCntAndLastPage(baseURL string) (string, int, error) {
 		return "", 0, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", 0, fmt.Errorf("aladin http %d: %s", resp.StatusCode, strings.TrimSpace(string(payload)))
+		return "", 0, aladinHTTPStatusError(resp.StatusCode, payload)
 	}
 	html := string(payload)
 	cnt := ParseCnt(html)
@@ -157,6 +157,29 @@ func DetectCntAndLastPage(baseURL string) (string, int, error) {
 		return "", 0, fmt.Errorf("failed to detect Aladin last page")
 	}
 	return cnt, last, nil
+}
+
+func aladinHTTPStatusError(status int, payload []byte) error {
+	body := compactHTTPBody(payload)
+	if body == "" {
+		body = http.StatusText(status)
+	}
+	if body == "" {
+		body = "non-200 response"
+	}
+	return fmt.Errorf("aladin http %d: %s", status, body)
+}
+
+func compactHTTPBody(payload []byte) string {
+	body := html.UnescapeString(string(payload))
+	body = reTags.ReplaceAllString(body, " ")
+	body = strings.Join(strings.Fields(body), " ")
+	body = strings.TrimSpace(body)
+	const maxLen = 240
+	if len(body) > maxLen {
+		body = strings.TrimSpace(body[:maxLen]) + "..."
+	}
+	return body
 }
 
 func CrawlPublishersDynamic(baseURL string, maxWorkers int, sleepMin, sleepMax float64, r *rand.Rand) ([]string, int, error) {

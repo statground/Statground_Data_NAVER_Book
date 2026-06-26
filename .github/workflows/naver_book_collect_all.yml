@@ -90,8 +90,16 @@ jobs:
           PRODUCER_IP: "::"
           RAW_NAVER_TABLE: naver_book_raw
           ALADIN_CACHE_TABLE: Data_Book_NAVER_Log.aladin_publisher_cache
+          CH_HOST: ${{ secrets.CLICKHOUSE_HOST || secrets.CH_HOST }}
+          CH_PORT: ${{ secrets.CLICKHOUSE_PORT || secrets.CH_PORT }}
+          CH_USER: ${{ secrets.CLICKHOUSE_USER || secrets.CH_USER }}
+          CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD || secrets.CH_PASSWORD }}
+          CH_PROTOCOL: ${{ secrets.CLICKHOUSE_PROTOCOL || secrets.CH_PROTOCOL || 'http' }}
+          CH_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH || secrets.CH_HTTP_URL_PATH }}
+          CH_DATABASE: Data_Book_NAVER_Raw
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
           KAFKA_CLIENT_ID: statground-naver-book-aladin-publisher-seed
+          ALADIN_PUBLISHER_SEED_REQUIRED: "false"
           PUBLISHER_SAMPLE_N: "100"
           ALADIN_MAX_WORKERS: "6"
           ALADIN_SLEEP_MIN: "0.05"

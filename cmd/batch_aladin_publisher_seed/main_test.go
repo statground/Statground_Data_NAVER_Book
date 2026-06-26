@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestCleanPublisherSeedsSkipsBroadAndDuplicateSeeds(t *testing.T) {
 	got, skipped := cleanPublisherSeeds([]string{
@@ -23,5 +26,39 @@ func TestCleanPublisherSeedsSkipsBroadAndDuplicateSeeds(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("cleaned publishers = %v, want %v", got, want)
 		}
+	}
+}
+
+func TestShouldSkipAladinPublisherSeedForTemporaryErrorByDefault(t *testing.T) {
+	t.Setenv("ALADIN_PUBLISHER_SEED_REQUIRED", "")
+	err := fmt.Errorf("aladin http 503: Service Unavailable")
+	if !shouldSkipAladinPublisherSeed(err) {
+		t.Fatal("expected temporary Aladin 503 to be skippable by default")
+	}
+}
+
+func TestShouldNotSkipAladinPublisherSeedWhenRequired(t *testing.T) {
+	t.Setenv("ALADIN_PUBLISHER_SEED_REQUIRED", "true")
+	err := fmt.Errorf("aladin http 503: Service Unavailable")
+	if shouldSkipAladinPublisherSeed(err) {
+		t.Fatal("expected required Aladin publisher seed to fail on 503")
+	}
+}
+
+func TestTemporaryAladinErrorClassification(t *testing.T) {
+	cases := []string{
+		"aladin http 429: Too Many Requests",
+		"aladin http 502: Bad Gateway",
+		"aladin http 503: Service Unavailable",
+		"Get https://www.aladin.co.kr: context deadline exceeded",
+		"Post https://www.aladin.co.kr: EOF",
+	}
+	for _, tc := range cases {
+		if !isTemporaryAladinError(fmt.Errorf("%s", tc)) {
+			t.Fatalf("expected temporary Aladin error for %q", tc)
+		}
+	}
+	if isTemporaryAladinError(fmt.Errorf("failed to detect Aladin last page")) {
+		t.Fatal("parse/contract errors should not be treated as temporary")
 	}
 }

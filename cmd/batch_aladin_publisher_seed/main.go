@@ -32,23 +32,52 @@ func loadCachedPublishersIfFresh(client *ch.Client, cacheTable string, currentLa
 	if client == nil || strings.TrimSpace(cacheTable) == "" || currentLastPage <= 0 {
 		return nil, nil
 	}
+	cachedLastPage, err := cachedPublisherLastPage(client, cacheTable)
+	if err != nil {
+		fmt.Printf("[CACHE] load skipped table=%s error=%v\n", cacheTable, err)
+		return nil, nil
+	}
+	if cachedLastPage != currentLastPage {
+		return nil, nil
+	}
+	return loadCachedPublishersForPage(client, cacheTable, currentLastPage)
+}
+
+func loadCachedPublishersLatest(client *ch.Client, cacheTable string) ([]string, int, error) {
+	if client == nil || strings.TrimSpace(cacheTable) == "" {
+		return nil, 0, nil
+	}
+	lastPage, err := cachedPublisherLastPage(client, cacheTable)
+	if err != nil {
+		return nil, 0, err
+	}
+	if lastPage <= 0 {
+		return nil, 0, nil
+	}
+	publishers, err := loadCachedPublishersForPage(client, cacheTable, lastPage)
+	return publishers, lastPage, err
+}
+
+func cachedPublisherLastPage(client *ch.Client, cacheTable string) (int, error) {
 	row, err := client.QuerySingleRow(fmt.Sprintf(`
         SELECT ifNull(max(detected_last_page), 0) AS last_page
         FROM %s
     `, cacheTable))
 	if err != nil {
-		fmt.Printf("[CACHE] load skipped table=%s error=%v\n", cacheTable, err)
-		return nil, nil
+		return 0, err
 	}
-	cachedLastPage := int(util.ToInt64(row["last_page"]))
-	if cachedLastPage != currentLastPage {
+	return int(util.ToInt64(row["last_page"])), nil
+}
+
+func loadCachedPublishersForPage(client *ch.Client, cacheTable string, lastPage int) ([]string, error) {
+	if client == nil || strings.TrimSpace(cacheTable) == "" || lastPage <= 0 {
 		return nil, nil
 	}
 	rows, err := client.QueryJSONEachRow(fmt.Sprintf(`
         SELECT DISTINCT publisher
         FROM %s
         WHERE detected_last_page = %d
-    `, cacheTable, currentLastPage))
+    `, cacheTable, lastPage))
 	if err != nil {
 		fmt.Printf("[CACHE] publisher query skipped table=%s error=%v\n", cacheTable, err)
 		return nil, nil
@@ -68,6 +97,50 @@ func loadCachedPublishersIfFresh(client *ch.Client, cacheTable string, currentLa
 	}
 	sort.Strings(pubs)
 	return pubs, nil
+}
+
+func aladinPublisherSeedRequired() bool {
+	switch strings.ToLower(strings.TrimSpace(envx.String("ALADIN_PUBLISHER_SEED_REQUIRED", "false"))) {
+	case "1", "true", "yes", "y", "required":
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldSkipAladinPublisherSeed(err error) bool {
+	return err != nil && !aladinPublisherSeedRequired() && isTemporaryAladinError(err)
+}
+
+func isTemporaryAladinError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "aladin http 429") ||
+		strings.Contains(msg, "aladin http 500") ||
+		strings.Contains(msg, "aladin http 502") ||
+		strings.Contains(msg, "aladin http 503") ||
+		strings.Contains(msg, "aladin http 504") ||
+		strings.Contains(msg, "service unavailable") ||
+		strings.Contains(msg, "too many requests") ||
+		strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "context deadline exceeded") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "eof")
+}
+
+func fallbackCachedPublishers(client *ch.Client, cacheTable string) ([]string, int) {
+	publishers, lastPage, err := loadCachedPublishersLatest(client, cacheTable)
+	if err != nil {
+		fmt.Printf("[CACHE] latest fallback skipped table=%s error=%v\n", cacheTable, err)
+		return nil, 0
+	}
+	if len(publishers) > 0 {
+		fmt.Printf("[CACHE] use latest cached publishers table=%s last_page=%d publishers=%d\n", cacheTable, lastPage, len(publishers))
+	}
+	return publishers, lastPage
 }
 
 func cleanPublisherSeeds(publishers []string) ([]string, int) {
@@ -191,6 +264,7 @@ func run() error {
 	naverSleepMax := envx.Float("NAVER_SLEEP_MAX", 0.20)
 	reqsPerTerm := envx.Int("REQS_PER_TERM", 1)
 	publisherMaxTotal := envx.Int("ALADIN_PUBLISHER_MAX_TOTAL", 5000)
+	publisherSeedRequired := aladinPublisherSeedRequired()
 
 	baseCollector, err := collector.New(client, rawNaverTable, keys, time.Now().UnixNano())
 	if err != nil {
@@ -203,7 +277,21 @@ func run() error {
 	runUUID := util.UUIDv7()
 	_, currentLastPage, err := aladin.DetectCntAndLastPage(aladinURL)
 	if err != nil {
-		return err
+		if !shouldSkipAladinPublisherSeed(err) {
+			return err
+		}
+		fmt.Printf("[ALADIN] publisher list unavailable; using cache fallback or skipping seed step error=%v\n", err)
+		publishers, cachedLastPage := fallbackCachedPublishers(client, cacheTable)
+		if len(publishers) == 0 {
+			if publisherSeedRequired {
+				return fmt.Errorf("no publishers collected from Aladin")
+			}
+			fmt.Printf("[SKIP] aladin publisher seed skipped because Aladin is temporarily unavailable and no cached publishers are available\n")
+			return nil
+		}
+		currentLastPage = cachedLastPage
+		sampled := samplePublishers(publishers, publisherSampleN, rand.New(rand.NewSource(time.Now().UnixNano())))
+		return collectSampledPublishers(client, rawNaverTable, keys, sampled, reqsPerTerm, display, naverMaxWorkers, naverSleepMin, naverSleepMax, publisherMaxTotal)
 	}
 
 	publishers, err := loadCachedPublishersIfFresh(client, cacheTable, currentLastPage)
@@ -216,20 +304,40 @@ func run() error {
 		rr := rand.New(rand.NewSource(time.Now().UnixNano()))
 		publishers, _, err = aladin.CrawlPublishersDynamic(aladinURL, aladinMaxWorkers, aladinSleepMin, aladinSleepMax, rr)
 		if err != nil {
-			return err
-		}
-		var skipped int
-		publishers, skipped = cleanPublisherSeeds(publishers)
-		fmt.Printf("[ALADIN] crawled publishers=%d skipped=%d last_page=%d\n", len(publishers), skipped, currentLastPage)
-		if err := publishPublishersCache(baseCollector.Publisher, aladinURL, publishers, currentLastPage, runUUID); err != nil {
-			return err
+			if !shouldSkipAladinPublisherSeed(err) {
+				return err
+			}
+			fmt.Printf("[ALADIN] publisher crawl unavailable; using cache fallback or skipping seed step error=%v\n", err)
+			publishers, currentLastPage = fallbackCachedPublishers(client, cacheTable)
+			if len(publishers) == 0 {
+				if publisherSeedRequired {
+					return fmt.Errorf("no publishers collected from Aladin")
+				}
+				fmt.Printf("[SKIP] aladin publisher seed skipped because Aladin is temporarily unavailable and no cached publishers are available\n")
+				return nil
+			}
+		} else {
+			var skipped int
+			publishers, skipped = cleanPublisherSeeds(publishers)
+			fmt.Printf("[ALADIN] crawled publishers=%d skipped=%d last_page=%d\n", len(publishers), skipped, currentLastPage)
+			if err := publishPublishersCache(baseCollector.Publisher, aladinURL, publishers, currentLastPage, runUUID); err != nil {
+				return err
+			}
 		}
 	}
 	if len(publishers) == 0 {
+		if !publisherSeedRequired {
+			fmt.Printf("[SKIP] aladin publisher seed skipped because no publishers are available\n")
+			return nil
+		}
 		return fmt.Errorf("no publishers collected from Aladin")
 	}
 
 	sampled := samplePublishers(publishers, publisherSampleN, rand.New(rand.NewSource(time.Now().UnixNano())))
+	return collectSampledPublishers(client, rawNaverTable, keys, sampled, reqsPerTerm, display, naverMaxWorkers, naverSleepMin, naverSleepMax, publisherMaxTotal)
+}
+
+func collectSampledPublishers(client *ch.Client, rawNaverTable string, keys []naver.APIKey, sampled []string, reqsPerTerm, display, naverMaxWorkers int, naverSleepMin, naverSleepMax float64, publisherMaxTotal int) error {
 	fmt.Printf("[SAMPLE] picked %d publishers\n", len(sampled))
 
 	if naverMaxWorkers <= 0 {
