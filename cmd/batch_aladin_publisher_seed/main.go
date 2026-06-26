@@ -21,6 +21,11 @@ import (
 	"statground_naver_book_go/internal/util"
 )
 
+type publisherCacheSnapshot struct {
+	RunUUID  string
+	LastPage int
+}
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -32,54 +37,63 @@ func loadCachedPublishersIfFresh(client *ch.Client, cacheTable string, currentLa
 	if client == nil || strings.TrimSpace(cacheTable) == "" || currentLastPage <= 0 {
 		return nil, nil
 	}
-	cachedLastPage, err := cachedPublisherLastPage(client, cacheTable)
+	snapshot, err := latestPublisherCacheSnapshot(client, cacheTable)
 	if err != nil {
-		fmt.Printf("[CACHE] load skipped table=%s error=%v\n", cacheTable, err)
+		fmt.Printf("[CACHE] load skipped table=%s error=%s\n", cacheTable, shortOperationalError(err))
 		return nil, nil
 	}
-	if cachedLastPage != currentLastPage {
+	if snapshot.LastPage != currentLastPage {
 		return nil, nil
 	}
-	return loadCachedPublishersForPage(client, cacheTable, currentLastPage)
+	return loadCachedPublishersForSnapshot(client, cacheTable, snapshot)
 }
 
 func loadCachedPublishersLatest(client *ch.Client, cacheTable string) ([]string, int, error) {
 	if client == nil || strings.TrimSpace(cacheTable) == "" {
 		return nil, 0, nil
 	}
-	lastPage, err := cachedPublisherLastPage(client, cacheTable)
+	snapshot, err := latestPublisherCacheSnapshot(client, cacheTable)
 	if err != nil {
 		return nil, 0, err
 	}
-	if lastPage <= 0 {
+	if snapshot.LastPage <= 0 {
 		return nil, 0, nil
 	}
-	publishers, err := loadCachedPublishersForPage(client, cacheTable, lastPage)
-	return publishers, lastPage, err
+	publishers, err := loadCachedPublishersForSnapshot(client, cacheTable, snapshot)
+	return publishers, snapshot.LastPage, err
 }
 
-func cachedPublisherLastPage(client *ch.Client, cacheTable string) (int, error) {
+func latestPublisherCacheSnapshot(client *ch.Client, cacheTable string) (publisherCacheSnapshot, error) {
 	row, err := client.QuerySingleRow(fmt.Sprintf(`
-        SELECT ifNull(max(detected_last_page), 0) AS last_page
+        SELECT toString(run_uuid) AS run_uuid, detected_last_page
         FROM %s
+        ORDER BY collected_at DESC
+        LIMIT 1
+        SETTINGS max_threads = 1
     `, cacheTable))
 	if err != nil {
-		return 0, err
+		return publisherCacheSnapshot{}, err
 	}
-	return int(util.ToInt64(row["last_page"])), nil
+	return publisherCacheSnapshot{
+		RunUUID:  strings.TrimSpace(util.ToString(row["run_uuid"])),
+		LastPage: int(util.ToInt64(row["detected_last_page"])),
+	}, nil
 }
 
-func loadCachedPublishersForPage(client *ch.Client, cacheTable string, lastPage int) ([]string, error) {
-	if client == nil || strings.TrimSpace(cacheTable) == "" || lastPage <= 0 {
+func loadCachedPublishersForSnapshot(client *ch.Client, cacheTable string, snapshot publisherCacheSnapshot) ([]string, error) {
+	if client == nil || strings.TrimSpace(cacheTable) == "" || snapshot.LastPage <= 0 || strings.TrimSpace(snapshot.RunUUID) == "" {
 		return nil, nil
 	}
 	rows, err := client.QueryJSONEachRow(fmt.Sprintf(`
         SELECT DISTINCT publisher
         FROM %s
-        WHERE detected_last_page = %d
-    `, cacheTable, lastPage))
+        WHERE run_uuid = toUUID(%s)
+          AND detected_last_page = %d
+        ORDER BY publisher
+        SETTINGS max_threads = 1
+    `, cacheTable, util.SQLString(snapshot.RunUUID), snapshot.LastPage))
 	if err != nil {
-		fmt.Printf("[CACHE] publisher query skipped table=%s error=%v\n", cacheTable, err)
+		fmt.Printf("[CACHE] publisher query skipped table=%s error=%s\n", cacheTable, shortOperationalError(err))
 		return nil, nil
 	}
 	pubs := make([]string, 0, len(rows))
@@ -100,11 +114,25 @@ func loadCachedPublishersForPage(client *ch.Client, cacheTable string, lastPage 
 }
 
 func aladinPublisherSeedRequired() bool {
-	switch strings.ToLower(strings.TrimSpace(envx.String("ALADIN_PUBLISHER_SEED_REQUIRED", "false"))) {
+	return boolEnv("ALADIN_PUBLISHER_SEED_REQUIRED", false)
+}
+
+func aladinPublisherCacheRequired() bool {
+	return boolEnv("ALADIN_PUBLISHER_CACHE_REQUIRED", false)
+}
+
+func boolEnv(name string, fallback bool) bool {
+	defaultValue := "false"
+	if fallback {
+		defaultValue = "true"
+	}
+	switch strings.ToLower(strings.TrimSpace(envx.String(name, defaultValue))) {
 	case "1", "true", "yes", "y", "required":
 		return true
-	default:
+	case "0", "false", "no", "n", "optional":
 		return false
+	default:
+		return fallback
 	}
 }
 
@@ -134,13 +162,35 @@ func isTemporaryAladinError(err error) bool {
 func fallbackCachedPublishers(client *ch.Client, cacheTable string) ([]string, int) {
 	publishers, lastPage, err := loadCachedPublishersLatest(client, cacheTable)
 	if err != nil {
-		fmt.Printf("[CACHE] latest fallback skipped table=%s error=%v\n", cacheTable, err)
+		fmt.Printf("[CACHE] latest fallback skipped table=%s error=%s\n", cacheTable, shortOperationalError(err))
 		return nil, 0
 	}
 	if len(publishers) > 0 {
 		fmt.Printf("[CACHE] use latest cached publishers table=%s last_page=%d publishers=%d\n", cacheTable, lastPage, len(publishers))
 	}
 	return publishers, lastPage
+}
+
+func shortOperationalError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "access_denied") || strings.Contains(msg, "not enough privileges"):
+		return "access_denied"
+	case strings.Contains(msg, "timeout") || strings.Contains(msg, "context deadline exceeded"):
+		return "timeout"
+	case strings.Contains(msg, "eof"):
+		return "eof"
+	default:
+		out := strings.Join(strings.Fields(err.Error()), " ")
+		const maxLen = 220
+		if len(out) > maxLen {
+			out = strings.TrimSpace(out[:maxLen]) + "..."
+		}
+		return out
+	}
 }
 
 func cleanPublisherSeeds(publishers []string) ([]string, int) {
@@ -174,7 +224,11 @@ func publishPublishersCache(pub *kafkaingest.Publisher, sourceURL string, publis
 		if len(events) == 0 {
 			return nil
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		timeout := envx.Int("ALADIN_CACHE_PUBLISH_TIMEOUT_SECONDS", 20)
+		if timeout <= 0 {
+			timeout = 20
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 		defer cancel()
 		if err := pub.Publish(ctx, events); err != nil {
 			return err
@@ -221,6 +275,15 @@ func publishPublishersCache(pub *kafkaingest.Publisher, sourceURL string, publis
 		return err
 	}
 	fmt.Printf("[CACHE] published aladin publisher cache events=%d last_page=%d topic=%s\n", len(seen), detectedLastPage, pub.Cfg.KafkaTopic)
+	return nil
+}
+
+func publishPublishersCacheBestEffort(pub *kafkaingest.Publisher, sourceURL string, publishers []string, detectedLastPage int, runUUID string) error {
+	err := publishPublishersCache(pub, sourceURL, publishers, detectedLastPage, runUUID)
+	if err == nil || aladinPublisherCacheRequired() {
+		return err
+	}
+	fmt.Printf("[CACHE] publisher cache publish skipped after error=%s; continuing with sampled NAVER collection\n", shortOperationalError(err))
 	return nil
 }
 
@@ -320,7 +383,7 @@ func run() error {
 			var skipped int
 			publishers, skipped = cleanPublisherSeeds(publishers)
 			fmt.Printf("[ALADIN] crawled publishers=%d skipped=%d last_page=%d\n", len(publishers), skipped, currentLastPage)
-			if err := publishPublishersCache(baseCollector.Publisher, aladinURL, publishers, currentLastPage, runUUID); err != nil {
+			if err := publishPublishersCacheBestEffort(baseCollector.Publisher, aladinURL, publishers, currentLastPage, runUUID); err != nil {
 				return err
 			}
 		}

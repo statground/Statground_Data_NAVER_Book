@@ -100,6 +100,8 @@ jobs:
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
           KAFKA_CLIENT_ID: statground-naver-book-aladin-publisher-seed
           ALADIN_PUBLISHER_SEED_REQUIRED: "false"
+          ALADIN_PUBLISHER_CACHE_REQUIRED: "false"
+          ALADIN_CACHE_PUBLISH_TIMEOUT_SECONDS: "20"
           PUBLISHER_SAMPLE_N: "100"
           ALADIN_MAX_WORKERS: "6"
           ALADIN_SLEEP_MIN: "0.05"

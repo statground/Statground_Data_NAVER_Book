@@ -62,3 +62,21 @@ func TestTemporaryAladinErrorClassification(t *testing.T) {
 		t.Fatal("parse/contract errors should not be treated as temporary")
 	}
 }
+
+func TestAladinPublisherCacheRequiredDefaultsOptional(t *testing.T) {
+	t.Setenv("ALADIN_PUBLISHER_CACHE_REQUIRED", "")
+	if aladinPublisherCacheRequired() {
+		t.Fatal("publisher cache should be optional by default")
+	}
+	t.Setenv("ALADIN_PUBLISHER_CACHE_REQUIRED", "true")
+	if !aladinPublisherCacheRequired() {
+		t.Fatal("publisher cache should be required when explicitly enabled")
+	}
+}
+
+func TestShortOperationalErrorClassifiesAccessDenied(t *testing.T) {
+	err := fmt.Errorf("clickhouse http 500: DB::Exception: Not enough privileges. (ACCESS_DENIED)")
+	if got := shortOperationalError(err); got != "access_denied" {
+		t.Fatalf("shortOperationalError = %q, want access_denied", got)
+	}
+}
