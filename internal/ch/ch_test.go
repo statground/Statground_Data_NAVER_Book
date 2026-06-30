@@ -53,3 +53,15 @@ func TestNewFromEnvAcceptsClickHousePrefixedNames(t *testing.T) {
 		t.Fatalf("baseURL() = %q, want %q", got, want)
 	}
 }
+
+func TestSplitQualifiedTable(t *testing.T) {
+	db, table := SplitQualifiedTable("Data_Book_NAVER_Log.naver_collect_log", "Data_Book_NAVER_Raw")
+	if db != "Data_Book_NAVER_Log" || table != "naver_collect_log" {
+		t.Fatalf("qualified split = %s.%s", db, table)
+	}
+
+	db, table = SplitQualifiedTable("naver_book_raw", "Data_Book_NAVER_Raw")
+	if db != "Data_Book_NAVER_Raw" || table != "naver_book_raw" {
+		t.Fatalf("unqualified split = %s.%s", db, table)
+	}
+}

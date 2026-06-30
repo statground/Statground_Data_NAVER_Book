@@ -1,4 +1,4 @@
-name: NAVER Book Collector - All Kafka
+name: NAVER Book Collector - Direct DB
 
 on:
   schedule:
@@ -22,13 +22,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 150
     env:
-      KAFKA_WRITE_ATTEMPTS: "8"
-      KAFKA_WRITE_BACKOFF_MIN: "1.0"
-      KAFKA_WRITE_BACKOFF_MAX: "20.0"
-      KAFKA_RAW_PUBLISH_TIMEOUT_SECONDS: "120"
-      KAFKA_LOG_PUBLISH_TIMEOUT_SECONDS: "90"
-      KAFKA_LOG_BEST_EFFORT_TIMEOUT_SECONDS: "8"
-      KAFKA_PREFLIGHT_REQUIRED: "false"
+      DB_PREFLIGHT_REQUIRED: "true"
+      DB_LOG_WRITE_TIMEOUT_SECONDS: "60"
+      DB_LOG_BEST_EFFORT_TIMEOUT_SECONDS: "8"
       COLLECT_TERM_REQUIRED: "false"
       COLLECT_REQUIRE_SUCCESSFUL_TERM: "false"
       COLLECT_MAX_CONSECUTIVE_FAILURES: "20"
@@ -52,30 +48,27 @@ jobs:
       - name: Validate required repository secrets
         env:
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
-          KAFKA_BROKERS: ${{ secrets.KAFKA_BROKERS2 || secrets.KAFKA_BROKERS }}
-          KAFKA_USERNAME: ${{ secrets.KAFKA_USERNAME2 || secrets.KAFKA_USERNAME || secrets.KAFKA_EXTERNAL_USER }}
-          KAFKA_PASSWORD: ${{ secrets.KAFKA_PASSWORD2 || secrets.KAFKA_PASSWORD || secrets.KAFKA_EXTERNAL_PASSWORD }}
+          CH_HOST: ${{ secrets.CLICKHOUSE_HOST || secrets.CH_HOST }}
+          CH_PORT: ${{ secrets.CLICKHOUSE_PORT || secrets.CH_PORT }}
+          CH_USER: ${{ secrets.CLICKHOUSE_USER || secrets.CH_USER }}
+          CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD || secrets.CH_PASSWORD }}
         run: |
           test -n "$NAVER_API_KEYS" || { echo "NAVER_API_KEYS secret is required"; exit 1; }
-          test -n "$KAFKA_BROKERS" || { echo "KAFKA_BROKERS secret is required"; exit 1; }
-          test -n "$KAFKA_USERNAME" || { echo "Kafka SASL username is required. Add either KAFKA_USERNAME or KAFKA_EXTERNAL_USER repository secret"; exit 1; }
-          test -n "$KAFKA_PASSWORD" || { echo "Kafka SASL password is required. Add either KAFKA_PASSWORD or KAFKA_EXTERNAL_PASSWORD repository secret"; exit 1; }
+          test -n "$CH_HOST" || { echo "CLICKHOUSE_HOST or CH_HOST secret is required"; exit 1; }
+          test -n "$CH_USER" || { echo "CLICKHOUSE_USER or CH_USER secret is required"; exit 1; }
+          test -n "$CH_PASSWORD" || { echo "CLICKHOUSE_PASSWORD or CH_PASSWORD secret is required"; exit 1; }
           python3 - <<'PY'
           import hashlib
           import os
 
-          brokers = os.environ.get("KAFKA_BROKERS", "")
-          safe = brokers.replace(".", "[.]").replace(":", "[:]").replace(",", ", ")
-          print(f"KAFKA_BROKERS_SANITIZED={safe}")
-          print(f"KAFKA_BROKERS_SHA256={hashlib.sha256(brokers.encode()).hexdigest()}")
+          host = os.environ.get("CH_HOST", "")
+          safe = host.replace(".", "[.]").replace(":", "[:]")
+          print(f"CLICKHOUSE_HOST_SANITIZED={safe}")
+          print(f"CLICKHOUSE_HOST_SHA256={hashlib.sha256(host.encode()).hexdigest()}")
           PY
-          case ",$KAFKA_BROKERS," in
-            *,180.66.240.243:50004,*)
-              echo "KAFKA_BROKERS still contains a retired broker endpoint"
-              exit 1
-              ;;
-            *,127.0.0.1:*|*,localhost:*|*,0.0.0.0:*|*,[::1]:*)
-              echo "KAFKA_BROKERS must be a public IP/domain endpoint, not a loopback address"
+          case "$CH_HOST" in
+            127.0.0.1|localhost|0.0.0.0|::1|[::1])
+              echo "ClickHouse host must be reachable from GitHub Actions, not a loopback address"
               exit 1
               ;;
           esac
@@ -93,13 +86,8 @@ jobs:
         run: |
           go build -mod=mod ./cmd/collect ./cmd/collect_manual ./cmd/batch_aladin_publisher_seed ./cmd/refresh_webr_book_catalog
 
-      - name: Collect Aladin publisher seed and NAVER books via Kafka
+      - name: Collect Aladin publisher seed and NAVER books via direct DB
         env:
-          INGEST_MODE: kafka
-          KAFKA_BROKERS: ${{ secrets.KAFKA_BROKERS2 || secrets.KAFKA_BROKERS }}
-          KAFKA_USERNAME: ${{ secrets.KAFKA_USERNAME2 || secrets.KAFKA_USERNAME || secrets.KAFKA_EXTERNAL_USER }}
-          KAFKA_PASSWORD: ${{ secrets.KAFKA_PASSWORD2 || secrets.KAFKA_PASSWORD || secrets.KAFKA_EXTERNAL_PASSWORD }}
-          KAFKA_TOPIC: book.events
           PRODUCER_SOURCE: github_actions
           PRODUCER_IP: "::"
           RAW_NAVER_TABLE: naver_book_raw
@@ -112,11 +100,9 @@ jobs:
           CH_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH || secrets.CH_HTTP_URL_PATH }}
           CH_DATABASE: Data_Book_NAVER_Raw
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
-          KAFKA_CLIENT_ID: statground-naver-book-aladin-publisher-seed
           ALADIN_PUBLISHER_SEED_REQUIRED: "false"
           ALADIN_PUBLISHER_CACHE_REQUIRED: "false"
           ALADIN_PUBLISHER_COLLECTION_REQUIRED: "false"
-          ALADIN_CACHE_PUBLISH_TIMEOUT_SECONDS: "20"
           ALADIN_HTTP_ATTEMPTS: "3"
           ALADIN_HTTP_BACKOFF_MIN: "0.5"
           ALADIN_HTTP_BACKOFF_MAX: "4.0"
@@ -133,13 +119,8 @@ jobs:
         run: |
           go run -mod=mod ./cmd/batch_aladin_publisher_seed
 
-      - name: Collect NAVER books via Kafka (author)
+      - name: Collect NAVER books via direct DB (author)
         env:
-          INGEST_MODE: kafka
-          KAFKA_BROKERS: ${{ secrets.KAFKA_BROKERS2 || secrets.KAFKA_BROKERS }}
-          KAFKA_USERNAME: ${{ secrets.KAFKA_USERNAME2 || secrets.KAFKA_USERNAME || secrets.KAFKA_EXTERNAL_USER }}
-          KAFKA_PASSWORD: ${{ secrets.KAFKA_PASSWORD2 || secrets.KAFKA_PASSWORD || secrets.KAFKA_EXTERNAL_PASSWORD }}
-          KAFKA_TOPIC: book.events
           PRODUCER_SOURCE: github_actions
           PRODUCER_IP: "::"
           RAW_NAVER_TABLE: naver_book_raw
@@ -152,7 +133,6 @@ jobs:
           CH_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH || secrets.CH_HTTP_URL_PATH }}
           CH_DATABASE: Data_Book_NAVER_Raw
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
-          KAFKA_CLIENT_ID: statground-naver-book-author
           COLLECT_MODE: author
           BATCH_SIZE: "120"
           SAMPLE_ROWS: "4000"
@@ -161,13 +141,8 @@ jobs:
         run: |
           go run -mod=mod ./cmd/collect
 
-      - name: Collect NAVER books via Kafka (keyword)
+      - name: Collect NAVER books via direct DB (keyword)
         env:
-          INGEST_MODE: kafka
-          KAFKA_BROKERS: ${{ secrets.KAFKA_BROKERS2 || secrets.KAFKA_BROKERS }}
-          KAFKA_USERNAME: ${{ secrets.KAFKA_USERNAME2 || secrets.KAFKA_USERNAME || secrets.KAFKA_EXTERNAL_USER }}
-          KAFKA_PASSWORD: ${{ secrets.KAFKA_PASSWORD2 || secrets.KAFKA_PASSWORD || secrets.KAFKA_EXTERNAL_PASSWORD }}
-          KAFKA_TOPIC: book.events
           PRODUCER_SOURCE: github_actions
           PRODUCER_IP: "::"
           RAW_NAVER_TABLE: naver_book_raw
@@ -180,7 +155,6 @@ jobs:
           CH_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH || secrets.CH_HTTP_URL_PATH }}
           CH_DATABASE: Data_Book_NAVER_Raw
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
-          KAFKA_CLIENT_ID: statground-naver-book-keyword
           COLLECT_MODE: keyword
           BATCH_SIZE: "120"
           SAMPLE_ROWS: "4000"
@@ -189,18 +163,19 @@ jobs:
         run: |
           go run -mod=mod ./cmd/collect
 
-      - name: Collect NAVER books via Kafka (Web-R review keywords)
+      - name: Collect NAVER books via direct DB (Web-R review keywords)
         env:
-          INGEST_MODE: kafka
-          KAFKA_BROKERS: ${{ secrets.KAFKA_BROKERS2 || secrets.KAFKA_BROKERS }}
-          KAFKA_USERNAME: ${{ secrets.KAFKA_USERNAME2 || secrets.KAFKA_USERNAME || secrets.KAFKA_EXTERNAL_USER }}
-          KAFKA_PASSWORD: ${{ secrets.KAFKA_PASSWORD2 || secrets.KAFKA_PASSWORD || secrets.KAFKA_EXTERNAL_PASSWORD }}
-          KAFKA_TOPIC: book.events
           PRODUCER_SOURCE: github_actions
           PRODUCER_IP: "::"
           RAW_NAVER_TABLE: naver_book_raw
+          CH_HOST: ${{ secrets.CLICKHOUSE_HOST || secrets.CH_HOST }}
+          CH_PORT: ${{ secrets.CLICKHOUSE_PORT || secrets.CH_PORT }}
+          CH_USER: ${{ secrets.CLICKHOUSE_USER || secrets.CH_USER }}
+          CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD || secrets.CH_PASSWORD }}
+          CH_PROTOCOL: ${{ secrets.CLICKHOUSE_PROTOCOL || secrets.CH_PROTOCOL || 'http' }}
+          CH_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH || secrets.CH_HTTP_URL_PATH }}
+          CH_DATABASE: Data_Book_NAVER_Raw
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
-          KAFKA_CLIENT_ID: statground-naver-book-webr-review-keyword
           COLLECT_MODE: fixed_keyword
           COLLECT_MAX_CONSECUTIVE_FAILURES: "3"
           FIXED_KEYWORDS: "빅데이터 분석 기사, 사회조사분석사, ADsP, ADP"
@@ -209,18 +184,19 @@ jobs:
         run: |
           go run -mod=mod ./cmd/collect
 
-      - name: Collect NAVER books via Kafka (MirType language learning keywords)
+      - name: Collect NAVER books via direct DB (MirType language learning keywords)
         env:
-          INGEST_MODE: kafka
-          KAFKA_BROKERS: ${{ secrets.KAFKA_BROKERS2 || secrets.KAFKA_BROKERS }}
-          KAFKA_USERNAME: ${{ secrets.KAFKA_USERNAME2 || secrets.KAFKA_USERNAME || secrets.KAFKA_EXTERNAL_USER }}
-          KAFKA_PASSWORD: ${{ secrets.KAFKA_PASSWORD2 || secrets.KAFKA_PASSWORD || secrets.KAFKA_EXTERNAL_PASSWORD }}
-          KAFKA_TOPIC: book.events
           PRODUCER_SOURCE: github_actions
           PRODUCER_IP: "::"
           RAW_NAVER_TABLE: naver_book_raw
+          CH_HOST: ${{ secrets.CLICKHOUSE_HOST || secrets.CH_HOST }}
+          CH_PORT: ${{ secrets.CLICKHOUSE_PORT || secrets.CH_PORT }}
+          CH_USER: ${{ secrets.CLICKHOUSE_USER || secrets.CH_USER }}
+          CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD || secrets.CH_PASSWORD }}
+          CH_PROTOCOL: ${{ secrets.CLICKHOUSE_PROTOCOL || secrets.CH_PROTOCOL || 'http' }}
+          CH_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH || secrets.CH_HTTP_URL_PATH }}
+          CH_DATABASE: Data_Book_NAVER_Raw
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
-          KAFKA_CLIENT_ID: statground-naver-book-mirtype-language-learning
           COLLECT_MODE: fixed_keyword
           COLLECT_MAX_CONSECUTIVE_FAILURES: "3"
           FIXED_KEYWORDS: "외국어 학습, 제2외국어, 언어 학습, 언어 공부, 어학 교재, 영어 회화, 영어 문법, 영어 단어, 영어 독해, 영어 듣기, 영어 말하기, TOEIC, TOEFL, IELTS, OPIC, 일본어 기초, 일본어 회화, JLPT, 중국어 회화, 중국어 문법, HSK, 한국어 학습, TOPIK, 러시아어 기초, 러시아어 회화, 스페인어 회화, 프랑스어 회화, 독일어 회화, 이탈리아어 회화, 포르투갈어 회화, 베트남어 회화, 태국어 회화, 아랍어 기초, 힌디어 기초, 인도네시아어 기초, 라틴어 기초, language learning, foreign language vocabulary, grammar workbook, conversation practice"
@@ -229,13 +205,8 @@ jobs:
         run: |
           go run -mod=mod ./cmd/collect
 
-      - name: Collect NAVER books via Kafka (publisher)
+      - name: Collect NAVER books via direct DB (publisher)
         env:
-          INGEST_MODE: kafka
-          KAFKA_BROKERS: ${{ secrets.KAFKA_BROKERS2 || secrets.KAFKA_BROKERS }}
-          KAFKA_USERNAME: ${{ secrets.KAFKA_USERNAME2 || secrets.KAFKA_USERNAME || secrets.KAFKA_EXTERNAL_USER }}
-          KAFKA_PASSWORD: ${{ secrets.KAFKA_PASSWORD2 || secrets.KAFKA_PASSWORD || secrets.KAFKA_EXTERNAL_PASSWORD }}
-          KAFKA_TOPIC: book.events
           PRODUCER_SOURCE: github_actions
           PRODUCER_IP: "::"
           RAW_NAVER_TABLE: naver_book_raw
@@ -248,7 +219,6 @@ jobs:
           CH_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH || secrets.CH_HTTP_URL_PATH }}
           CH_DATABASE: Data_Book_NAVER_Raw
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
-          KAFKA_CLIENT_ID: statground-naver-book-publisher
           COLLECT_MODE: publisher
           BATCH_SIZE: "120"
           SAMPLE_ROWS: "4000"
@@ -257,13 +227,8 @@ jobs:
         run: |
           go run -mod=mod ./cmd/collect
 
-      - name: Collect NAVER books via Kafka (R package sample)
+      - name: Collect NAVER books via direct DB (R package sample)
         env:
-          INGEST_MODE: kafka
-          KAFKA_BROKERS: ${{ secrets.KAFKA_BROKERS2 || secrets.KAFKA_BROKERS }}
-          KAFKA_USERNAME: ${{ secrets.KAFKA_USERNAME2 || secrets.KAFKA_USERNAME || secrets.KAFKA_EXTERNAL_USER }}
-          KAFKA_PASSWORD: ${{ secrets.KAFKA_PASSWORD2 || secrets.KAFKA_PASSWORD || secrets.KAFKA_EXTERNAL_PASSWORD }}
-          KAFKA_TOPIC: book.events
           PRODUCER_SOURCE: github_actions
           PRODUCER_IP: "::"
           RAW_NAVER_TABLE: naver_book_raw
@@ -276,7 +241,6 @@ jobs:
           CH_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH || secrets.CH_HTTP_URL_PATH }}
           CH_DATABASE: Data_Book_NAVER_Raw
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
-          KAFKA_CLIENT_ID: statground-naver-book-r-package
           COLLECT_MODE: r_package
           R_PACKAGE_SAMPLE_SIZE: "10"
           NAVER_DISPLAY: "100"
@@ -284,20 +248,21 @@ jobs:
         run: |
           go run -mod=mod ./cmd/collect
 
-      - name: Collect NAVER books via Kafka (manual)
+      - name: Collect NAVER books via direct DB (manual)
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.manual_keyword != '' }}
         env:
-          INGEST_MODE: kafka
-          KAFKA_BROKERS: ${{ secrets.KAFKA_BROKERS2 || secrets.KAFKA_BROKERS }}
-          KAFKA_USERNAME: ${{ secrets.KAFKA_USERNAME2 || secrets.KAFKA_USERNAME || secrets.KAFKA_EXTERNAL_USER }}
-          KAFKA_PASSWORD: ${{ secrets.KAFKA_PASSWORD2 || secrets.KAFKA_PASSWORD || secrets.KAFKA_EXTERNAL_PASSWORD }}
-          KAFKA_TOPIC: book.events
           PRODUCER_SOURCE: github_actions
           PRODUCER_IP: "::"
           RAW_NAVER_TABLE: naver_book_raw
+          CH_HOST: ${{ secrets.CLICKHOUSE_HOST || secrets.CH_HOST }}
+          CH_PORT: ${{ secrets.CLICKHOUSE_PORT || secrets.CH_PORT }}
+          CH_USER: ${{ secrets.CLICKHOUSE_USER || secrets.CH_USER }}
+          CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD || secrets.CH_PASSWORD }}
+          CH_PROTOCOL: ${{ secrets.CLICKHOUSE_PROTOCOL || secrets.CH_PROTOCOL || 'http' }}
+          CH_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH || secrets.CH_HTTP_URL_PATH }}
+          CH_DATABASE: Data_Book_NAVER_Raw
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
-          KAFKA_CLIENT_ID: statground-naver-book-manual
-          KAFKA_PREFLIGHT_REQUIRED: "true"
+          DB_PREFLIGHT_REQUIRED: "true"
           SEARCH_LOG_REQUIRED: "true"
           MANUAL_KEYWORD: ${{ inputs.manual_keyword }}
         run: |

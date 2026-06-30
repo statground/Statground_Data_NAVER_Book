@@ -24,7 +24,7 @@ func main() {
 func run() error {
 	settleSeconds := envx.Int("WEBR_BOOK_REFRESH_SETTLE_SECONDS", 20)
 	if settleSeconds > 0 {
-		fmt.Printf("[webr-book] waiting %ds for Kafka/ClickHouse ingestion to settle\n", settleSeconds)
+		fmt.Printf("[webr-book] waiting %ds for direct ClickHouse ingestion to settle\n", settleSeconds)
 		time.Sleep(time.Duration(settleSeconds) * time.Second)
 	}
 

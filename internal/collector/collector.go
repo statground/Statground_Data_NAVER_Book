@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"statground_naver_book_go/internal/ch"
+	"statground_naver_book_go/internal/dbingest"
 	"statground_naver_book_go/internal/envx"
-	"statground_naver_book_go/internal/kafkaingest"
 	"statground_naver_book_go/internal/naver"
 	"statground_naver_book_go/internal/rawnaver"
 	"statground_naver_book_go/internal/terms"
@@ -28,12 +28,12 @@ type SearchMeta struct {
 }
 
 type Collector struct {
-	Client    *ch.Client
-	Table     string
-	Columns   map[string]bool
-	Keys      []naver.APIKey
-	Rand      *rand.Rand
-	Publisher *kafkaingest.Publisher
+	Client  *ch.Client
+	Table   string
+	Columns map[string]bool
+	Keys    []naver.APIKey
+	Rand    *rand.Rand
+	Ingest  *dbingest.Writer
 
 	existingLookupDisabled      bool
 	existingLookupDisableLogged bool
@@ -83,23 +83,23 @@ func New(client *ch.Client, table string, keys []naver.APIKey, seed int64) (*Col
 		}
 	}
 
-	publisher, err := kafkaingest.NewFromEnv()
+	ingest, err := dbingest.NewFromEnv(client, table)
 	if err != nil {
 		return nil, err
 	}
 
 	return &Collector{
-		Client:    client,
-		Table:     table,
-		Columns:   columns,
-		Keys:      keys,
-		Rand:      rand.New(rand.NewSource(seed)),
-		Publisher: publisher,
+		Client:  client,
+		Table:   table,
+		Columns: columns,
+		Keys:    keys,
+		Rand:    rand.New(rand.NewSource(seed)),
+		Ingest:  ingest,
 	}, nil
 }
 
 func (c *Collector) ValidateIngest(ctx context.Context) error {
-	return c.Publisher.Validate(ctx)
+	return c.Ingest.Validate(ctx)
 }
 
 func (c *Collector) SampleRows(limit int) ([]map[string]any, error) {
@@ -128,7 +128,7 @@ func (c *Collector) SampleRPackages(limit int) ([]RPackageCandidate, error) {
 	}
 	if c.Client == nil {
 		out := fallbackRPackageCandidates(limit)
-		fmt.Printf("[warn] r_package source catalog unavailable; using %d fallback R package candidates for Kafka-only run\n", len(out))
+		fmt.Printf("[warn] r_package source catalog unavailable; using %d fallback R package candidates\n", len(out))
 		return out, nil
 	}
 	sql := fmt.Sprintf(`
@@ -445,7 +445,7 @@ func (c *Collector) upsertItems(items []naver.BookItem, updatedLog, defaultCreat
 		}
 	}
 
-	events := make([]kafkaingest.Event, 0, len(items))
+	rows := make([]map[string]any, 0, len(items))
 	for _, item := range items {
 		isbn := strings.TrimSpace(item.ISBN)
 		if isbn == "" {
@@ -483,38 +483,43 @@ func (c *Collector) upsertItems(items []naver.BookItem, updatedLog, defaultCreat
 		row["search_start"] = meta.Start
 		row["search_display"] = meta.Display
 		row["api_total"] = meta.Total
-		row["source"] = c.Publisher.Cfg.ProducerSource
+		row["source"] = c.Ingest.Cfg.ProducerSource
 		row["collected_at"] = nowStr
 
 		sourceURL := item.Link
 		if strings.TrimSpace(sourceURL) == "" {
 			sourceURL = naverSearchURL(meta)
 		}
-		ev, err := c.Publisher.NewEvent("book.naver.raw.v1", "", sourceURL, nowStr, row)
+		ev, err := c.Ingest.NewEvent("book.naver.raw.v1", "", sourceURL, nowStr, row)
 		if err != nil {
 			return err
 		}
-		events = append(events, ev)
+		row["event_uuid"] = ev.EventUUID
+		row["kafka_topic"] = c.Ingest.Cfg.DirectTopic
+		row["kafka_partition"] = 0
+		row["kafka_offset"] = 0
+		row["payload"] = ev.Payload
+		row["ingested_at"] = nowStr
+		rows = append(rows, row)
 	}
 
-	if len(events) == 0 {
+	if len(rows) == 0 {
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), publishTimeoutDuration("KAFKA_RAW_PUBLISH_TIMEOUT_SECONDS", 90*time.Second))
-	defer cancel()
-	if err := c.Publisher.Publish(ctx, events); err != nil {
+	if err := c.Ingest.InsertRawRows(rows); err != nil {
 		return err
 	}
-	fmt.Printf("[kafka] published raw events=%d topic=%s mode=%s query=%q sort=%s start=%d\n", len(events), c.Publisher.Cfg.KafkaTopic, meta.Mode, meta.Query, meta.Sort, meta.Start)
+	fmt.Printf("[db] inserted raw rows=%d table=%s mode=%s query=%q sort=%s start=%d\n", len(rows), c.Ingest.Cfg.RawTable, meta.Mode, meta.Query, meta.Sort, meta.Start)
 	return nil
 }
 
 func (c *Collector) publishSearchLog(meta SearchMeta, status string, fetchedCount int, errText, collectLog string) error {
-	return c.publishSearchLogWithTimeout(meta, status, fetchedCount, errText, collectLog, publishTimeoutDuration("KAFKA_LOG_PUBLISH_TIMEOUT_SECONDS", 45*time.Second))
+	return c.publishSearchLogWithTimeout(meta, status, fetchedCount, errText, collectLog, publishTimeoutDuration("DB_LOG_WRITE_TIMEOUT_SECONDS", 45*time.Second))
 }
 
 func (c *Collector) publishSearchLogWithTimeout(meta SearchMeta, status string, fetchedCount int, errText, collectLog string, timeout time.Duration) error {
+	_ = timeout
 	nowStr := util.FormatCHDateTime64Millis(util.NowKST())
 	payload := map[string]any{
 		"log_uuid":       util.UUIDv7(),
@@ -529,22 +534,42 @@ func (c *Collector) publishSearchLogWithTimeout(meta SearchMeta, status string, 
 		"status":         status,
 		"error":          errText,
 		"collect_log":    collectLog,
-		"source":         c.Publisher.Cfg.ProducerSource,
+		"source":         c.Ingest.Cfg.ProducerSource,
 		"created_at":     nowStr,
 	}
 	sourceURL := naverSearchURL(meta)
-	ev, err := c.Publisher.NewEvent("book.naver.search_log.v1", "", sourceURL, nowStr, payload)
+	ev, err := c.Ingest.NewEvent("book.naver.search_log.v1", "", sourceURL, nowStr, payload)
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	return c.Publisher.Publish(ctx, []kafkaingest.Event{ev})
+	row := map[string]any{
+		"log_uuid":       payload["log_uuid"],
+		"event_uuid":     ev.EventUUID,
+		"provider":       "naver",
+		"source":         ev.Source,
+		"host":           ev.Host,
+		"ip":             ev.IP,
+		"search_mode":    meta.Mode,
+		"search_query":   meta.Query,
+		"search_sort":    meta.Sort,
+		"search_start":   meta.Start,
+		"search_display": meta.Display,
+		"api_total":      meta.Total,
+		"fetched_count":  fetchedCount,
+		"status":         status,
+		"error":          errText,
+		"collect_log":    collectLog,
+		"url":            sourceURL,
+		"payload":        ev.Payload,
+		"created_at":     nowStr,
+		"ingested_at":    nowStr,
+	}
+	return c.Ingest.WithTimeout(timeout).InsertCollectLogRows([]map[string]any{row})
 }
 
 func (c *Collector) publishSearchLogBestEffort(meta SearchMeta, status string, fetchedCount int, errText, collectLog string) error {
 	required := searchLogRequired()
-	timeout := publishTimeoutDuration("KAFKA_LOG_PUBLISH_TIMEOUT_SECONDS", 45*time.Second)
+	timeout := publishTimeoutDuration("DB_LOG_WRITE_TIMEOUT_SECONDS", 45*time.Second)
 	if !required {
 		timeout = searchLogBestEffortTimeout()
 	}
@@ -574,7 +599,7 @@ func existingISBNLookupEnabled() bool {
 }
 
 func IngestPreflightRequired() bool {
-	value := strings.ToLower(strings.TrimSpace(envx.String("KAFKA_PREFLIGHT_REQUIRED", "true")))
+	value := strings.ToLower(strings.TrimSpace(envx.String("DB_PREFLIGHT_REQUIRED", envx.String("INGEST_PREFLIGHT_REQUIRED", "true"))))
 	return value != "0" && value != "false" && value != "no" && value != "off"
 }
 
@@ -588,11 +613,11 @@ func searchLogRequired() bool {
 }
 
 func searchLogBestEffortTimeout() time.Duration {
-	fallback := publishTimeoutDuration("KAFKA_LOG_PUBLISH_TIMEOUT_SECONDS", 45*time.Second)
+	fallback := publishTimeoutDuration("DB_LOG_WRITE_TIMEOUT_SECONDS", 45*time.Second)
 	if fallback > 8*time.Second {
 		fallback = 8 * time.Second
 	}
-	return publishTimeoutDuration("KAFKA_LOG_BEST_EFFORT_TIMEOUT_SECONDS", fallback)
+	return publishTimeoutDuration("DB_LOG_BEST_EFFORT_TIMEOUT_SECONDS", fallback)
 }
 
 func shouldDisableExistingLookup(err error) bool {
@@ -610,9 +635,6 @@ func shouldDisableExistingLookup(err error) bool {
 func IsRetryableOperationalError(err error) bool {
 	if err == nil {
 		return false
-	}
-	if kafkaingest.RetryableWriteError(err) {
-		return true
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return true
@@ -635,9 +657,6 @@ func IsRetryableOperationalError(err error) bool {
 func ShortOperationalError(err error) string {
 	if err == nil {
 		return ""
-	}
-	if kafkaingest.RetryableWriteError(err) {
-		return "kafka_" + kafkaingest.RetryReason(err)
 	}
 	msg := strings.ToLower(err.Error())
 	switch {

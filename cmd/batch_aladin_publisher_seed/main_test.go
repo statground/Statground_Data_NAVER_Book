@@ -92,9 +92,9 @@ func TestShortOperationalErrorClassifiesAccessDenied(t *testing.T) {
 	}
 }
 
-func TestShortOperationalErrorClassifiesKafkaLeaderUnavailable(t *testing.T) {
-	err := fmt.Errorf(`kafka.(*Client).Produce: fetch request error: topic partition has no leader (topic="book.events" partition=2)`)
-	if got := shortOperationalError(err); got != "kafka_leader_unavailable" {
-		t.Fatalf("shortOperationalError = %q, want kafka_leader_unavailable", got)
+func TestShortOperationalErrorClassifiesClickHousePressure(t *testing.T) {
+	err := fmt.Errorf("clickhouse http 500: DB::Exception: TOO_MANY_SIMULTANEOUS_QUERIES")
+	if got := shortOperationalError(err); got != "clickhouse_too_many_queries" {
+		t.Fatalf("shortOperationalError = %q, want clickhouse_too_many_queries", got)
 	}
 }

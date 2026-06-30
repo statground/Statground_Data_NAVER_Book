@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
-	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -14,8 +13,8 @@ import (
 	"statground_naver_book_go/internal/aladin"
 	"statground_naver_book_go/internal/ch"
 	"statground_naver_book_go/internal/collector"
+	"statground_naver_book_go/internal/dbingest"
 	"statground_naver_book_go/internal/envx"
-	"statground_naver_book_go/internal/kafkaingest"
 	"statground_naver_book_go/internal/naver"
 	"statground_naver_book_go/internal/terms"
 	"statground_naver_book_go/internal/util"
@@ -185,9 +184,7 @@ func shortOperationalError(err error) string {
 		return "access_denied"
 	case strings.Contains(msg, "timeout") || strings.Contains(msg, "context deadline exceeded"):
 		return "timeout"
-	case strings.Contains(msg, "not leader") || strings.Contains(msg, "no leader") || strings.Contains(msg, "leader-metadata"):
-		return "kafka_leader_unavailable"
-	case strings.Contains(msg, "too many simultaneous queries"):
+	case strings.Contains(msg, "too_many_simultaneous_queries") || strings.Contains(msg, "too many simultaneous queries"):
 		return "clickhouse_too_many_queries"
 	case strings.Contains(msg, "eof"):
 		return "eof"
@@ -221,27 +218,21 @@ func cleanPublisherSeeds(publishers []string) ([]string, int) {
 	return cleaned, skipped
 }
 
-func publishPublishersCache(pub *kafkaingest.Publisher, sourceURL string, publishers []string, detectedLastPage int, runUUID string) error {
-	if pub == nil || len(publishers) == 0 || detectedLastPage <= 0 {
+func publishPublishersCache(writer *dbingest.Writer, publishers []string, detectedLastPage int, runUUID string) error {
+	if writer == nil || len(publishers) == 0 || detectedLastPage <= 0 {
 		return nil
 	}
 	nowStr := util.FormatCHDateTime64Millis(util.NowKST())
 	const chunkSize = 1000
-	events := make([]kafkaingest.Event, 0, chunkSize)
+	rows := make([]map[string]any, 0, chunkSize)
 	flush := func() error {
-		if len(events) == 0 {
+		if len(rows) == 0 {
 			return nil
 		}
-		timeout := envx.Int("ALADIN_CACHE_PUBLISH_TIMEOUT_SECONDS", 20)
-		if timeout <= 0 {
-			timeout = 20
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
-		defer cancel()
-		if err := pub.Publish(ctx, events); err != nil {
+		if err := writer.InsertPublisherCacheRows(rows); err != nil {
 			return err
 		}
-		events = events[:0]
+		rows = rows[:0]
 		return nil
 	}
 
@@ -255,25 +246,14 @@ func publishPublishersCache(pub *kafkaingest.Publisher, sourceURL string, publis
 			continue
 		}
 		seen[publisher] = struct{}{}
-		eventURL := sourceURL
-		if strings.Contains(eventURL, "?") {
-			eventURL += "&publisher=" + url.QueryEscape(publisher)
-		} else {
-			eventURL += "?publisher=" + url.QueryEscape(publisher)
-		}
-		payload := map[string]any{
+		rows = append(rows, map[string]any{
 			"publisher":          publisher,
 			"collected_at":       nowStr,
 			"detected_last_page": detectedLastPage,
 			"run_uuid":           runUUID,
 			"source":             "aladin",
-		}
-		ev, err := pub.NewEvent("book.aladin.publisher_cache.v1", "", eventURL, nowStr, payload)
-		if err != nil {
-			return err
-		}
-		events = append(events, ev)
-		if len(events) >= chunkSize {
+		})
+		if len(rows) >= chunkSize {
 			if err := flush(); err != nil {
 				return err
 			}
@@ -282,16 +262,16 @@ func publishPublishersCache(pub *kafkaingest.Publisher, sourceURL string, publis
 	if err := flush(); err != nil {
 		return err
 	}
-	fmt.Printf("[CACHE] published aladin publisher cache events=%d last_page=%d topic=%s\n", len(seen), detectedLastPage, pub.Cfg.KafkaTopic)
+	fmt.Printf("[CACHE] inserted aladin publisher cache rows=%d last_page=%d table=%s\n", len(seen), detectedLastPage, writer.Cfg.PublisherCacheTable)
 	return nil
 }
 
-func publishPublishersCacheBestEffort(pub *kafkaingest.Publisher, sourceURL string, publishers []string, detectedLastPage int, runUUID string) error {
-	err := publishPublishersCache(pub, sourceURL, publishers, detectedLastPage, runUUID)
+func publishPublishersCacheBestEffort(writer *dbingest.Writer, publishers []string, detectedLastPage int, runUUID string) error {
+	err := publishPublishersCache(writer, publishers, detectedLastPage, runUUID)
 	if err == nil || aladinPublisherCacheRequired() {
 		return err
 	}
-	fmt.Printf("[CACHE] publisher cache publish skipped after error=%s; continuing with sampled NAVER collection\n", shortOperationalError(err))
+	fmt.Printf("[CACHE] publisher cache insert skipped after error=%s; continuing with sampled NAVER collection\n", shortOperationalError(err))
 	return nil
 }
 
@@ -343,7 +323,7 @@ func run() error {
 	}
 	if err := baseCollector.ValidateIngest(context.Background()); err != nil {
 		if collector.ShouldSkipIngestPreflightError(err) {
-			fmt.Printf("[SKIP] aladin publisher seed skipped because Kafka preflight is temporarily unavailable error=%s\n", collector.ShortOperationalError(err))
+			fmt.Printf("[SKIP] aladin publisher seed skipped because direct DB preflight is temporarily unavailable error=%s\n", collector.ShortOperationalError(err))
 			return nil
 		}
 		return err
@@ -395,7 +375,7 @@ func run() error {
 			var skipped int
 			publishers, skipped = cleanPublisherSeeds(publishers)
 			fmt.Printf("[ALADIN] crawled publishers=%d skipped=%d last_page=%d\n", len(publishers), skipped, currentLastPage)
-			if err := publishPublishersCacheBestEffort(baseCollector.Publisher, aladinURL, publishers, currentLastPage, runUUID); err != nil {
+			if err := publishPublishersCacheBestEffort(baseCollector.Ingest, publishers, currentLastPage, runUUID); err != nil {
 				return err
 			}
 		}

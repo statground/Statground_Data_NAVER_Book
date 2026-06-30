@@ -297,12 +297,13 @@ func (c *Client) QueryScalarValue(sql string) (any, error) {
 }
 
 func (c *Client) QueryColumnNames(table string) (map[string]bool, error) {
+	database, tableName := SplitQualifiedTable(table, c.Database)
 	sql := fmt.Sprintf(`
         SELECT name
         FROM system.columns
         WHERE database = %s
           AND table = %s
-    `, util.SQLString(c.Database), util.SQLString(table))
+    `, util.SQLString(database), util.SQLString(tableName))
 	rows, err := c.QueryJSONEachRow(sql)
 	if err != nil {
 		return nil, err
@@ -315,6 +316,18 @@ func (c *Client) QueryColumnNames(table string) (map[string]bool, error) {
 		}
 	}
 	return out, nil
+}
+
+func SplitQualifiedTable(raw, defaultDatabase string) (database, table string) {
+	raw = strings.TrimSpace(strings.ReplaceAll(raw, "`", ""))
+	if raw == "" {
+		return strings.TrimSpace(defaultDatabase), ""
+	}
+	parts := strings.Split(raw, ".")
+	if len(parts) == 2 && strings.TrimSpace(parts[0]) != "" && strings.TrimSpace(parts[1]) != "" {
+		return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+	}
+	return strings.TrimSpace(defaultDatabase), raw
 }
 
 func normalizeValue(v any) any {

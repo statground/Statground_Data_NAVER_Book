@@ -7,6 +7,8 @@ import (
 	"testing"
 )
 
+const retryableDBError = "clickhouse http 500: DB::Exception: TOO_MANY_SIMULTANEOUS_QUERIES"
+
 func TestRunTermCollectionContinuesRetryableErrorsWhenOptional(t *testing.T) {
 	t.Setenv("COLLECT_TERM_REQUIRED", "false")
 	t.Setenv("COLLECT_SLEEP_MAX", "0")
@@ -15,7 +17,7 @@ func TestRunTermCollectionContinuesRetryableErrorsWhenOptional(t *testing.T) {
 	err := runTermCollection("author", []string{"first", "leader", "last"}, rand.New(rand.NewSource(1)), func(term string) error {
 		calls = append(calls, term)
 		if term == "leader" {
-			return errors.New(`Kafka write errors (1/1), errors: kafka.(*Client).Produce: fetch request error: topic partition has no leader (topic="book.events" partition=2)`)
+			return errors.New(retryableDBError)
 		}
 		return nil
 	})
@@ -33,7 +35,7 @@ func TestRunTermCollectionFailsWhenAllOptionalTermsFail(t *testing.T) {
 	t.Setenv("COLLECT_SLEEP_MAX", "0")
 
 	err := runTermCollection("author", []string{"a", "b"}, rand.New(rand.NewSource(1)), func(string) error {
-		return errors.New(`Kafka write errors (1/1), errors: kafka.(*Client).Produce: fetch request error: topic partition has no leader (topic="book.events" partition=2)`)
+		return errors.New(retryableDBError)
 	})
 	if err == nil {
 		t.Fatal("expected all-failed optional collection to return an error")
@@ -49,7 +51,7 @@ func TestRunTermCollectionSkipsWhenAllOptionalTermsFailAndSuccessNotRequired(t *
 	t.Setenv("COLLECT_SLEEP_MAX", "0")
 
 	err := runTermCollection("fixed_keyword", []string{"a", "b"}, rand.New(rand.NewSource(1)), func(string) error {
-		return errors.New(`Kafka write errors (1/1), errors: kafka.(*Client).Produce: fetch request error: topic partition has no leader (topic="book.events" partition=2)`)
+		return errors.New(retryableDBError)
 	})
 	if err != nil {
 		t.Fatalf("expected all-retryable optional collection to skip successfully: %v", err)
@@ -65,7 +67,7 @@ func TestRunTermCollectionSkipsWhenConsecutiveRetryableFailuresHitLimitAndSucces
 	calls := 0
 	err := runTermCollection("fixed_keyword", []string{"a", "b", "c"}, rand.New(rand.NewSource(1)), func(string) error {
 		calls++
-		return errors.New(`Kafka write errors (1/1), errors: kafka.(*Client).Produce: fetch request error: topic partition has no leader (topic="book.events" partition=2)`)
+		return errors.New(retryableDBError)
 	})
 	if err != nil {
 		t.Fatalf("expected consecutive all-retryable optional collection to skip successfully: %v", err)
@@ -82,7 +84,7 @@ func TestRunTermCollectionStopsOnRequiredRetryableError(t *testing.T) {
 	calls := 0
 	err := runTermCollection("author", []string{"a", "b"}, rand.New(rand.NewSource(1)), func(string) error {
 		calls++
-		return errors.New(`Kafka write errors (1/1), errors: kafka.(*Client).Produce: fetch request error: topic partition has no leader (topic="book.events" partition=2)`)
+		return errors.New(retryableDBError)
 	})
 	if err == nil {
 		t.Fatal("expected required collection to return the first retryable error")
