@@ -626,6 +626,9 @@ func shouldDisableExistingLookup(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "too_many_simultaneous_queries") ||
+		strings.Contains(msg, "not_initialized") ||
+		strings.Contains(msg, "table is not initialized yet") ||
+		strings.Contains(msg, "keeper_exception") ||
 		strings.Contains(msg, "context deadline exceeded") ||
 		strings.Contains(msg, "client.timeout exceeded") ||
 		strings.Contains(msg, "i/o timeout") ||
@@ -641,6 +644,10 @@ func IsRetryableOperationalError(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "too_many_simultaneous_queries") ||
+		strings.Contains(msg, "not_initialized") ||
+		strings.Contains(msg, "table is not initialized yet") ||
+		strings.Contains(msg, "keeper_exception") ||
+		strings.Contains(msg, "coordination error") ||
 		strings.Contains(msg, "context deadline exceeded") ||
 		strings.Contains(msg, "client.timeout exceeded") ||
 		strings.Contains(msg, "i/o timeout") ||
@@ -662,6 +669,12 @@ func ShortOperationalError(err error) string {
 	switch {
 	case strings.Contains(msg, "too_many_simultaneous_queries"):
 		return "clickhouse_too_many_queries"
+	case strings.Contains(msg, "not_initialized"),
+		strings.Contains(msg, "table is not initialized yet"):
+		return "clickhouse_not_initialized"
+	case strings.Contains(msg, "keeper_exception"),
+		strings.Contains(msg, "coordination error"):
+		return "clickhouse_keeper"
 	case strings.Contains(msg, "access_denied"), strings.Contains(msg, "not enough privileges"):
 		return "clickhouse_access_denied"
 	case strings.Contains(msg, "context deadline exceeded"),

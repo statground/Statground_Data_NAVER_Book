@@ -8,6 +8,7 @@ import (
 )
 
 const retryableDBError = "clickhouse http 500: DB::Exception: TOO_MANY_SIMULTANEOUS_QUERIES"
+const notInitializedDBError = "clickhouse http 500: Code: 667. DB::Exception: Table is not initialized yet. (NOT_INITIALIZED)"
 
 func TestRunTermCollectionContinuesRetryableErrorsWhenOptional(t *testing.T) {
 	t.Setenv("COLLECT_TERM_REQUIRED", "false")
@@ -25,6 +26,26 @@ func TestRunTermCollectionContinuesRetryableErrorsWhenOptional(t *testing.T) {
 		t.Fatalf("runTermCollection returned error: %v", err)
 	}
 	if got := strings.Join(calls, ","); got != "first,leader,last" {
+		t.Fatalf("calls = %q, want all terms to be attempted", got)
+	}
+}
+
+func TestRunTermCollectionContinuesNotInitializedWhenOptional(t *testing.T) {
+	t.Setenv("COLLECT_TERM_REQUIRED", "false")
+	t.Setenv("COLLECT_SLEEP_MAX", "0")
+
+	calls := make([]string, 0, 3)
+	err := runTermCollection("keyword", []string{"first", "keeper", "last"}, rand.New(rand.NewSource(1)), func(term string) error {
+		calls = append(calls, term)
+		if term == "keeper" {
+			return errors.New(notInitializedDBError)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("runTermCollection returned error: %v", err)
+	}
+	if got := strings.Join(calls, ","); got != "first,keeper,last" {
 		t.Fatalf("calls = %q, want all terms to be attempted", got)
 	}
 }

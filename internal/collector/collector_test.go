@@ -33,6 +33,26 @@ func TestShouldNotSkipIngestPreflightPrivilegeError(t *testing.T) {
 	}
 }
 
+func TestClickHouseNotInitializedIsRetryableOperationalError(t *testing.T) {
+	err := errors.New("clickhouse http 500: Code: 667. DB::Exception: Table is not initialized yet. (NOT_INITIALIZED)")
+	if !IsRetryableOperationalError(err) {
+		t.Fatal("NOT_INITIALIZED should be treated as a retryable operational error")
+	}
+	if got := ShortOperationalError(err); got != "clickhouse_not_initialized" {
+		t.Fatalf("ShortOperationalError = %q, want clickhouse_not_initialized", got)
+	}
+}
+
+func TestClickHouseKeeperErrorIsRetryableOperationalError(t *testing.T) {
+	err := errors.New("clickhouse http 500: Code: 999. Coordination::Exception: Coordination error: Connection loss. (KEEPER_EXCEPTION)")
+	if !IsRetryableOperationalError(err) {
+		t.Fatal("KEEPER_EXCEPTION should be treated as a retryable operational error")
+	}
+	if got := ShortOperationalError(err); got != "clickhouse_keeper" {
+		t.Fatalf("ShortOperationalError = %q, want clickhouse_keeper", got)
+	}
+}
+
 func TestSearchLogRequiredDefaultsStrict(t *testing.T) {
 	if !searchLogRequired() {
 		t.Fatal("search log publish should be required by default")
