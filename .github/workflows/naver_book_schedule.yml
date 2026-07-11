@@ -1,0 +1,45 @@
+name: NAVER Book Scheduled Pipeline
+
+on:
+  schedule:
+    - cron: "29 1-23/6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: statground-book-naver-schedule
+  cancel-in-progress: true
+
+jobs:
+  seed:
+    name: Publisher seed
+    uses: ./.github/workflows/naver_book_collect_all.yml
+    with:
+      stage: seed
+    secrets: inherit
+
+  discovery:
+    name: Author and keyword discovery
+    needs: seed
+    uses: ./.github/workflows/naver_book_collect_all.yml
+    with:
+      stage: discovery
+    secrets: inherit
+
+  catalog:
+    name: Publisher and R package catalog
+    needs: discovery
+    uses: ./.github/workflows/naver_book_collect_all.yml
+    with:
+      stage: catalog
+    secrets: inherit
+
+  refresh:
+    name: Serving refresh
+    needs: catalog
+    uses: ./.github/workflows/naver_book_collect_all.yml
+    with:
+      stage: refresh
+    secrets: inherit

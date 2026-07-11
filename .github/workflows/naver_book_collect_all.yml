@@ -1,10 +1,21 @@
 name: NAVER Book Collector - Direct DB
 
 on:
-  schedule:
-    - cron: "29 1-23/6 * * *"
+  workflow_call:
+    inputs:
+      stage:
+        description: "seed, discovery, catalog, refresh, or all"
+        required: false
+        type: string
+        default: "all"
   workflow_dispatch:
     inputs:
+      stage:
+        description: "seed, discovery, catalog, refresh, or all"
+        required: false
+        default: "all"
+        type: choice
+        options: [all, seed, discovery, catalog, refresh]
       manual_keyword:
         description: "Optional manual NAVER Book search keyword. Empty skips the manual step."
         required: false
@@ -14,13 +25,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: statground-book-naver-all
+  group: statground-book-naver-${{ inputs.stage || 'all' }}
   cancel-in-progress: true
 
 jobs:
   collect_all:
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 90
     env:
       DB_PREFLIGHT_REQUIRED: "true"
       DB_LOG_WRITE_TIMEOUT_SECONDS: "60"
@@ -47,6 +58,7 @@ jobs:
 
       - name: Validate required repository secrets
         env:
+          PIPELINE_STAGE: ${{ inputs.stage || 'all' }}
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
           CH_HOST: ${{ secrets.CLICKHOUSE_HOST || secrets.CH_HOST }}
           CH_PORT: ${{ secrets.CLICKHOUSE_PORT || secrets.CH_PORT }}
@@ -54,7 +66,9 @@ jobs:
           CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD || secrets.CH_PASSWORD }}
           CH_PROTOCOL: ${{ secrets.CLICKHOUSE_PROTOCOL || secrets.CH_PROTOCOL || 'http' }}
         run: |
-          test -n "$NAVER_API_KEYS" || { echo "NAVER_API_KEYS secret is required"; exit 1; }
+          if [[ "$PIPELINE_STAGE" != "refresh" ]]; then
+            test -n "$NAVER_API_KEYS" || { echo "NAVER_API_KEYS secret is required"; exit 1; }
+          fi
           test -n "$CH_HOST" || { echo "CLICKHOUSE_HOST or CH_HOST secret is required"; exit 1; }
           test -n "$CH_USER" || { echo "CLICKHOUSE_USER or CH_USER secret is required"; exit 1; }
           test -n "$CH_PASSWORD" || { echo "CLICKHOUSE_PASSWORD or CH_PASSWORD secret is required"; exit 1; }
@@ -94,6 +108,7 @@ jobs:
         run: go test -mod=mod ./...
 
       - name: Collect Aladin publisher seed and NAVER books via direct DB
+        if: inputs.stage == 'all' || inputs.stage == 'seed'
         env:
           PRODUCER_SOURCE: github_actions
           PRODUCER_IP: "::"
@@ -127,6 +142,7 @@ jobs:
           go run -mod=mod ./cmd/batch_aladin_publisher_seed
 
       - name: Collect NAVER books via direct DB (author)
+        if: inputs.stage == 'all' || inputs.stage == 'discovery'
         env:
           PRODUCER_SOURCE: github_actions
           PRODUCER_IP: "::"
@@ -149,6 +165,7 @@ jobs:
           go run -mod=mod ./cmd/collect
 
       - name: Collect NAVER books via direct DB (keyword)
+        if: inputs.stage == 'all' || inputs.stage == 'discovery'
         env:
           PRODUCER_SOURCE: github_actions
           PRODUCER_IP: "::"
@@ -171,6 +188,7 @@ jobs:
           go run -mod=mod ./cmd/collect
 
       - name: Collect NAVER books via direct DB (Web-R review keywords)
+        if: inputs.stage == 'all' || inputs.stage == 'discovery'
         env:
           PRODUCER_SOURCE: github_actions
           PRODUCER_IP: "::"
@@ -192,6 +210,7 @@ jobs:
           go run -mod=mod ./cmd/collect
 
       - name: Collect NAVER books via direct DB (MirType language learning keywords)
+        if: inputs.stage == 'all' || inputs.stage == 'discovery'
         env:
           PRODUCER_SOURCE: github_actions
           PRODUCER_IP: "::"
@@ -213,6 +232,7 @@ jobs:
           go run -mod=mod ./cmd/collect
 
       - name: Collect NAVER books via direct DB (publisher)
+        if: inputs.stage == 'all' || inputs.stage == 'catalog'
         env:
           PRODUCER_SOURCE: github_actions
           PRODUCER_IP: "::"
@@ -235,6 +255,7 @@ jobs:
           go run -mod=mod ./cmd/collect
 
       - name: Collect NAVER books via direct DB (R package sample)
+        if: inputs.stage == 'all' || inputs.stage == 'catalog'
         env:
           PRODUCER_SOURCE: github_actions
           PRODUCER_IP: "::"
@@ -276,6 +297,7 @@ jobs:
           go run -mod=mod ./cmd/collect_manual
 
       - name: Refresh Web-R and MirType book catalogs
+        if: inputs.stage == 'all' || inputs.stage == 'refresh'
         env:
           CH_HOST: ${{ secrets.CLICKHOUSE_HOST || secrets.CH_HOST }}
           CH_PORT: ${{ secrets.CLICKHOUSE_PORT || secrets.CH_PORT }}
@@ -298,6 +320,7 @@ jobs:
           go run -mod=mod ./cmd/refresh_webr_book_catalog
 
       - name: Refresh MirType provider practice content
+        if: inputs.stage == 'all' || inputs.stage == 'refresh'
         env:
           CH_HOST: ${{ secrets.CLICKHOUSE_HOST || secrets.CH_HOST }}
           CH_PORT: ${{ secrets.CLICKHOUSE_PORT || secrets.CH_PORT }}
