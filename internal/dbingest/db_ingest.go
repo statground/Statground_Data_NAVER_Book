@@ -68,14 +68,39 @@ func (w *Writer) Validate(ctx context.Context) error {
 		return err
 	}
 	for _, table := range []string{w.Cfg.RawTable, w.Cfg.CollectLogTable, w.Cfg.PublisherCacheTable} {
-		if err := w.validateTableExists(table); err != nil {
-			return err
+		var lastErr error
+		for attempt := 1; attempt <= 3; attempt++ {
+			lastErr = w.validateTableExists(table)
+			if lastErr == nil {
+				break
+			}
+			if !retryablePreflightError(lastErr) || attempt == 3 {
+				return lastErr
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(attempt) * 2 * time.Second):
+			}
 		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func retryablePreflightError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{"timeout", "deadline exceeded", "connection refused", "connection reset", "not initialized", "keeper", "coordination", "readonly", "read-only", "temporarily unavailable", "http status=429", "http status=500", "http status=502", "http status=503", "http status=504"} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (w *Writer) validateTableExists(table string) error {

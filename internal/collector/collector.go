@@ -652,7 +652,14 @@ func IsRetryableOperationalError(err error) bool {
 		strings.Contains(msg, "client.timeout exceeded") ||
 		strings.Contains(msg, "i/o timeout") ||
 		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "connection refused") ||
 		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "unexpected eof") ||
+		strings.Contains(msg, "clickhouse http status=429") ||
+		strings.Contains(msg, "clickhouse http status=500") ||
+		strings.Contains(msg, "clickhouse http status=502") ||
+		strings.Contains(msg, "clickhouse http status=503") ||
+		strings.Contains(msg, "clickhouse http status=504") ||
 		strings.Contains(msg, "temporary") ||
 		strings.Contains(msg, "naver api http 429") ||
 		strings.Contains(msg, "naver api http 500") ||
@@ -682,6 +689,13 @@ func ShortOperationalError(err error) string {
 		strings.Contains(msg, "i/o timeout"),
 		strings.Contains(msg, "timeout"):
 		return "timeout"
+	case strings.Contains(msg, "clickhouse http status=429"):
+		return "clickhouse_rate_limited"
+	case strings.Contains(msg, "clickhouse http status=500"),
+		strings.Contains(msg, "clickhouse http status=502"),
+		strings.Contains(msg, "clickhouse http status=503"),
+		strings.Contains(msg, "clickhouse http status=504"):
+		return "clickhouse_unavailable"
 	case strings.Contains(msg, "naver api http 429"):
 		return "naver_rate_limited"
 	case strings.Contains(msg, "naver api http 500"),
@@ -689,7 +703,7 @@ func ShortOperationalError(err error) string {
 		strings.Contains(msg, "naver api http 503"),
 		strings.Contains(msg, "naver api http 504"):
 		return "naver_unavailable"
-	case strings.Contains(msg, "connection reset"), strings.Contains(msg, "broken pipe"):
+	case strings.Contains(msg, "connection reset"), strings.Contains(msg, "connection refused"), strings.Contains(msg, "broken pipe"), strings.Contains(msg, "unexpected eof"):
 		return "network"
 	default:
 		return "operational_error"

@@ -2,7 +2,7 @@ name: NAVER Book Collector - Direct DB
 
 on:
   schedule:
-    - cron: "29 1-23/4 * * *"
+    - cron: "29 1-23/6 * * *"
   workflow_dispatch:
     inputs:
       manual_keyword:
@@ -52,18 +52,20 @@ jobs:
           CH_PORT: ${{ secrets.CLICKHOUSE_PORT || secrets.CH_PORT }}
           CH_USER: ${{ secrets.CLICKHOUSE_USER || secrets.CH_USER }}
           CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD || secrets.CH_PASSWORD }}
+          CH_PROTOCOL: ${{ secrets.CLICKHOUSE_PROTOCOL || secrets.CH_PROTOCOL || 'http' }}
         run: |
           test -n "$NAVER_API_KEYS" || { echo "NAVER_API_KEYS secret is required"; exit 1; }
           test -n "$CH_HOST" || { echo "CLICKHOUSE_HOST or CH_HOST secret is required"; exit 1; }
           test -n "$CH_USER" || { echo "CLICKHOUSE_USER or CH_USER secret is required"; exit 1; }
           test -n "$CH_PASSWORD" || { echo "CLICKHOUSE_PASSWORD or CH_PASSWORD secret is required"; exit 1; }
+          if [[ "${CH_PROTOCOL,,}" != "https" ]]; then
+            echo "::warning::ClickHouse transport is not TLS-protected; configure CLICKHOUSE_PROTOCOL=https with certificate verification"
+          fi
           python3 - <<'PY'
           import hashlib
           import os
 
           host = os.environ.get("CH_HOST", "")
-          safe = host.replace(".", "[.]").replace(":", "[:]")
-          print(f"CLICKHOUSE_HOST_SANITIZED={safe}")
           print(f"CLICKHOUSE_HOST_SHA256={hashlib.sha256(host.encode()).hexdigest()}")
           PY
           case "$CH_HOST" in
@@ -85,6 +87,11 @@ jobs:
           GOPROXY: https://proxy.golang.org,direct
         run: |
           go build -mod=mod ./cmd/collect ./cmd/collect_manual ./cmd/batch_aladin_publisher_seed ./cmd/refresh_webr_book_catalog
+
+      - name: Run unit tests
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+        run: go test -mod=mod ./...
 
       - name: Collect Aladin publisher seed and NAVER books via direct DB
         env:

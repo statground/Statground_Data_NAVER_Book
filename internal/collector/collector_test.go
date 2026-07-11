@@ -33,6 +33,14 @@ func TestShouldNotSkipIngestPreflightPrivilegeError(t *testing.T) {
 	}
 }
 
+func TestRetryableOperationalErrorIncludesSanitizedClickHouseStatus(t *testing.T) {
+	for _, message := range []string{"clickhouse http status=429", "clickhouse http status=500", "clickhouse http status=503", "connection refused"} {
+		if !IsRetryableOperationalError(errors.New(message)) {
+			t.Fatalf("expected retryable operational error: %s", message)
+		}
+	}
+}
+
 func TestClickHouseNotInitializedIsRetryableOperationalError(t *testing.T) {
 	err := errors.New("clickhouse http 500: Code: 667. DB::Exception: Table is not initialized yet. (NOT_INITIALIZED)")
 	if !IsRetryableOperationalError(err) {

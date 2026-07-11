@@ -3,6 +3,7 @@ package ch
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -202,7 +203,7 @@ func (c *Client) post(body string, extra url.Values) ([]byte, error) {
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("clickhouse http %d: %s", resp.StatusCode, strings.TrimSpace(string(payload)))
+		return nil, fmt.Errorf("clickhouse http status=%d", resp.StatusCode)
 	}
 	return payload, nil
 }
@@ -355,9 +356,8 @@ func (c *Client) InsertJSONEachRow(table string, rows []map[string]any) error {
 	}
 	sort.Strings(columns)
 
-	var buf bytes.Buffer
-	fmt.Fprintf(&buf, "INSERT INTO %s (%s) FORMAT JSONEachRow\n", table, strings.Join(columns, ", "))
-	enc := json.NewEncoder(&buf)
+	var payload bytes.Buffer
+	enc := json.NewEncoder(&payload)
 	enc.SetEscapeHTML(false)
 	for _, row := range rows {
 		normalized := make(map[string]any, len(columns))
@@ -368,6 +368,17 @@ func (c *Client) InsertJSONEachRow(table string, rows []map[string]any) error {
 			return err
 		}
 	}
-	_, err := c.post(buf.String(), nil)
-	return err
+	token := fmt.Sprintf("%x", sha256.Sum256(append([]byte(table+"\x1f"+strings.Join(columns, "\x1f")+"\x1f"), payload.Bytes()...)))
+	body := fmt.Sprintf("INSERT INTO %s (%s) SETTINGS insert_deduplicate = 1, insert_deduplication_token = '%s' FORMAT JSONEachRow\n%s",
+		table, strings.Join(columns, ", "), token, payload.String())
+	var lastErr error
+	for attempt := 1; attempt <= 2; attempt++ {
+		if _, lastErr = c.post(body, nil); lastErr == nil {
+			return nil
+		}
+		if attempt < 2 {
+			time.Sleep(time.Second)
+		}
+	}
+	return lastErr
 }
