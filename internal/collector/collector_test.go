@@ -62,6 +62,7 @@ func TestClickHouseKeeperErrorIsRetryableOperationalError(t *testing.T) {
 }
 
 func TestSearchLogRequiredDefaultsStrict(t *testing.T) {
+	t.Setenv("SEARCH_LOG_REQUIRED", "")
 	if !searchLogRequired() {
 		t.Fatal("search log publish should be required by default")
 	}
