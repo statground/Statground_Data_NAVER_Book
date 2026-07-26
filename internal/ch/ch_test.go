@@ -102,7 +102,7 @@ func TestInsertJSONEachRowDurableUsesFixedForegroundQuorumSettings(t *testing.T)
 		"distributed_foreground_insert = 1",
 		"insert_quorum = 2",
 		"insert_quorum_parallel = 1",
-		"insert_quorum_timeout = 120000",
+		"insert_quorum_timeout = 600000",
 		"load_balancing = 'first_or_random'",
 		"load_balancing_first_offset = 0",
 		"prefer_localhost_replica = 0",

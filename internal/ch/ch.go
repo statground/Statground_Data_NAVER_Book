@@ -395,7 +395,7 @@ func (c *Client) insertJSONEachRow(table string, rows []map[string]any, deduplic
 		token,
 	)
 	if durable {
-		settings += ", distributed_foreground_insert = 1, insert_quorum = 2, insert_quorum_parallel = 1, insert_quorum_timeout = 120000, load_balancing = 'first_or_random', load_balancing_first_offset = 0, prefer_localhost_replica = 0"
+		settings += ", distributed_foreground_insert = 1, insert_quorum = 2, insert_quorum_parallel = 1, insert_quorum_timeout = 600000, load_balancing = 'first_or_random', load_balancing_first_offset = 0, prefer_localhost_replica = 0"
 	}
 	body := fmt.Sprintf("INSERT INTO %s (%s) SETTINGS %s FORMAT JSONEachRow\n%s",
 		table, strings.Join(columns, ", "), settings, payload.String())

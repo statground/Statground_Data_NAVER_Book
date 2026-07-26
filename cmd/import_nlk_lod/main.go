@@ -57,9 +57,9 @@ func run(ctx context.Context, args []string) error {
 		if err != nil {
 			return &nlkimport.SafeError{Category: "configuration"}
 		}
-		timeoutSeconds := envx.Int("NLK_CLICKHOUSE_TIMEOUT_SECONDS", 120)
+		timeoutSeconds := envx.Int("NLK_CLICKHOUSE_TIMEOUT_SECONDS", 660)
 		if timeoutSeconds < 1 {
-			timeoutSeconds = 120
+			timeoutSeconds = 660
 		}
 		client.HTTPClient.Timeout = time.Duration(timeoutSeconds) * time.Second
 		clickhouseStore, err := nlkstore.NewClickHouse(client, nlkstore.ConfigFromEnv())
