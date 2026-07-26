@@ -1,0 +1,33 @@
+name: Kakao Book Scheduled Shadow Pipeline
+
+on:
+  schedule:
+    - cron: "17 19 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  discovery:
+    if: github.event_name == 'workflow_dispatch' || vars.KAKAO_BOOK_SCHEDULE_ENABLED == 'true'
+    uses: ./.github/workflows/kakao_book_collect.yml
+    with:
+      run_kind: ${{ github.event_name == 'schedule' && 'scheduled' || 'manual' }}
+      mode: fixed_keyword
+      queries: ${{ vars.KAKAO_BOOK_DISCOVERY_QUERIES || '통계학;R 프로그래밍;외국어 학습;언어 학습' }}
+      sort: latest
+      page_cap: 1
+      page_size: 50
+      dry_run: false
+      respect_frontier_due: true
+      schedule_enabled: ${{ vars.KAKAO_BOOK_SCHEDULE_ENABLED == 'true' }}
+      auto_daily_budget: 2000
+    secrets:
+      KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
+      CLICKHOUSE_HOST: ${{ secrets.CLICKHOUSE_HOST || secrets.CH_HOST }}
+      CLICKHOUSE_PORT: ${{ secrets.CLICKHOUSE_PORT || secrets.CH_PORT }}
+      CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER || secrets.CH_USER }}
+      CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD || secrets.CH_PASSWORD }}
+      CLICKHOUSE_PROTOCOL: ${{ secrets.CLICKHOUSE_PROTOCOL || secrets.CH_PROTOCOL }}
+      CLICKHOUSE_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH || secrets.CH_HTTP_URL_PATH }}

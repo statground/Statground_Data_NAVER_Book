@@ -1,0 +1,185 @@
+name: Kakao Book Collector - Shadow Direct DB
+
+on:
+  workflow_call:
+    inputs:
+      run_kind:
+        description: "manual or scheduled"
+        required: false
+        type: string
+        default: "manual"
+      mode:
+        description: "Collection evidence mode"
+        required: false
+        type: string
+        default: "manual"
+      queries:
+        description: "Semicolon/newline-delimited queries; values are never printed"
+        required: true
+        type: string
+      sort:
+        required: false
+        type: string
+        default: "accuracy"
+      target:
+        required: false
+        type: string
+        default: ""
+      page_cap:
+        required: false
+        type: number
+        default: 1
+      page_size:
+        required: false
+        type: number
+        default: 50
+      dry_run:
+        required: false
+        type: boolean
+        default: false
+      respect_frontier_due:
+        required: false
+        type: boolean
+        default: false
+      schedule_enabled:
+        required: false
+        type: boolean
+        default: false
+      auto_daily_budget:
+        required: false
+        type: number
+        default: 2000
+    secrets:
+      KAKAO_REST_API_KEY:
+        required: true
+      CLICKHOUSE_HOST:
+        required: true
+      CLICKHOUSE_PORT:
+        required: false
+      CLICKHOUSE_USER:
+        required: true
+      CLICKHOUSE_PASSWORD:
+        required: true
+      CLICKHOUSE_PROTOCOL:
+        required: false
+      CLICKHOUSE_HTTP_URL_PATH:
+        required: false
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Collection evidence mode"
+        required: false
+        default: "manual"
+      queries:
+        description: "Semicolon/newline-delimited queries; values are never printed"
+        required: true
+        default: "통계학"
+      sort:
+        type: choice
+        options: [accuracy, latest]
+        default: accuracy
+      target:
+        description: "Optional Kakao search target: title, isbn, publisher, or person"
+        type: string
+        default: ""
+      page_cap:
+        type: number
+        default: 1
+      page_size:
+        type: number
+        default: 50
+      dry_run:
+        type: boolean
+        default: false
+      respect_frontier_due:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: statground-kakao-book-api
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      KAKAO_RUN_KIND: ${{ inputs.run_kind || 'manual' }}
+      KAKAO_COLLECT_MODE: ${{ inputs.mode || 'manual' }}
+      KAKAO_QUERIES: ${{ inputs.queries }}
+      KAKAO_SEARCH_SORT: ${{ inputs.sort || 'accuracy' }}
+      KAKAO_SEARCH_TARGET: ${{ inputs.target || '' }}
+      KAKAO_PAGE_CAP: ${{ inputs.page_cap || 1 }}
+      KAKAO_PAGE_SIZE: ${{ inputs.page_size || 50 }}
+      KAKAO_DRY_RUN: ${{ inputs.dry_run || false }}
+      KAKAO_RESPECT_FRONTIER_DUE: ${{ inputs.respect_frontier_due || false }}
+      KAKAO_BOOK_SCHEDULE_ENABLED: ${{ inputs.schedule_enabled || false }}
+      KAKAO_BOOK_OFFICIAL_DAILY_LIMIT: "30000"
+      KAKAO_BOOK_AUTO_DAILY_BUDGET: ${{ inputs.auto_daily_budget || 2000 }}
+      KAKAO_BOOK_MANUAL_DAILY_RESERVE: "4000"
+      KAKAO_BOOK_DAUM_SEARCH_SHARED_RESERVE: "8000"
+      KAKAO_BOOK_EMERGENCY_RESERVE: "6000"
+      KAKAO_MAX_REQUESTS_PER_RUN: "2000"
+      KAKAO_QUOTA_EXHAUSTED_HOLD_HOURS: "24"
+      KAKAO_RATE_LIMIT_HOLD_MINUTES: "30"
+      KAKAO_REQUIRE_CLICKHOUSE_HTTPS: "true"
+      KAKAO_API_TIMEOUT_SECONDS: "20"
+      KAKAO_API_ATTEMPTS: "3"
+      KAKAO_API_BACKOFF_MIN: "0.5"
+      KAKAO_API_BACKOFF_MAX: "4.0"
+      KAKAO_MAX_WORKERS: "1"
+      PRODUCER_SOURCE: "github_actions"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run secret-free tests and build
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+        run: |
+          go mod download all
+          go mod verify
+          go test -mod=mod ./...
+          go build -mod=mod ./cmd/collect_kakao
+
+      - name: Validate Kakao and ClickHouse configuration
+        env:
+          KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
+          CH_HOST: ${{ secrets.CLICKHOUSE_HOST }}
+          CH_PORT: ${{ secrets.CLICKHOUSE_PORT || '8123' }}
+          CH_USER: ${{ secrets.CLICKHOUSE_USER }}
+          CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+          CH_PROTOCOL: ${{ secrets.CLICKHOUSE_PROTOCOL || 'https' }}
+        run: |
+          test -n "$KAKAO_REST_API_KEY" || { echo "KAKAO_REST_API_KEY secret is required"; exit 1; }
+          test -n "$CH_HOST" || { echo "CLICKHOUSE_HOST secret is required"; exit 1; }
+          test -n "$CH_USER" || { echo "CLICKHOUSE_USER secret is required"; exit 1; }
+          test -n "$CH_PASSWORD" || { echo "CLICKHOUSE_PASSWORD secret is required"; exit 1; }
+          test "$CH_PROTOCOL" = "https" || { echo "CLICKHOUSE_PROTOCOL must be https"; exit 1; }
+          case "$CH_HOST" in
+            127.0.0.1|localhost|0.0.0.0|::1|[::1])
+              echo "ClickHouse host must be externally reachable"
+              exit 1
+              ;;
+          esac
+
+      - name: Collect Kakao books into shadow tables
+        env:
+          KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
+          CH_HOST: ${{ secrets.CLICKHOUSE_HOST }}
+          CH_PORT: ${{ secrets.CLICKHOUSE_PORT || '8123' }}
+          CH_USER: ${{ secrets.CLICKHOUSE_USER }}
+          CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+          CH_PROTOCOL: ${{ secrets.CLICKHOUSE_PROTOCOL || 'https' }}
+          CH_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH }}
+          CH_DATABASE: Data_Book_KAKAO_Raw
+        run: go run -mod=mod ./cmd/collect_kakao

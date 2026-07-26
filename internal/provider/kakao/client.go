@@ -282,60 +282,129 @@ func (c *Client) searchOnce(
 	httpRequest.Header.Set("Authorization", "KakaoAK "+c.apiKey)
 	httpRequest.Header.Set("Accept", "application/json")
 
+	observer := attemptObserverFromContext(ctx)
+	startedAt := time.Now()
+	attemptToken := ""
+	if observer != nil {
+		attemptToken, err = observer.BeforeAttempt(ctx, AttemptInfo{
+			Request:   request,
+			StartedAt: startedAt,
+		})
+		if err != nil {
+			return provider.SearchResponse{}, false, err
+		}
+	}
+	finishAttempt := func(result AttemptResult) error {
+		if observer == nil {
+			return nil
+		}
+		result.CompletedAt = time.Now()
+		result.Elapsed = result.CompletedAt.Sub(startedAt)
+		return observer.AfterAttempt(ctx, attemptToken, result)
+	}
+
 	httpResponse, err := c.httpClient.Do(httpRequest)
 	if err != nil {
 		category, retryable := classifyTransportError(err)
-		return provider.SearchResponse{}, retryable, &APIError{
+		apiErr := &APIError{
 			Category:  category,
 			Retryable: retryable,
 		}
+		if observerErr := finishAttempt(AttemptResult{ErrorCategory: category}); observerErr != nil {
+			return provider.SearchResponse{}, false, observerErr
+		}
+		return provider.SearchResponse{}, retryable, apiErr
 	}
 	defer httpResponse.Body.Close()
 
 	body, err := readBounded(httpResponse.Body, c.maxBodyBytes)
 	if err != nil {
-		return provider.SearchResponse{}, false, &APIError{
+		apiErr := &APIError{
 			Category:   ErrorContract,
 			HTTPStatus: httpResponse.StatusCode,
 		}
+		if observerErr := finishAttempt(AttemptResult{
+			HTTPStatus:    httpResponse.StatusCode,
+			ErrorCategory: ErrorContract,
+		}); observerErr != nil {
+			return provider.SearchResponse{}, false, observerErr
+		}
+		return provider.SearchResponse{}, false, apiErr
 	}
 
 	if httpResponse.StatusCode != http.StatusOK {
 		apiErr := classifyHTTPError(httpResponse.StatusCode, body)
+		if observerErr := finishAttempt(AttemptResult{
+			HTTPStatus:    httpResponse.StatusCode,
+			KakaoCode:     apiErr.KakaoCode,
+			ErrorCategory: apiErr.Category,
+		}); observerErr != nil {
+			return provider.SearchResponse{}, false, observerErr
+		}
 		return provider.SearchResponse{}, apiErr.Retryable, apiErr
 	}
 
 	var decoded searchResponse
 	if err := json.Unmarshal(body, &decoded); err != nil {
-		return provider.SearchResponse{}, false, &APIError{
+		apiErr := &APIError{
 			Category:   ErrorContract,
 			HTTPStatus: httpResponse.StatusCode,
 		}
+		if observerErr := finishAttempt(AttemptResult{
+			HTTPStatus:    httpResponse.StatusCode,
+			ErrorCategory: ErrorContract,
+		}); observerErr != nil {
+			return provider.SearchResponse{}, false, observerErr
+		}
+		return provider.SearchResponse{}, false, apiErr
 	}
 	if decoded.Code != nil && *decoded.Code == -10 {
-		return provider.SearchResponse{}, false, &APIError{
+		apiErr := &APIError{
 			Category:   ErrorQuotaExhausted,
 			HTTPStatus: httpResponse.StatusCode,
 			KakaoCode:  *decoded.Code,
 		}
+		if observerErr := finishAttempt(AttemptResult{
+			HTTPStatus:    httpResponse.StatusCode,
+			KakaoCode:     *decoded.Code,
+			ErrorCategory: ErrorQuotaExhausted,
+		}); observerErr != nil {
+			return provider.SearchResponse{}, false, observerErr
+		}
+		return provider.SearchResponse{}, false, apiErr
 	}
 	documents := make([]bookmodel.BookDocument, 0, len(decoded.Documents))
 	for _, document := range decoded.Documents {
 		normalized, err := normalizeDocument(document)
 		if err != nil {
-			return provider.SearchResponse{}, false, &APIError{
+			apiErr := &APIError{
 				Category:   ErrorContract,
 				HTTPStatus: httpResponse.StatusCode,
 			}
+			if observerErr := finishAttempt(AttemptResult{
+				HTTPStatus:    httpResponse.StatusCode,
+				ErrorCategory: ErrorContract,
+			}); observerErr != nil {
+				return provider.SearchResponse{}, false, observerErr
+			}
+			return provider.SearchResponse{}, false, apiErr
 		}
 		documents = append(documents, normalized)
 	}
-	return provider.SearchResponse{
+	response := provider.SearchResponse{
 		TotalCount:    decoded.Meta.TotalCount,
 		PageableCount: decoded.Meta.PageableCount,
 		IsEnd:         decoded.Meta.IsEnd,
 		Documents:     documents,
-	}, false, nil
+	}
+	if observerErr := finishAttempt(AttemptResult{
+		HTTPStatus:     httpResponse.StatusCode,
+		Success:        true,
+		DocumentsCount: len(documents),
+	}); observerErr != nil {
+		return provider.SearchResponse{}, false, observerErr
+	}
+	return response, false, nil
 }
 
 func classifyHTTPError(status int, body []byte) *APIError {
