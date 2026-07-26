@@ -7,11 +7,6 @@ on:
         description: "One bounded Kakao Book query; the value is not printed"
         required: false
         default: "통계학"
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/kakao_book_smoke.yml"
 
 permissions:
   contents: read
@@ -22,7 +17,6 @@ concurrency:
 
 jobs:
   smoke:
-    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[kakao-smoke]')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
