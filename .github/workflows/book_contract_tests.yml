@@ -1,0 +1,40 @@
+name: Book Provider Contract Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: statground-book-contract-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Validate provider contracts without secrets
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+        run: |
+          go mod download all
+          go mod verify
+          go test -mod=mod ./...
+          go vet ./...
+
+      - name: Verify dry-run planner performs no external calls
+        run: go run -mod=mod ./cmd/plan_kakao_book_requests

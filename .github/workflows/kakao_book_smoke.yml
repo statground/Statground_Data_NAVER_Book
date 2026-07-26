@@ -1,0 +1,58 @@
+name: Kakao Book API Contract Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      query:
+        description: "One bounded Kakao Book query; the value is not printed"
+        required: false
+        default: "통계학"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: statground-kakao-book-api
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      KAKAO_API_TIMEOUT_SECONDS: "20"
+      KAKAO_API_ATTEMPTS: "3"
+      KAKAO_API_BACKOFF_MIN: "0.5"
+      KAKAO_API_BACKOFF_MAX: "4.0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Validate repository secret is available
+        env:
+          KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
+        run: |
+          if [ -z "$KAKAO_REST_API_KEY" ]; then
+            echo "KAKAO_REST_API_KEY repository secret is required"
+            exit 1
+          fi
+
+      - name: Run secret-free contract tests first
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+        run: |
+          go mod download all
+          go mod verify
+          go test -mod=mod ./...
+
+      - name: Run one DB-write-free Kakao request
+        env:
+          KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
+          KAKAO_SMOKE_QUERY: ${{ inputs.query }}
+        run: go run -mod=mod ./cmd/kakao_book_smoke
