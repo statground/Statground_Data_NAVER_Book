@@ -341,6 +341,24 @@ func normalizeValue(v any) any {
 }
 
 func (c *Client) InsertJSONEachRow(table string, rows []map[string]any) error {
+	return c.insertJSONEachRow(table, rows, "", false)
+}
+
+// InsertJSONEachRowDurable applies the fixed foreground/quorum settings used by
+// resumable bulk import ledgers and raw data. The caller-supplied token must be
+// a lowercase SHA-256 of immutable logical lineage, never volatile row JSON.
+func (c *Client) InsertJSONEachRowDurable(table string, rows []map[string]any, deduplicationToken string) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	deduplicationToken = strings.TrimSpace(deduplicationToken)
+	if !isLowerHexSHA256(deduplicationToken) {
+		return fmt.Errorf("invalid durable insert deduplication token")
+	}
+	return c.insertJSONEachRow(table, rows, deduplicationToken, true)
+}
+
+func (c *Client) insertJSONEachRow(table string, rows []map[string]any, deduplicationToken string, durable bool) error {
 	if len(rows) == 0 {
 		return nil
 	}
@@ -368,9 +386,19 @@ func (c *Client) InsertJSONEachRow(table string, rows []map[string]any) error {
 			return err
 		}
 	}
-	token := fmt.Sprintf("%x", sha256.Sum256(append([]byte(table+"\x1f"+strings.Join(columns, "\x1f")+"\x1f"), payload.Bytes()...)))
-	body := fmt.Sprintf("INSERT INTO %s (%s) SETTINGS insert_deduplicate = 1, insert_deduplication_token = '%s' FORMAT JSONEachRow\n%s",
-		table, strings.Join(columns, ", "), token, payload.String())
+	token := deduplicationToken
+	if token == "" {
+		token = fmt.Sprintf("%x", sha256.Sum256(append([]byte(table+"\x1f"+strings.Join(columns, "\x1f")+"\x1f"), payload.Bytes()...)))
+	}
+	settings := fmt.Sprintf(
+		"insert_deduplicate = 1, insert_deduplication_token = '%s'",
+		token,
+	)
+	if durable {
+		settings += ", distributed_foreground_insert = 1, insert_quorum = 2, insert_quorum_parallel = 1, insert_quorum_timeout = 120000, load_balancing = 'first_or_random', load_balancing_first_offset = 0, prefer_localhost_replica = 0"
+	}
+	body := fmt.Sprintf("INSERT INTO %s (%s) SETTINGS %s FORMAT JSONEachRow\n%s",
+		table, strings.Join(columns, ", "), settings, payload.String())
 	var lastErr error
 	for attempt := 1; attempt <= 2; attempt++ {
 		if _, lastErr = c.post(body, nil); lastErr == nil {
@@ -381,4 +409,16 @@ func (c *Client) InsertJSONEachRow(table string, rows []map[string]any) error {
 		}
 	}
 	return lastErr
+}
+
+func isLowerHexSHA256(value string) bool {
+	if len(value) != sha256.Size*2 {
+		return false
+	}
+	for _, char := range value {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return false
+		}
+	}
+	return true
 }

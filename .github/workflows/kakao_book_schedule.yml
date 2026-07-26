@@ -1,4 +1,4 @@
-name: Kakao Book Scheduled Shadow Pipeline
+name: Kakao Book Scheduled Provider Pipeline
 
 on:
   schedule:
@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   discovery:
-    if: github.event_name == 'workflow_dispatch' || vars.KAKAO_BOOK_SCHEDULE_ENABLED == 'true'
+    if: github.event_name == 'workflow_dispatch' || vars.KAKAO_BOOK_SCHEDULE_ENABLED != 'false'
     uses: ./.github/workflows/kakao_book_collect.yml
     with:
       run_kind: ${{ github.event_name == 'schedule' && 'scheduled' || 'manual' }}
@@ -21,7 +21,7 @@ jobs:
       page_size: 50
       dry_run: false
       respect_frontier_due: true
-      schedule_enabled: ${{ vars.KAKAO_BOOK_SCHEDULE_ENABLED == 'true' }}
+      schedule_enabled: ${{ vars.KAKAO_BOOK_SCHEDULE_ENABLED != 'false' }}
       auto_daily_budget: 2000
     secrets:
       KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}

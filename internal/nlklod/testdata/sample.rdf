@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rdf:RDF
+  xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+  xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+  xmlns:dcterms="http://purl.org/dc/terms/"
+  xmlns:dc="http://purl.org/dc/elements/1.1/"
+  xmlns:bibo="http://purl.org/ontology/bibo/"
+  xmlns:bibframe="http://id.loc.gov/ontologies/bibframe/"
+  xmlns:nlon="http://lod.nl.go.kr/ontology/"
+  xmlns:skos="http://www.w3.org/2004/02/skos/core#"
+  xmlns:foaf="http://xmlns.com/foaf/0.1/"
+  xmlns:schema="http://schema.org/">
+  <bibo:Book rdf:about="http://lod.nl.go.kr/resource/KJU200810182">
+    <dcterms:title>우리 집은 아프리카에 있어요</dcterms:title>
+    <rdfs:label>우리 집은 아프리카에 있어요 / 셰일라 고든 글</rdfs:label>
+    <dc:creator>Gordon, Sheila</dc:creator>
+    <dcterms:creator rdf:resource="http://lod.nl.go.kr/resource/KAC201304715"/>
+    <dc:publisher>웅진씽크빅</dc:publisher>
+    <dcterms:issued>2008</dcterms:issued>
+    <nlon:issuedYear>2008</nlon:issuedYear>
+    <nlon:datePublished>2026-06-04T10:35:42^^http://www.w3.org/2001/XMLSchema#dateTime</nlon:datePublished>
+    <bibo:isbn>9788901082851</bibo:isbn>
+    <bibo:isbn>9788901038636(세트)</bibo:isbn>
+    <bibo:isbn>9788901082850(잘못된 값)</bibo:isbn>
+    <nlon:kdc>843</nlon:kdc>
+    <dcterms:subject rdf:resource="http://lod.nl.go.kr/resource/KSH2000039168"/>
+    <bibframe:language rdf:resource="http://lod.nl.go.kr/language/kor"/>
+    <rdf:type rdf:resource="http://lod.nl.go.kr/ontology/OfflineMaterial"/>
+  </bibo:Book>
+  <nlon:Author rdf:about="http://lod.nl.go.kr/resource/KAC199602296">
+    <foaf:name>Bergman, Ingmar</foaf:name>
+    <skos:prefLabel>Bergman, Ingmar</skos:prefLabel>
+    <skos:altLabel>베리만, 잉마르</skos:altLabel>
+    <nlon:birthYear>1918^^http://www.w3.org/2001/XMLSchema#int</nlon:birthYear>
+    <schema:jobTitle>영화 감독</schema:jobTitle>
+  </nlon:Author>
+  <nlon:Library rdf:about="http://lod.nl.go.kr/library/127070">
+    <rdfs:label>테스트도서관</rdfs:label>
+    <dcterms:identifier>127070</dcterms:identifier>
+    <nlon:libraryType rdf:resource="http://lod.nl.go.kr/resource/KoreaLibraryMark"/>
+    <foaf:phone>02-0000-0000</foaf:phone>
+  </nlon:Library>
+</rdf:RDF>

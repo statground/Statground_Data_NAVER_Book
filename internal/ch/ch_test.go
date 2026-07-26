@@ -1,6 +1,11 @@
 package ch
 
-import "testing"
+import (
+	"io"
+	"net/http"
+	"strings"
+	"testing"
+)
 
 func TestClientBaseURLUsesProtocolAndPath(t *testing.T) {
 	c := &Client{
@@ -63,5 +68,62 @@ func TestSplitQualifiedTable(t *testing.T) {
 	db, table = SplitQualifiedTable("naver_book_raw", "Data_Book_NAVER_Raw")
 	if db != "Data_Book_NAVER_Raw" || table != "naver_book_raw" {
 		t.Fatalf("unqualified split = %s.%s", db, table)
+	}
+}
+
+func TestInsertJSONEachRowDurableUsesFixedForegroundQuorumSettings(t *testing.T) {
+	var body string
+	client := &Client{
+		Host: "http://clickhouse.test",
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			payload, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body = string(payload)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("")),
+				Request:    request,
+			}, nil
+		})},
+	}
+	token := strings.Repeat("a", 64)
+	if err := client.InsertJSONEachRowDurable("Data_Book_NLK_Raw.nlk_resource_raw", []map[string]any{{
+		"resource_id": "urn:test:1",
+		"version":     uint64(1),
+	}}, token); err != nil {
+		t.Fatalf("InsertJSONEachRowDurable() error=%v", err)
+	}
+	for _, expected := range []string{
+		"insert_deduplicate = 1",
+		"insert_deduplication_token = '" + token + "'",
+		"distributed_foreground_insert = 1",
+		"insert_quorum = 2",
+		"insert_quorum_parallel = 1",
+		"insert_quorum_timeout = 120000",
+		"load_balancing = 'first_or_random'",
+		"load_balancing_first_offset = 0",
+		"prefer_localhost_replica = 0",
+		"FORMAT JSONEachRow",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("durable insert body missing %q: %s", expected, body)
+		}
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
+}
+
+func TestInsertJSONEachRowDurableRejectsNonSHA256Token(t *testing.T) {
+	client := &Client{}
+	err := client.InsertJSONEachRowDurable("db.table", []map[string]any{{"value": 1}}, "volatile")
+	if err == nil || err.Error() != "invalid durable insert deduplication token" {
+		t.Fatalf("unexpected error=%v", err)
 	}
 }

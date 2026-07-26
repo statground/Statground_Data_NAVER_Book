@@ -24,7 +24,7 @@ func main() {
 func run() error {
 	settleSeconds := envx.Int("WEBR_BOOK_REFRESH_SETTLE_SECONDS", 20)
 	if settleSeconds > 0 {
-		fmt.Printf("[webr-book] waiting %ds for direct ClickHouse ingestion to settle\n", settleSeconds)
+		fmt.Printf("[book-catalog] waiting %ds for direct ClickHouse ingestion to settle\n", settleSeconds)
 		time.Sleep(time.Duration(settleSeconds) * time.Second)
 	}
 
@@ -38,6 +38,13 @@ func run() error {
 	}
 	client.HTTPClient.Timeout = time.Duration(timeoutSeconds) * time.Second
 
+	if err := refreshProviderCatalog(
+		client,
+		envx.String("BOOK_PROVIDER_REFRESH_VIEW", "Data_Book_Service.mv_book_catalog_latest_refresh"),
+		envx.String("BOOK_PROVIDER_COUNT_VIEW", "Data_Book_Service.v_book_catalog_latest_current"),
+	); err != nil {
+		return err
+	}
 	if err := refreshCatalog(client, "webr-book", envx.String("WEBR_BOOK_REFRESH_VIEW", "webr_book.mv_naver_r_book_catalog_refresh"), envx.String("WEBR_BOOK_COUNT_VIEW", "webr_book.v_naver_r_book_catalog")); err != nil {
 		return err
 	}
@@ -46,6 +53,44 @@ func run() error {
 			return err
 		}
 	}
+	return nil
+}
+
+func refreshProviderCatalog(client *ch.Client, refreshView, countView string) error {
+	if err := validateQualifiedIdentifier(refreshView, "BOOK_PROVIDER_REFRESH_VIEW"); err != nil {
+		return err
+	}
+	if err := validateQualifiedIdentifier(countView, "BOOK_PROVIDER_COUNT_VIEW"); err != nil {
+		return err
+	}
+	fmt.Printf("[book-provider] refreshing view=%s\n", refreshView)
+	if err := client.Exec("SYSTEM REFRESH VIEW " + refreshView); err != nil {
+		return fmt.Errorf("refresh provider-neutral book catalog: %w", err)
+	}
+	rows, err := client.QueryJSONEachRow(fmt.Sprintf(`
+        SELECT
+            count() AS row_count,
+            countIf(provider = 'kakao') AS kakao_count,
+            countIf(provider = 'nlk_lod') AS nlk_count,
+            countIf(provider = 'naver_frozen') AS frozen_count,
+            if(isNull(max(updated_at)), '', formatDateTime(max(updated_at), '%%Y-%%m-%%d %%H:%%i:%%S', 'Asia/Seoul')) AS latest_update
+        FROM %s
+    `, countView))
+	if err != nil {
+		return fmt.Errorf("verify provider-neutral book catalog refresh: %w", err)
+	}
+	if len(rows) == 0 {
+		fmt.Println("[book-provider] refresh ok row_count=0 kakao_count=0 nlk_count=0 frozen_count=0 latest_update=")
+		return nil
+	}
+	fmt.Printf(
+		"[book-provider] refresh ok row_count=%d kakao_count=%d nlk_count=%d frozen_count=%d latest_update=%s\n",
+		util.ToInt64(rows[0]["row_count"]),
+		util.ToInt64(rows[0]["kakao_count"]),
+		util.ToInt64(rows[0]["nlk_count"]),
+		util.ToInt64(rows[0]["frozen_count"]),
+		strings.TrimSpace(util.ToString(rows[0]["latest_update"])),
+	)
 	return nil
 }
 
