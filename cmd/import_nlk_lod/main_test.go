@@ -8,10 +8,10 @@ import (
 )
 
 func TestDefaultDatasetsExcludeAggregateOfflineAndOnlineArchives(t *testing.T) {
-	if defaultDatasets != "book,Concept,Person,Library" {
+	if defaultDatasets != "book,concept,person,library" {
 		t.Fatalf("default datasets=%q", defaultDatasets)
 	}
-	for _, forbidden := range []string{"Offline", "Online"} {
+	for _, forbidden := range []string{"offline", "online"} {
 		if strings.Contains(defaultDatasets, forbidden) {
 			t.Fatalf("aggregate dataset %s must be opt-in", forbidden)
 		}
