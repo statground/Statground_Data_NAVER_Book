@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"testing"
 	"time"
 )
@@ -287,6 +289,146 @@ func TestImporterRejectsUnboundedBatchMemory(t *testing.T) {
 	}
 }
 
+func TestImporterRejectsInvalidEntryShardContract(t *testing.T) {
+	tests := []Config{
+		{EntryShardCount: -1, EntryShardIndex: 0, DryRun: true},
+		{EntryShardCount: MaxEntryShardCount + 1, EntryShardIndex: 0, DryRun: true},
+		{EntryShardCount: 2, EntryShardIndex: -1, DryRun: true},
+		{EntryShardCount: 2, EntryShardIndex: 2, DryRun: true},
+	}
+	for _, config := range tests {
+		_, err := (&Importer{}).Run(context.Background(), config)
+		if ErrorCategory(err) != "invalid_entry_shard" {
+			t.Fatalf("config=%+v error=%v", config, err)
+		}
+	}
+}
+
+func TestEntryShardPartitionHasStableCompleteUnionWithoutOverlap(t *testing.T) {
+	inputDir := t.TempDir()
+	entryNames := make([]string, 37)
+	for index := range entryNames {
+		entryNames[index] = fmt.Sprintf("book_rdf_20260529/chunk_%03d.rdf", index)
+	}
+	writeSyntheticArchiveEntries(t, inputDir, entryNames)
+	plans, err := discoverArchives(
+		inputDir,
+		[]string{"book"},
+		time.Date(2026, 5, 29, 0, 0, 0, 0, time.UTC),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const shardCount = 7
+	seen := make(map[string]int, len(entryNames))
+	for shardIndex := 0; shardIndex < shardCount; shardIndex++ {
+		first := selectEntryShard(plans, shardCount, shardIndex)
+		second := selectEntryShard(plans, shardCount, shardIndex)
+		if !reflect.DeepEqual(first, second) {
+			t.Fatalf("shard %d assignment changed between calls", shardIndex)
+		}
+		for _, plan := range first {
+			if !sort.SliceIsSorted(plan.Entries, func(left, right int) bool {
+				return plan.Entries[left].Name < plan.Entries[right].Name
+			}) {
+				t.Fatalf("shard %d entry order is unstable: %+v", shardIndex, plan.Entries)
+			}
+			var assignedCompressedBytes uint64
+			var assignedUncompressedBytes uint64
+			for _, entry := range plan.Entries {
+				if got := entryShard(plan.Dataset, plan.BaseName, entry.Name, shardCount); got != shardIndex {
+					t.Fatalf("entry %q assigned to shard %d, selected by %d", entry.Name, got, shardIndex)
+				}
+				seen[entry.Name]++
+				assignedCompressedBytes += entry.CompressedBytes
+				assignedUncompressedBytes += entry.UncompressedBytes
+			}
+			if plan.CompressedBytes != assignedCompressedBytes ||
+				plan.UncompressedBytes != assignedUncompressedBytes {
+				t.Fatalf(
+					"shard %d bytes=(%d,%d) want=(%d,%d)",
+					shardIndex,
+					plan.CompressedBytes,
+					plan.UncompressedBytes,
+					assignedCompressedBytes,
+					assignedUncompressedBytes,
+				)
+			}
+		}
+	}
+	if len(seen) != len(entryNames) {
+		t.Fatalf("union has %d entries, want %d", len(seen), len(entryNames))
+	}
+	for _, name := range entryNames {
+		if seen[name] != 1 {
+			t.Fatalf("entry %q selected %d times", name, seen[name])
+		}
+	}
+}
+
+func TestEntryShardDefaultIsUnchangedAndRunTotalsDescribeAssignedSubset(t *testing.T) {
+	inputDir := t.TempDir()
+	entryNames := []string{
+		"book_rdf_20260529/part_0.rdf",
+		"book_rdf_20260529/part_1.rdf",
+		"book_rdf_20260529/part_2.rdf",
+		"book_rdf_20260529/part_3.rdf",
+		"book_rdf_20260529/part_4.rdf",
+		"book_rdf_20260529/part_5.rdf",
+		"book_rdf_20260529/part_6.rdf",
+		"book_rdf_20260529/part_7.rdf",
+	}
+	writeSyntheticArchiveEntries(t, inputDir, entryNames)
+	snapshot := time.Date(2026, 5, 29, 0, 0, 0, 0, time.UTC)
+	plans, err := discoverArchives(inputDir, []string{"book"}, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := selectEntryShard(plans, 1, 0); !reflect.DeepEqual(got, plans) {
+		t.Fatalf("default shard changed plans: got=%+v want=%+v", got, plans)
+	}
+
+	const shardCount = 4
+	var totalEntries uint32
+	var totalRecords uint64
+	for shardIndex := 0; shardIndex < shardCount; shardIndex++ {
+		assigned := selectEntryShard(plans, shardCount, shardIndex)
+		var expectedEntries uint32
+		for _, plan := range assigned {
+			expectedEntries += uint32(len(plan.Entries))
+		}
+		result, runErr := (&Importer{IDGenerator: incrementingID()}).Run(context.Background(), Config{
+			InputDir:        inputDir,
+			Datasets:        []string{"book"},
+			SnapshotDate:    snapshot,
+			EntryShardCount: shardCount,
+			EntryShardIndex: shardIndex,
+			DryRun:          true,
+		})
+		if runErr != nil {
+			t.Fatalf("shard %d: %v", shardIndex, runErr)
+		}
+		if result.EntriesTotal != expectedEntries ||
+			result.EntriesCompleted != expectedEntries ||
+			result.RecordsParsed != uint64(expectedEntries)*3 {
+			t.Fatalf("shard %d result=%+v expected_entries=%d", shardIndex, result, expectedEntries)
+		}
+		expectedArchives := uint16(0)
+		if expectedEntries > 0 {
+			expectedArchives = 1
+		}
+		if result.ArchivesTotal != expectedArchives || result.ArchivesCompleted != expectedArchives {
+			t.Fatalf("shard %d archive totals=%+v expected=%d", shardIndex, result, expectedArchives)
+		}
+		totalEntries += result.EntriesTotal
+		totalRecords += result.RecordsParsed
+	}
+	if totalEntries != uint32(len(entryNames)) || totalRecords != uint64(len(entryNames))*3 {
+		t.Fatalf("union totals entries=%d records=%d", totalEntries, totalRecords)
+	}
+}
+
 func TestNormalizeDatasetsKeepsSafeDefaultsAndAliases(t *testing.T) {
 	got, err := NormalizeDatasets([]string{"book", "Concept", "PERSON", "Library", "book", "govermentpublication"})
 	if err != nil {
@@ -345,6 +487,11 @@ func TestDiscoverArchivesNormalizesDatasetButPreservesOfficialArchiveName(t *tes
 
 func writeSyntheticArchive(t *testing.T, directory string) {
 	t.Helper()
+	writeSyntheticArchiveEntries(t, directory, []string{"book_rdf_20260529/book_0.rdf"})
+}
+
+func writeSyntheticArchiveEntries(t *testing.T, directory string, entryNames []string) {
+	t.Helper()
 	rdf, err := os.ReadFile(filepath.Join("..", "nlklod", "testdata", "sample.rdf"))
 	if err != nil {
 		t.Fatal(err)
@@ -354,12 +501,14 @@ func writeSyntheticArchive(t *testing.T, directory string) {
 		t.Fatal(err)
 	}
 	writer := zip.NewWriter(file)
-	entry, err := writer.Create("book_rdf_20260529/book_0.rdf")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := entry.Write(rdf); err != nil {
-		t.Fatal(err)
+	for _, entryName := range entryNames {
+		entry, createErr := writer.Create(entryName)
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		if _, writeErr := entry.Write(rdf); writeErr != nil {
+			t.Fatal(writeErr)
+		}
 	}
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)

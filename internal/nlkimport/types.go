@@ -13,6 +13,8 @@ type Config struct {
 	SnapshotDate    time.Time
 	BatchSize       int
 	BatchByteLimit  uint64
+	EntryShardCount int
+	EntryShardIndex int
 	Resume          bool
 	DryRun          bool
 	MaxRecords      uint64

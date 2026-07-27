@@ -41,3 +41,18 @@ func TestInvalidSnapshotErrorDoesNotEchoInputPath(t *testing.T) {
 		t.Fatalf("unsafe error=%q", err)
 	}
 }
+
+func TestInvalidEntryShardFlagsFailBeforeInputAccess(t *testing.T) {
+	tests := [][]string{
+		{"--entry-shard-count=0", "--entry-shard-index=0"},
+		{"--entry-shard-count=17", "--entry-shard-index=0"},
+		{"--entry-shard-count=2", "--entry-shard-index=-1"},
+		{"--entry-shard-count=2", "--entry-shard-index=2"},
+	}
+	for _, args := range tests {
+		err := run(context.Background(), append(args, "--dry-run=true"))
+		if err == nil || err.Error() != "NLK LOD import failed category=invalid_flags" {
+			t.Fatalf("args=%q error=%v", args, err)
+		}
+	}
+}

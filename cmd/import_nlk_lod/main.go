@@ -36,10 +36,16 @@ func run(ctx context.Context, args []string) error {
 	snapshotRaw := flags.String("snapshot-date", "2026-05-29", "NLK snapshot date in YYYY-MM-DD")
 	batchSize := flags.Int("batch-size", 20000, "maximum resources per ClickHouse JSONEachRow batch")
 	batchBytes := flags.Uint64("batch-bytes", 64*1024*1024, "estimated in-memory raw batch byte limit")
+	entryShardCount := flags.Int("entry-shard-count", 1, "number of deterministic ZIP-entry shards")
+	entryShardIndex := flags.Int("entry-shard-index", 0, "zero-based ZIP-entry shard index")
 	resume := flags.Bool("resume", true, "resume from durable per-entry checkpoints")
 	dryRun := flags.Bool("dry-run", false, "parse and validate without ClickHouse writes")
 	maxRecords := flags.Uint64("max-records", 0, "maximum resources to process; zero is unlimited")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
+		return &nlkimport.SafeError{Category: "invalid_flags"}
+	}
+	if *entryShardCount < 1 || *entryShardCount > nlkimport.MaxEntryShardCount ||
+		*entryShardIndex < 0 || *entryShardIndex >= *entryShardCount {
 		return &nlkimport.SafeError{Category: "invalid_flags"}
 	}
 
@@ -77,6 +83,8 @@ func run(ctx context.Context, args []string) error {
 		SnapshotDate:    snapshot,
 		BatchSize:       *batchSize,
 		BatchByteLimit:  *batchBytes,
+		EntryShardCount: *entryShardCount,
+		EntryShardIndex: *entryShardIndex,
 		Resume:          *resume,
 		DryRun:          *dryRun,
 		MaxRecords:      *maxRecords,
@@ -87,9 +95,11 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 	fmt.Printf(
-		"provider=nlk status=completed dry_run=%t limited=%t archives=%d/%d entries=%d/%d parsed=%d inserted=%d rejected=%d\n",
+		"provider=nlk status=completed dry_run=%t limited=%t entry_shard_index=%d entry_shard_count=%d archives=%d/%d entries=%d/%d parsed=%d inserted=%d rejected=%d\n",
 		*dryRun,
 		result.Limited,
+		*entryShardIndex,
+		*entryShardCount,
 		result.ArchivesCompleted,
 		result.ArchivesTotal,
 		result.EntriesCompleted,

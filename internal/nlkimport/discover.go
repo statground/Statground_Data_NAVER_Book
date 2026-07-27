@@ -3,12 +3,15 @@ package nlkimport
 import (
 	"archive/zip"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 )
+
+const MaxEntryShardCount = 16
 
 type archivePlan struct {
 	Dataset           string
@@ -22,6 +25,7 @@ type archivePlan struct {
 type entryPlan struct {
 	Name              string
 	CRC32             uint32
+	CompressedBytes   uint64
 	UncompressedBytes uint64
 }
 
@@ -108,6 +112,7 @@ func discoverArchives(inputDir string, datasets []string, snapshot time.Time) ([
 			plan.Entries = append(plan.Entries, entryPlan{
 				Name:              file.Name,
 				CRC32:             file.CRC32,
+				CompressedBytes:   file.CompressedSize64,
 				UncompressedBytes: file.UncompressedSize64,
 			})
 			plan.UncompressedBytes += file.UncompressedSize64
@@ -122,4 +127,43 @@ func discoverArchives(inputDir string, datasets []string, snapshot time.Time) ([
 		plans = append(plans, plan)
 	}
 	return plans, nil
+}
+
+func validEntryShard(count, index int) bool {
+	return count >= 1 && count <= MaxEntryShardCount && index >= 0 && index < count
+}
+
+func selectEntryShard(plans []archivePlan, count, index int) []archivePlan {
+	if count == 1 && index == 0 {
+		return plans
+	}
+	selected := make([]archivePlan, 0, len(plans))
+	for _, plan := range plans {
+		shardPlan := plan
+		shardPlan.Entries = nil
+		shardPlan.CompressedBytes = 0
+		shardPlan.UncompressedBytes = 0
+		for _, entry := range plan.Entries {
+			if entryShard(plan.Dataset, plan.BaseName, entry.Name, count) != index {
+				continue
+			}
+			shardPlan.Entries = append(shardPlan.Entries, entry)
+			shardPlan.CompressedBytes += entry.CompressedBytes
+			shardPlan.UncompressedBytes += entry.UncompressedBytes
+		}
+		if len(shardPlan.Entries) > 0 {
+			selected = append(selected, shardPlan)
+		}
+	}
+	return selected
+}
+
+func entryShard(dataset, archive, entry string, count int) int {
+	hasher := fnv.New64a()
+	_, _ = hasher.Write([]byte(dataset))
+	_, _ = hasher.Write([]byte{0})
+	_, _ = hasher.Write([]byte(archive))
+	_, _ = hasher.Write([]byte{0})
+	_, _ = hasher.Write([]byte(entry))
+	return int(hasher.Sum64() % uint64(count))
 }

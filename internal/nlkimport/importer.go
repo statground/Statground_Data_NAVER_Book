@@ -41,6 +41,9 @@ func (i *Importer) Run(ctx context.Context, config Config) (Result, error) {
 	if config.BatchByteLimit < 1 || config.BatchByteLimit > maxBatchByteLimit {
 		return Result{}, safeError("invalid_batch_byte_limit")
 	}
+	if !validEntryShard(config.EntryShardCount, config.EntryShardIndex) {
+		return Result{}, safeError("invalid_entry_shard")
+	}
 	if !config.DryRun && i.Store == nil {
 		return Result{}, safeError("store_required")
 	}
@@ -48,6 +51,7 @@ func (i *Importer) Run(ctx context.Context, config Config) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	plans = selectEntryShard(plans, config.EntryShardCount, config.EntryShardIndex)
 	if !config.DryRun {
 		if err := i.Store.Validate(ctx); err != nil {
 			return Result{}, safeError("preflight_failed")
@@ -469,6 +473,9 @@ func normalizeConfig(config Config) Config {
 	}
 	if config.BatchByteLimit == 0 {
 		config.BatchByteLimit = defaultBatchByteLimit
+	}
+	if config.EntryShardCount == 0 {
+		config.EntryShardCount = 1
 	}
 	if strings.TrimSpace(config.ImporterVersion) == "" {
 		config.ImporterVersion = "nlk_lod_importer_v2"
