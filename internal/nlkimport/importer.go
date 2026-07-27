@@ -16,8 +16,10 @@ import (
 )
 
 const (
-	defaultBatchSize = 500
-	maxBatchSize     = 1000
+	defaultBatchSize      = 20000
+	maxBatchSize          = 50000
+	defaultBatchByteLimit = 64 * 1024 * 1024
+	maxBatchByteLimit     = 256 * 1024 * 1024
 )
 
 var errLimitReached = errors.New("maximum record limit reached")
@@ -35,6 +37,9 @@ func (i *Importer) Run(ctx context.Context, config Config) (Result, error) {
 	config = normalizeConfig(config)
 	if config.BatchSize < 1 || config.BatchSize > maxBatchSize {
 		return Result{}, safeError("invalid_batch_size")
+	}
+	if config.BatchByteLimit < 1 || config.BatchByteLimit > maxBatchByteLimit {
+		return Result{}, safeError("invalid_batch_byte_limit")
 	}
 	if !config.DryRun && i.Store == nil {
 		return Result{}, safeError("store_required")
@@ -185,6 +190,9 @@ func (i *Importer) processEntry(
 			(checkpoint.DatasetName != "" && checkpoint.DatasetName != archive.Dataset)) {
 			return entryOutcome{}, safeError("checkpoint_lineage_mismatch")
 		}
+		if found {
+			normalizeCommittedCheckpointProgress(&checkpoint)
+		}
 		if found && checkpoint.Status == "succeeded" {
 			return entryOutcome{completed: true, skipped: true}, nil
 		}
@@ -232,8 +240,10 @@ func (i *Importer) processEntry(
 	startIndex := checkpoint.NextRecordIndex
 	verifyExisting := found
 	batchRows := make([]map[string]any, 0, config.BatchSize)
+	var batchBytes uint64
 	batchEnd := startIndex
 	batchProcessed := 0
+	batchRejected := 0
 	lastResourceID := checkpoint.LastResourceID
 	var recordsSeen uint64
 
@@ -244,16 +254,13 @@ func (i *Importer) processEntry(
 		checkpoint.Status = "running"
 		checkpoint.ErrorCode = ""
 		checkpoint.ErrorMessage = ""
-		i.prepareCheckpoint(&checkpoint)
 		rowsToInsert := batchRows
 		if !config.DryRun {
-			if err := i.Store.SaveCheckpoint(ctx, checkpoint); err != nil {
-				return safeError("checkpoint_insert_failed")
-			}
 			if verifyExisting && len(batchRows) > 0 {
 				indexes := rawRecordIndexes(batchRows)
 				existing, err := i.Store.ExistingRawRecordIndexes(ctx, RawLineage{
 					SnapshotDate: config.SnapshotDate,
+					DatasetName:  archive.Dataset,
 					Archive:      archive.BaseName,
 					Entry:        entry.Name,
 				}, indexes)
@@ -270,6 +277,8 @@ func (i *Importer) processEntry(
 		}
 		checkpoint.NextRecordIndex = batchEnd
 		checkpoint.LastResourceID = lastResourceID
+		checkpoint.RecordsParsed += uint64(batchProcessed)
+		checkpoint.RecordsRejected += uint64(batchRejected)
 		if !config.DryRun {
 			checkpoint.RecordsInserted += uint64(len(batchRows))
 			result.RecordsInserted += uint64(len(rowsToInsert))
@@ -280,8 +289,11 @@ func (i *Importer) processEntry(
 				return safeError("checkpoint_insert_failed")
 			}
 		}
+		verifyExisting = false
 		batchRows = batchRows[:0]
+		batchBytes = 0
 		batchProcessed = 0
+		batchRejected = 0
 		return nil
 	}
 
@@ -296,7 +308,6 @@ func (i *Importer) processEntry(
 		if config.MaxRecords > 0 && result.RecordsParsed >= config.MaxRecords {
 			return errLimitReached
 		}
-		checkpoint.RecordsParsed++
 		result.RecordsParsed++
 		batchEnd = index + 1
 		batchProcessed++
@@ -311,13 +322,14 @@ func (i *Importer) processEntry(
 			ImportedAt:    i.now(),
 		})
 		if err != nil {
-			checkpoint.RecordsRejected++
+			batchRejected++
 			result.RecordsRejected++
 		} else {
 			batchRows = append(batchRows, row)
+			batchBytes += estimateRawRowBytes(row)
 			lastResourceID = strings.TrimSpace(fmt.Sprint(row["resource_id"]))
 		}
-		if batchProcessed >= config.BatchSize {
+		if batchProcessed >= config.BatchSize || batchBytes >= config.BatchByteLimit {
 			if err := flush(); err != nil {
 				return err
 			}
@@ -363,6 +375,19 @@ func (i *Importer) processEntry(
 		}
 	}
 	return entryOutcome{completed: true}, nil
+}
+
+func normalizeCommittedCheckpointProgress(checkpoint *Checkpoint) {
+	if checkpoint == nil {
+		return
+	}
+	checkpoint.RecordsParsed = checkpoint.NextRecordIndex
+	if checkpoint.RecordsInserted > checkpoint.NextRecordIndex {
+		checkpoint.RecordsInserted = checkpoint.NextRecordIndex
+		checkpoint.RecordsRejected = 0
+		return
+	}
+	checkpoint.RecordsRejected = checkpoint.NextRecordIndex - checkpoint.RecordsInserted
 }
 
 func rawRecordIndexes(rows []map[string]any) []uint64 {
@@ -442,13 +467,41 @@ func normalizeConfig(config Config) Config {
 	if config.BatchSize == 0 {
 		config.BatchSize = defaultBatchSize
 	}
+	if config.BatchByteLimit == 0 {
+		config.BatchByteLimit = defaultBatchByteLimit
+	}
 	if strings.TrimSpace(config.ImporterVersion) == "" {
-		config.ImporterVersion = "nlk_lod_importer_v1"
+		config.ImporterVersion = "nlk_lod_importer_v2"
 	}
 	if strings.TrimSpace(config.Source) == "" {
 		config.Source = "controlled_local_import"
 	}
 	return config
+}
+
+func estimateRawRowBytes(row map[string]any) uint64 {
+	var size uint64
+	for key, value := range row {
+		size += uint64(len(key) + 16)
+		switch typed := value.(type) {
+		case string:
+			size += uint64(len(typed) + 8)
+		case []string:
+			size += 24
+			for _, item := range typed {
+				size += uint64(len(item) + 8)
+			}
+		case []int:
+			size += uint64(24 + len(typed)*8)
+		case []uint8:
+			size += uint64(24 + len(typed))
+		case uint64, uint32, uint16, uint8, uint, int64, int32, int16, int8, int, time.Time:
+			size += 16
+		default:
+			size += 16
+		}
+	}
+	return size
 }
 
 func updateRunState(state RunState, result Result, now time.Time) RunState {

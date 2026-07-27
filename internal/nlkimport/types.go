@@ -12,6 +12,7 @@ type Config struct {
 	Datasets        []string
 	SnapshotDate    time.Time
 	BatchSize       int
+	BatchByteLimit  uint64
 	Resume          bool
 	DryRun          bool
 	MaxRecords      uint64
@@ -67,6 +68,7 @@ type CheckpointKey struct {
 
 type RawLineage struct {
 	SnapshotDate time.Time
+	DatasetName  string
 	Archive      string
 	Entry        string
 }

@@ -34,7 +34,8 @@ func run(ctx context.Context, args []string) error {
 	inputDir := flags.String("input-dir", "", "directory containing NLK LOD ZIP archives")
 	datasetsRaw := flags.String("datasets", defaultDatasets, "comma-separated NLK datasets")
 	snapshotRaw := flags.String("snapshot-date", "2026-05-29", "NLK snapshot date in YYYY-MM-DD")
-	batchSize := flags.Int("batch-size", 500, "bounded ClickHouse JSONEachRow batch size")
+	batchSize := flags.Int("batch-size", 20000, "maximum resources per ClickHouse JSONEachRow batch")
+	batchBytes := flags.Uint64("batch-bytes", 64*1024*1024, "estimated in-memory raw batch byte limit")
 	resume := flags.Bool("resume", true, "resume from durable per-entry checkpoints")
 	dryRun := flags.Bool("dry-run", false, "parse and validate without ClickHouse writes")
 	maxRecords := flags.Uint64("max-records", 0, "maximum resources to process; zero is unlimited")
@@ -75,10 +76,11 @@ func run(ctx context.Context, args []string) error {
 		Datasets:        datasets,
 		SnapshotDate:    snapshot,
 		BatchSize:       *batchSize,
+		BatchByteLimit:  *batchBytes,
 		Resume:          *resume,
 		DryRun:          *dryRun,
 		MaxRecords:      *maxRecords,
-		ImporterVersion: envx.String("NLK_IMPORTER_VERSION", "nlk_lod_importer_v1"),
+		ImporterVersion: envx.String("NLK_IMPORTER_VERSION", "nlk_lod_importer_v2"),
 		Source:          envx.String("PRODUCER_SOURCE", "controlled_local_import"),
 	})
 	if err != nil {

@@ -3,6 +3,7 @@ package nlkimport
 import (
 	"archive/zip"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,6 +20,7 @@ type fakeStore struct {
 	checkpoints    []Checkpoint
 	existing       map[uint64]struct{}
 	existingChecks int
+	insertError    error
 }
 
 func (s *fakeStore) Validate(context.Context) error {
@@ -31,6 +33,9 @@ func (s *fakeStore) LoadCheckpoint(context.Context, CheckpointKey) (Checkpoint, 
 }
 
 func (s *fakeStore) InsertRawRows(_ context.Context, rows []map[string]any) error {
+	if s.insertError != nil {
+		return s.insertError
+	}
 	copied := make([]map[string]any, len(rows))
 	for index, row := range rows {
 		copied[index] = make(map[string]any, len(row))
@@ -40,6 +45,31 @@ func (s *fakeStore) InsertRawRows(_ context.Context, rows []map[string]any) erro
 	}
 	s.rawBatches = append(s.rawBatches, copied)
 	return nil
+}
+
+func TestImporterFailureCheckpointDoesNotAdvanceUncommittedCounters(t *testing.T) {
+	inputDir := t.TempDir()
+	writeSyntheticArchive(t, inputDir)
+	store := &fakeStore{insertError: errors.New("injected")}
+	importer := Importer{Store: store, IDGenerator: incrementingID()}
+	_, err := importer.Run(context.Background(), Config{
+		InputDir:     inputDir,
+		Datasets:     []string{"book"},
+		SnapshotDate: time.Date(2026, 5, 29, 0, 0, 0, 0, time.UTC),
+		BatchSize:    1,
+		Resume:       true,
+	})
+	if ErrorCategory(err) != "raw_insert_failed" {
+		t.Fatalf("error=%v", err)
+	}
+	last := store.checkpoints[len(store.checkpoints)-1]
+	if last.Status != "failed" ||
+		last.NextRecordIndex != 0 ||
+		last.RecordsParsed != 0 ||
+		last.RecordsInserted != 0 ||
+		last.RecordsRejected != 0 {
+		t.Fatalf("failure checkpoint advanced uncommitted state: %+v", last)
+	}
 }
 
 func (s *fakeStore) ExistingRawRecordIndexes(_ context.Context, _ RawLineage, indexes []uint64) (map[uint64]struct{}, error) {
@@ -100,6 +130,9 @@ func TestImporterStreamsSyntheticZIPInBoundedBatches(t *testing.T) {
 	if len(store.rawBatches) != 2 || len(store.rawBatches[0]) != 2 || len(store.rawBatches[1]) != 1 {
 		t.Fatalf("raw batch shape=%v", batchLengths(store.rawBatches))
 	}
+	if len(store.checkpoints) != 4 {
+		t.Fatalf("checkpoint writes=%d want=4 (start, one per committed batch, success)", len(store.checkpoints))
+	}
 	finalCheckpoint := store.checkpoints[len(store.checkpoints)-1]
 	if finalCheckpoint.Status != "succeeded" || finalCheckpoint.NextRecordIndex != 3 ||
 		finalCheckpoint.RecordsInserted != 3 || len(finalCheckpoint.ContentHash) != 64 {
@@ -109,6 +142,30 @@ func TestImporterStreamsSyntheticZIPInBoundedBatches(t *testing.T) {
 	if finalRun.Status != "succeeded" || finalRun.RecordsInserted != 3 ||
 		finalRun.EntriesCompleted != 1 || finalRun.ArchivesCompleted != 1 {
 		t.Fatalf("unexpected final run: %+v", finalRun)
+	}
+}
+
+func TestImporterFlushesAtEstimatedByteLimit(t *testing.T) {
+	inputDir := t.TempDir()
+	writeSyntheticArchive(t, inputDir)
+	store := &fakeStore{}
+	importer := Importer{Store: store, IDGenerator: incrementingID()}
+	result, err := importer.Run(context.Background(), Config{
+		InputDir:       inputDir,
+		Datasets:       []string{"book"},
+		SnapshotDate:   time.Date(2026, 5, 29, 0, 0, 0, 0, time.UTC),
+		BatchSize:      50000,
+		BatchByteLimit: 1,
+		Resume:         true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RecordsInserted != 3 {
+		t.Fatalf("result=%+v", result)
+	}
+	if got := batchLengths(store.rawBatches); len(got) != 3 || got[0] != 1 || got[1] != 1 || got[2] != 1 {
+		t.Fatalf("byte-limited raw batch shape=%v", got)
 	}
 }
 
@@ -125,7 +182,7 @@ func TestImporterResumeFiltersRawRowsConfirmedBeforeCheckpointAdvance(t *testing
 			EntryUncompressed: archiveUncompressedSize(t, inputDir),
 			Status:            "failed",
 			NextRecordIndex:   1,
-			RecordsParsed:     1,
+			RecordsParsed:     3,
 			RecordsInserted:   1,
 			Attempts:          1,
 			Version:           10,
@@ -136,7 +193,7 @@ func TestImporterResumeFiltersRawRowsConfirmedBeforeCheckpointAdvance(t *testing
 		InputDir:     inputDir,
 		Datasets:     []string{"book"},
 		SnapshotDate: time.Date(2026, 5, 29, 0, 0, 0, 0, now.Location()),
-		BatchSize:    2,
+		BatchSize:    1,
 		Resume:       true,
 	})
 	if err != nil {
@@ -215,6 +272,18 @@ func TestImporterDryRunHonorsMaxRecordsWithoutStoreWrites(t *testing.T) {
 	}
 	if result.EntriesCompleted != 0 || result.ArchivesCompleted != 0 {
 		t.Fatalf("partial dry-run must not report completed entry: %+v", result)
+	}
+}
+
+func TestImporterRejectsUnboundedBatchMemory(t *testing.T) {
+	importer := Importer{}
+	_, err := importer.Run(context.Background(), Config{
+		BatchSize:      maxBatchSize,
+		BatchByteLimit: maxBatchByteLimit + 1,
+		DryRun:         true,
+	})
+	if ErrorCategory(err) != "invalid_batch_byte_limit" {
+		t.Fatalf("error=%v", err)
 	}
 }
 
