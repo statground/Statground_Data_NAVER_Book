@@ -245,6 +245,7 @@ func (s *ClickHouseStore) ExistingRawRecordIndexes(
 		SELECT source_record_index
 		FROM %s
 		WHERE dataset_snapshot_date = toDate(%s)
+		  AND dataset_name = %s
 		  AND source_archive = %s
 		  AND source_entry = %s
 		  AND source_record_index IN (%s)
@@ -252,6 +253,7 @@ func (s *ClickHouseStore) ExistingRawRecordIndexes(
 		SETTINGS max_threads = 1, max_execution_time = 30
 	`, s.Config.RawTable,
 		util.SQLString(lineage.SnapshotDate.Format("2006-01-02")),
+		util.SQLString(lineage.DatasetName),
 		util.SQLString(lineage.Archive),
 		util.SQLString(lineage.Entry),
 		strings.Join(values, ", "),

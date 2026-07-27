@@ -1,11 +1,16 @@
 package nlkstore
 
 import (
+	"context"
+	"io"
+	"net/http"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"statground_naver_book_go/internal/ch"
+	"statground_naver_book_go/internal/nlkimport"
 )
 
 func TestConfigDefaultsMatchNLKSQLContract(t *testing.T) {
@@ -45,6 +50,50 @@ func TestConfigDefaultsMatchNLKSQLContract(t *testing.T) {
 	for key, expected := range want {
 		if got[key] != expected {
 			t.Fatalf("%s=%q want=%q", key, got[key], expected)
+		}
+	}
+}
+
+func TestExistingRawRecordIndexesUsesFullSortedLineagePrefix(t *testing.T) {
+	var query string
+	client := &ch.Client{
+		Host: "http://clickhouse.test",
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			payload, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			query = string(payload)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("")),
+				Request:    request,
+			}, nil
+		})},
+	}
+	store, err := NewClickHouse(client, ConfigFromEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.ExistingRawRecordIndexes(context.Background(), nlkimport.RawLineage{
+		SnapshotDate: time.Date(2026, 5, 29, 0, 0, 0, 0, time.UTC),
+		DatasetName:  "book",
+		Archive:      "book_rdf_20260529.zip",
+		Entry:        "book_rdf_20260529/book_0.rdf",
+	}, []uint64{1010, 1011})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"dataset_snapshot_date = toDate('2026-05-29')",
+		"dataset_name = 'book'",
+		"source_archive = 'book_rdf_20260529.zip'",
+		"source_entry = 'book_rdf_20260529/book_0.rdf'",
+		"source_record_index IN (1010, 1011)",
+	} {
+		if !strings.Contains(query, expected) {
+			t.Fatalf("query missing %q: %s", expected, query)
 		}
 	}
 }
@@ -120,4 +169,10 @@ func TestBoundedErrorRemovesWhitespaceAndLimitsBytes(t *testing.T) {
 	if strings.ContainsAny(got, "\r\n\t") || len(got) > 256 {
 		t.Fatalf("unsafe bounded error=%q bytes=%d", got, len(got))
 	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
 }
