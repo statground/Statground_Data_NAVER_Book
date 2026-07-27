@@ -32,9 +32,9 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	timeoutSeconds := envx.Int("WEBR_BOOK_REFRESH_TIMEOUT_SECONDS", 300)
+	timeoutSeconds := envx.Int("WEBR_BOOK_REFRESH_TIMEOUT_SECONDS", 900)
 	if timeoutSeconds <= 0 {
-		timeoutSeconds = 300
+		timeoutSeconds = 900
 	}
 	client.HTTPClient.Timeout = time.Duration(timeoutSeconds) * time.Second
 
@@ -64,7 +64,7 @@ func refreshProviderCatalog(client *ch.Client, refreshView, countView string) er
 		return err
 	}
 	fmt.Printf("[book-provider] refreshing view=%s\n", refreshView)
-	if err := client.Exec("SYSTEM REFRESH VIEW " + refreshView); err != nil {
+	if err := triggerRefreshOnCoordinator(client, refreshView); err != nil {
 		return fmt.Errorf("refresh provider-neutral book catalog: %w", err)
 	}
 	rows, err := client.QueryJSONEachRow(fmt.Sprintf(`
@@ -102,7 +102,7 @@ func refreshCatalog(client *ch.Client, label, refreshView, countView string) err
 		return err
 	}
 	fmt.Printf("[%s] refreshing view=%s\n", label, refreshView)
-	if err := client.Exec("SYSTEM REFRESH VIEW " + refreshView); err != nil {
+	if err := triggerRefreshOnCoordinator(client, refreshView); err != nil {
 		return fmt.Errorf("refresh %s catalog: %w", label, err)
 	}
 
@@ -120,6 +120,58 @@ func refreshCatalog(client *ch.Client, label, refreshView, countView string) err
 	}
 	fmt.Printf("[%s] refresh ok row_count=%d latest_batch=%s\n", label, util.ToInt64(rows[0]["row_count"]), strings.TrimSpace(util.ToString(rows[0]["latest_batch"])))
 	return nil
+}
+
+func triggerRefreshOnCoordinator(client *ch.Client, refreshView string) error {
+	attempts := envx.Int("BOOK_REFRESH_COORDINATOR_ATTEMPTS", 12)
+	if attempts < 1 {
+		attempts = 12
+	}
+	retryMilliseconds := envx.Int("BOOK_REFRESH_COORDINATOR_RETRY_MILLISECONDS", 500)
+	if retryMilliseconds < 0 {
+		retryMilliseconds = 500
+	}
+	return triggerRefreshWithRetry(client, refreshView, attempts, time.Duration(retryMilliseconds)*time.Millisecond)
+}
+
+// Refreshable materialized views intentionally live on one coordinator so a
+// scheduled full refresh is not duplicated by every replica. The public
+// ClickHouse endpoint can select any replica, so locate the coordinator through
+// bounded connection retries before issuing SYSTEM REFRESH VIEW.
+func triggerRefreshWithRetry(client *ch.Client, refreshView string, attempts int, retryDelay time.Duration) error {
+	database, table := ch.SplitQualifiedTable(refreshView, "")
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		exists, err := client.QueryScalarInt(fmt.Sprintf(`
+			SELECT count() AS value
+			FROM system.tables
+			WHERE database = %s
+			  AND name = %s
+			  AND engine = 'MaterializedView'
+		`, util.SQLString(database), util.SQLString(table)))
+		if err != nil {
+			lastErr = err
+		} else if exists > 0 {
+			if err := client.Exec("SYSTEM REFRESH VIEW " + refreshView); err == nil {
+				if err := client.Exec("SYSTEM WAIT VIEW " + refreshView); err == nil {
+					return nil
+				} else {
+					lastErr = err
+				}
+			} else {
+				lastErr = err
+			}
+		} else {
+			lastErr = fmt.Errorf("refresh coordinator unavailable")
+		}
+		if client.HTTPClient != nil {
+			client.HTTPClient.CloseIdleConnections()
+		}
+		if attempt < attempts && retryDelay > 0 {
+			time.Sleep(retryDelay)
+		}
+	}
+	return lastErr
 }
 
 func mirtypeRefreshEnabled() bool {

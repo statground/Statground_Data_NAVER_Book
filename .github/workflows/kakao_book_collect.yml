@@ -151,19 +151,18 @@ jobs:
           go test -mod=mod ./...
           go build -mod=mod ./cmd/collect_kakao
 
-      - name: Validate Kakao and ClickHouse configuration
+      - name: Validate Kakao API key
         env:
           KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
-          CH_HOST: ${{ secrets.CLICKHOUSE_HOST }}
-          CH_PORT: ${{ secrets.CLICKHOUSE_PORT || '8123' }}
-          CH_USER: ${{ secrets.CLICKHOUSE_USER }}
-          CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
-          CH_PROTOCOL: ${{ secrets.CLICKHOUSE_PROTOCOL || 'https' }}
         run: |
           test -n "$KAKAO_REST_API_KEY" || { echo "KAKAO_REST_API_KEY secret is required"; exit 1; }
+
+      - name: Validate ClickHouse endpoint
+        env:
+          CH_HOST: ${{ secrets.CLICKHOUSE_HOST }}
+          CH_PROTOCOL: ${{ secrets.CLICKHOUSE_PROTOCOL || 'https' }}
+        run: |
           test -n "$CH_HOST" || { echo "CLICKHOUSE_HOST secret is required"; exit 1; }
-          test -n "$CH_USER" || { echo "CLICKHOUSE_USER secret is required"; exit 1; }
-          test -n "$CH_PASSWORD" || { echo "CLICKHOUSE_PASSWORD secret is required"; exit 1; }
           test "$CH_PROTOCOL" = "https" || { echo "CLICKHOUSE_PROTOCOL must be https"; exit 1; }
           case "$CH_HOST" in
             127.0.0.1|localhost|0.0.0.0|::1|[::1])
@@ -171,6 +170,14 @@ jobs:
               exit 1
               ;;
           esac
+
+      - name: Validate ClickHouse credentials
+        env:
+          CH_USER: ${{ secrets.CLICKHOUSE_USER }}
+          CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+        run: |
+          test -n "$CH_USER" || { echo "CLICKHOUSE_USER secret is required"; exit 1; }
+          test -n "$CH_PASSWORD" || { echo "CLICKHOUSE_PASSWORD secret is required"; exit 1; }
 
       - name: Collect Kakao books into provider tables
         env:
@@ -203,4 +210,6 @@ jobs:
           MIRTYPE_BOOK_COUNT_VIEW: mirtype_book.v_naver_language_book_catalog
           WEBR_BOOK_REFRESH_SETTLE_SECONDS: "5"
           WEBR_BOOK_REFRESH_TIMEOUT_SECONDS: "900"
+          BOOK_REFRESH_COORDINATOR_ATTEMPTS: "12"
+          BOOK_REFRESH_COORDINATOR_RETRY_MILLISECONDS: "500"
         run: go run -mod=mod ./cmd/refresh_webr_book_catalog

@@ -307,7 +307,9 @@ jobs:
           CH_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH || secrets.CH_HTTP_URL_PATH }}
           CH_DATABASE: webr_book
           WEBR_BOOK_REFRESH_SETTLE_SECONDS: "30"
-          WEBR_BOOK_REFRESH_TIMEOUT_SECONDS: "300"
+          WEBR_BOOK_REFRESH_TIMEOUT_SECONDS: "900"
+          BOOK_REFRESH_COORDINATOR_ATTEMPTS: "12"
+          BOOK_REFRESH_COORDINATOR_RETRY_MILLISECONDS: "500"
           MIRTYPE_BOOK_REFRESH_ENABLED: "true"
           MIRTYPE_BOOK_REFRESH_VIEW: mirtype_book.mv_naver_language_book_catalog_refresh
           MIRTYPE_BOOK_COUNT_VIEW: mirtype_book.v_naver_language_book_catalog
