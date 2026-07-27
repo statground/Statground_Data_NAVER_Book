@@ -20,6 +20,8 @@ import (
 
 var tableIdentifierPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$`)
 
+const existingRawIndexLookupChunkSize = 5000
+
 type Config struct {
 	RawTable             string
 	RawLocalTable        string
@@ -237,33 +239,39 @@ func (s *ClickHouseStore) ExistingRawRecordIndexes(
 	if len(indexes) == 0 {
 		return out, nil
 	}
-	values := make([]string, 0, len(indexes))
-	for _, index := range indexes {
-		values = append(values, strconv.FormatUint(index, 10))
-	}
-	sql := fmt.Sprintf(`
-		SELECT source_record_index
-		FROM %s
-		WHERE dataset_snapshot_date = toDate(%s)
-		  AND dataset_name = %s
-		  AND source_archive = %s
-		  AND source_entry = %s
-		  AND source_record_index IN (%s)
-		GROUP BY source_record_index
-		SETTINGS max_threads = 1, max_execution_time = 30
-	`, s.Config.RawTable,
-		util.SQLString(lineage.SnapshotDate.Format("2006-01-02")),
-		util.SQLString(lineage.DatasetName),
-		util.SQLString(lineage.Archive),
-		util.SQLString(lineage.Entry),
-		strings.Join(values, ", "),
-	)
-	rows, err := s.Client.QueryJSONEachRow(sql)
-	if err != nil {
-		return nil, &StoreError{Category: classifyError(err)}
-	}
-	for _, row := range rows {
-		out[toUint64(row["source_record_index"])] = struct{}{}
+	for start := 0; start < len(indexes); start += existingRawIndexLookupChunkSize {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		end := min(start+existingRawIndexLookupChunkSize, len(indexes))
+		values := make([]string, 0, end-start)
+		for _, index := range indexes[start:end] {
+			values = append(values, strconv.FormatUint(index, 10))
+		}
+		sql := fmt.Sprintf(`
+			SELECT source_record_index
+			FROM %s
+			WHERE dataset_snapshot_date = toDate(%s)
+			  AND dataset_name = %s
+			  AND source_archive = %s
+			  AND source_entry = %s
+			  AND source_record_index IN (%s)
+			GROUP BY source_record_index
+			SETTINGS max_threads = 1, max_execution_time = 30
+		`, s.Config.RawTable,
+			util.SQLString(lineage.SnapshotDate.Format("2006-01-02")),
+			util.SQLString(lineage.DatasetName),
+			util.SQLString(lineage.Archive),
+			util.SQLString(lineage.Entry),
+			strings.Join(values, ", "),
+		)
+		rows, err := s.Client.QueryJSONEachRow(sql)
+		if err != nil {
+			return nil, &StoreError{Category: classifyError(err)}
+		}
+		for _, row := range rows {
+			out[toUint64(row["source_record_index"])] = struct{}{}
+		}
 	}
 	return out, nil
 }

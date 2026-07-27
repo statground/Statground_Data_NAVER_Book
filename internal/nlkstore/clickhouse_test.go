@@ -2,9 +2,11 @@ package nlkstore
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -95,6 +97,88 @@ func TestExistingRawRecordIndexesUsesFullSortedLineagePrefix(t *testing.T) {
 		if !strings.Contains(query, expected) {
 			t.Fatalf("query missing %q: %s", expected, query)
 		}
+	}
+}
+
+func TestExistingRawRecordIndexesChunksLargeResumeRangeAndUnionsResults(t *testing.T) {
+	indexes := make([]uint64, existingRawIndexLookupChunkSize*10+3)
+	for index := range indexes {
+		indexes[index] = uint64(len(indexes) - index + 9)
+	}
+
+	var querySizes []int
+	expected := make(map[uint64]struct{})
+	client := &ch.Client{
+		Host: "http://clickhouse.test",
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			payload, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			query := string(payload)
+			const marker = "source_record_index IN ("
+			start := strings.Index(query, marker)
+			if start < 0 {
+				t.Fatalf("query missing IN predicate: %s", query)
+			}
+			start += len(marker)
+			end := strings.Index(query[start:], ")")
+			if end < 0 {
+				t.Fatalf("query has unterminated IN predicate: %s", query)
+			}
+			values := strings.Split(query[start:start+end], ", ")
+			if len(values) == 0 || len(values) > existingRawIndexLookupChunkSize {
+				t.Fatalf("query values=%d, chunk limit=%d", len(values), existingRawIndexLookupChunkSize)
+			}
+			querySizes = append(querySizes, len(values))
+			existing, err := strconv.ParseUint(values[0], 10, 64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			expected[existing] = struct{}{}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body: io.NopCloser(strings.NewReader(fmt.Sprintf(
+					"{\"source_record_index\":%d}\n",
+					existing,
+				))),
+				Request: request,
+			}, nil
+		})},
+	}
+	store, err := NewClickHouse(client, ConfigFromEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.ExistingRawRecordIndexes(context.Background(), nlkimport.RawLineage{
+		SnapshotDate: time.Date(2026, 5, 29, 0, 0, 0, 0, time.UTC),
+		DatasetName:  "book",
+		Archive:      "book_rdf_20260529.zip",
+		Entry:        "book_rdf_20260529/book_0.rdf",
+	}, indexes)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wantQuerySizes := []int{
+		existingRawIndexLookupChunkSize,
+		existingRawIndexLookupChunkSize,
+		existingRawIndexLookupChunkSize,
+		existingRawIndexLookupChunkSize,
+		existingRawIndexLookupChunkSize,
+		existingRawIndexLookupChunkSize,
+		existingRawIndexLookupChunkSize,
+		existingRawIndexLookupChunkSize,
+		existingRawIndexLookupChunkSize,
+		existingRawIndexLookupChunkSize,
+		3,
+	}
+	if !reflect.DeepEqual(querySizes, wantQuerySizes) {
+		t.Fatalf("query sizes=%v want=%v", querySizes, wantQuerySizes)
+	}
+	if !reflect.DeepEqual(got, expected) {
+		t.Fatalf("existing indexes=%v want=%v", got, expected)
 	}
 }
 
