@@ -160,15 +160,24 @@ jobs:
       - name: Validate ClickHouse endpoint
         env:
           CH_HOST: ${{ secrets.CLICKHOUSE_HOST }}
-          CH_PROTOCOL: ${{ secrets.CLICKHOUSE_PROTOCOL || 'https' }}
         run: |
           test -n "$CH_HOST" || { echo "CLICKHOUSE_HOST secret is required"; exit 1; }
-          test "$CH_PROTOCOL" = "https" || { echo "CLICKHOUSE_PROTOCOL must be https"; exit 1; }
           case "$CH_HOST" in
             127.0.0.1|localhost|0.0.0.0|::1|[::1])
               echo "ClickHouse host must be externally reachable"
               exit 1
               ;;
+          esac
+
+      - name: Validate ClickHouse HTTPS transport
+        env:
+          CH_HOST: ${{ secrets.CLICKHOUSE_HOST }}
+          CH_PROTOCOL: ${{ secrets.CLICKHOUSE_PROTOCOL || 'https' }}
+        run: |
+          normalized_protocol="$(printf '%s' "$CH_PROTOCOL" | tr '[:upper:]' '[:lower:]')"
+          case "$CH_HOST" in
+            https://*) ;;
+            *) test "$normalized_protocol" = "https" || { echo "ClickHouse transport must be https"; exit 1; } ;;
           esac
 
       - name: Validate ClickHouse credentials
