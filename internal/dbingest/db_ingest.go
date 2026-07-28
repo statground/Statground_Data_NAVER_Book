@@ -105,20 +105,11 @@ func retryablePreflightError(err error) bool {
 
 func (w *Writer) validateTableExists(table string) error {
 	database, tableName := ch.SplitQualifiedTable(table, w.Client.Database)
-	if strings.TrimSpace(database) == "" || strings.TrimSpace(tableName) == "" {
-		return fmt.Errorf("invalid ClickHouse table name %q", table)
-	}
-	sql := fmt.Sprintf(`
-        SELECT count() AS value
-        FROM system.tables
-        WHERE database = %s
-          AND name = %s
-    `, util.SQLString(database), util.SQLString(tableName))
-	count, err := w.Client.QueryScalarInt(sql)
+	exists, err := w.Client.TableExists(table)
 	if err != nil {
 		return fmt.Errorf("direct DB ingest preflight failed for %s.%s: %w", database, tableName, err)
 	}
-	if count == 0 {
+	if !exists {
 		return fmt.Errorf("direct DB ingest preflight failed: table %s.%s does not exist", database, tableName)
 	}
 	return nil

@@ -248,6 +248,46 @@ func TestNewClickHouseRejectsUnqualifiedTable(t *testing.T) {
 	}
 }
 
+func TestValidateUsesExactExistsTablePreflight(t *testing.T) {
+	var existsQueries int
+	client := &ch.Client{
+		Host:     "clickhouse.example.invalid",
+		Protocol: "https",
+		Database: "Data_Book_NLK_Raw",
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			payload, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			query := string(payload)
+			responseBody := ""
+			if strings.Contains(query, "EXISTS TABLE") {
+				existsQueries++
+				responseBody = "{\"result\":1}\n"
+			}
+			if strings.Contains(query, "system.tables") {
+				t.Fatalf("Validate queried system.tables: %s", query)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(responseBody)),
+				Request:    request,
+			}, nil
+		})},
+	}
+	store, err := NewClickHouse(client, ConfigFromEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Validate(context.Background()); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	if existsQueries != 8 {
+		t.Fatalf("EXISTS TABLE queries = %d, want 8", existsQueries)
+	}
+}
+
 func TestBoundedErrorRemovesWhitespaceAndLimitsBytes(t *testing.T) {
 	got := boundedError(strings.Repeat("secret-like-value \n", 40))
 	if strings.ContainsAny(got, "\r\n\t") || len(got) > 256 {

@@ -392,15 +392,9 @@ func (s *ClickHouseStore) InsertFrontier(ctx context.Context, record FrontierRec
 }
 
 func (s *ClickHouseStore) tableExists(ctx context.Context, table string) error {
-	database, tableName := ch.SplitQualifiedTable(table, s.Client.Database)
-	sql := fmt.Sprintf(`
-        SELECT count() AS value
-        FROM system.tables
-        WHERE database = %s AND name = %s
-    `, util.SQLString(database), util.SQLString(tableName))
 	for attempt := 1; attempt <= 3; attempt++ {
-		row, err := s.Client.QuerySingleRow(sql)
-		if err == nil && util.ToInt64(row["value"]) > 0 {
+		exists, err := s.Client.TableExists(table)
+		if err == nil && exists {
 			return nil
 		}
 		if err == nil {

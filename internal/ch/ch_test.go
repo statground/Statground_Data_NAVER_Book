@@ -71,6 +71,107 @@ func TestSplitQualifiedTable(t *testing.T) {
 	}
 }
 
+func TestQualifiedTableIdentifierValidatesAndQuotes(t *testing.T) {
+	tests := []struct {
+		name            string
+		raw             string
+		defaultDatabase string
+		want            string
+		wantErr         bool
+	}{
+		{
+			name:            "qualified",
+			raw:             "Data_Book_NAVER_Log.naver_collect_log",
+			defaultDatabase: "ignored",
+			want:            "`Data_Book_NAVER_Log`.`naver_collect_log`",
+		},
+		{
+			name:            "default database",
+			raw:             "naver_book_raw",
+			defaultDatabase: "Data_Book_NAVER_Raw",
+			want:            "`Data_Book_NAVER_Raw`.`naver_book_raw`",
+		},
+		{name: "missing database", raw: "naver_book_raw", wantErr: true},
+		{name: "too many parts", raw: "cluster.database.table", defaultDatabase: "default", wantErr: true},
+		{name: "quoted input", raw: "`database`.`table`", defaultDatabase: "default", wantErr: true},
+		{name: "SQL injection", raw: "database.table; DROP TABLE x", defaultDatabase: "default", wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := QualifiedTableIdentifier(test.raw, test.defaultDatabase)
+			if test.wantErr {
+				if err == nil {
+					t.Fatalf("QualifiedTableIdentifier(%q, %q) = %q, want error", test.raw, test.defaultDatabase, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("QualifiedTableIdentifier(%q, %q) error = %v", test.raw, test.defaultDatabase, err)
+			}
+			if got != test.want {
+				t.Fatalf("QualifiedTableIdentifier(%q, %q) = %q, want %q", test.raw, test.defaultDatabase, got, test.want)
+			}
+		})
+	}
+}
+
+func TestTableExistsUsesExactExistsQuery(t *testing.T) {
+	var requests int
+	var body string
+	client := &Client{
+		Host:     "http://clickhouse.test",
+		Database: "Data_Book_NAVER_Raw",
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			requests++
+			payload, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body = string(payload)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("{\"result\":1}\n")),
+				Request:    request,
+			}, nil
+		})},
+	}
+
+	exists, err := client.TableExists("naver_book_raw")
+	if err != nil {
+		t.Fatalf("TableExists() error = %v", err)
+	}
+	if !exists {
+		t.Fatal("TableExists() = false, want true")
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want 1", requests)
+	}
+	if !strings.Contains(body, "EXISTS TABLE `Data_Book_NAVER_Raw`.`naver_book_raw`") {
+		t.Fatalf("unexpected TableExists query: %s", body)
+	}
+	if strings.Contains(body, "system.tables") {
+		t.Fatalf("TableExists queried system.tables: %s", body)
+	}
+}
+
+func TestTableExistsRejectsUnsafeIdentifierBeforeRequest(t *testing.T) {
+	requests := 0
+	client := &Client{
+		Database: "Data_Book_NAVER_Raw",
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			requests++
+			return nil, nil
+		})},
+	}
+	if _, err := client.TableExists("naver_book_raw; DROP TABLE x"); err == nil {
+		t.Fatal("TableExists() accepted an unsafe identifier")
+	}
+	if requests != 0 {
+		t.Fatalf("requests = %d, want 0", requests)
+	}
+}
+
 func TestInsertJSONEachRowDurableUsesFixedForegroundQuorumSettings(t *testing.T) {
 	var body string
 	client := &Client{

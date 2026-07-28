@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -16,6 +17,8 @@ import (
 	"statground_naver_book_go/internal/envx"
 	"statground_naver_book_go/internal/util"
 )
+
+var identifierPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 type Client struct {
 	Host       string
@@ -295,6 +298,44 @@ func (c *Client) QueryScalarValue(sql string) (any, error) {
 		}
 	}
 	return nil, nil
+}
+
+// QualifiedTableIdentifier validates and quotes a table identifier before it is
+// embedded in ClickHouse SQL. Only the unquoted database.table form (or a table
+// name plus a safe default database) is accepted.
+func QualifiedTableIdentifier(raw, defaultDatabase string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	defaultDatabase = strings.TrimSpace(defaultDatabase)
+
+	parts := strings.Split(raw, ".")
+	var database, table string
+	switch len(parts) {
+	case 1:
+		database, table = defaultDatabase, strings.TrimSpace(parts[0])
+	case 2:
+		database, table = strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+	default:
+		return "", fmt.Errorf("invalid ClickHouse table identifier")
+	}
+	if !identifierPattern.MatchString(database) || !identifierPattern.MatchString(table) {
+		return "", fmt.Errorf("invalid ClickHouse table identifier")
+	}
+	return fmt.Sprintf("`%s`.`%s`", database, table), nil
+}
+
+// TableExists asks ClickHouse to resolve one exact table name. It deliberately
+// avoids querying system.tables because a metadata-wide scan can block startup
+// while unrelated table metadata is recovering.
+func (c *Client) TableExists(table string) (bool, error) {
+	qualified, err := QualifiedTableIdentifier(table, c.Database)
+	if err != nil {
+		return false, err
+	}
+	value, err := c.QueryScalarValue("EXISTS TABLE " + qualified)
+	if err != nil {
+		return false, err
+	}
+	return util.ToInt64(value) == 1, nil
 }
 
 func (c *Client) QueryColumnNames(table string) (map[string]bool, error) {

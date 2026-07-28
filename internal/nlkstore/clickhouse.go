@@ -439,17 +439,11 @@ func (s *ClickHouseStore) tableExists(ctx context.Context, table string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	database, name := ch.SplitQualifiedTable(table, s.Client.Database)
-	sql := fmt.Sprintf(`
-		SELECT count() AS value
-		FROM system.tables
-		WHERE database = %s AND name = %s
-	`, util.SQLString(database), util.SQLString(name))
-	row, err := s.Client.QuerySingleRow(sql)
+	exists, err := s.Client.TableExists(table)
 	if err != nil {
 		return &StoreError{Category: classifyError(err)}
 	}
-	if util.ToInt64(row["value"]) != 1 {
+	if !exists {
 		return &StoreError{Category: "contract"}
 	}
 	return nil

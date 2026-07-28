@@ -107,8 +107,8 @@ func TestValidatePreflightsDistributedLocalTablesAndGrants(t *testing.T) {
 			t.Fatal(err)
 		}
 		responseBody := ""
-		if strings.Contains(string(body), "FROM system.tables") {
-			responseBody = "{\"value\":1}\n"
+		if strings.Contains(string(body), "EXISTS TABLE") {
+			responseBody = "{\"result\":1}\n"
 		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
