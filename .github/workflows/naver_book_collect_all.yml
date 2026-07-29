@@ -297,7 +297,7 @@ jobs:
           go run -mod=mod ./cmd/collect_manual
 
       - name: Refresh Web-R and MirType book catalogs
-        if: inputs.stage == 'all' || inputs.stage == 'refresh'
+        if: ${{ (inputs.stage == 'all' || inputs.stage == 'refresh') && github.event_name == 'workflow_dispatch' }}
         env:
           CH_HOST: ${{ secrets.CLICKHOUSE_HOST || secrets.CH_HOST }}
           CH_PORT: ${{ secrets.CLICKHOUSE_PORT || secrets.CH_PORT }}

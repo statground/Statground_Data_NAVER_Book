@@ -63,7 +63,6 @@ jobs:
   refresh:
     name: Serving refresh
     needs: catalog
-    if: github.event_name == 'workflow_dispatch'
     uses: ./.github/workflows/naver_book_collect_all.yml
     with:
       stage: refresh
