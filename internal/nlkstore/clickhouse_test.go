@@ -25,29 +25,38 @@ func TestConfigDefaultsMatchNLKSQLContract(t *testing.T) {
 		"NLK_IMPORT_CHECKPOINT_LOCAL_TABLE",
 		"NLK_IMPORT_RUN_LATEST_VIEW",
 		"NLK_IMPORT_CHECKPOINT_LATEST_VIEW",
+		"NLK_SERVICE_CHECKPOINT_TABLE",
+		"NLK_SERVICE_CHECKPOINT_LOCAL_TABLE",
+		"NLK_SERVICE_CHECKPOINT_LATEST_VIEW",
 	} {
 		t.Setenv(name, "")
 	}
 	config := ConfigFromEnv()
 	want := map[string]string{
-		"raw":               "Data_Book_NLK_Raw.nlk_resource_raw",
-		"raw_local":         "Data_Book_NLK_Raw.nlk_resource_raw_local",
-		"run":               "Data_Book_NLK_Log.nlk_import_run_log",
-		"run_local":         "Data_Book_NLK_Log.nlk_import_run_log_local",
-		"checkpoint":        "Data_Book_NLK_Log.nlk_import_entry_checkpoint",
-		"checkpoint_local":  "Data_Book_NLK_Log.nlk_import_entry_checkpoint_local",
-		"run_latest":        "Data_Book_NLK_Log.v_nlk_import_run_latest",
-		"checkpoint_latest": "Data_Book_NLK_Log.v_nlk_import_entry_checkpoint_latest",
+		"raw":                       "Data_Book_NLK_Raw.nlk_resource_raw",
+		"raw_local":                 "Data_Book_NLK_Raw.nlk_resource_raw_local",
+		"run":                       "Data_Book_NLK_Log.nlk_import_run_log",
+		"run_local":                 "Data_Book_NLK_Log.nlk_import_run_log_local",
+		"checkpoint":                "Data_Book_NLK_Log.nlk_import_entry_checkpoint",
+		"checkpoint_local":          "Data_Book_NLK_Log.nlk_import_entry_checkpoint_local",
+		"run_latest":                "Data_Book_NLK_Log.v_nlk_import_run_latest",
+		"checkpoint_latest":         "Data_Book_NLK_Log.v_nlk_import_entry_checkpoint_latest",
+		"service_checkpoint":        "Data_Book_NLK_Log.nlk_service_projection_checkpoint",
+		"service_checkpoint_local":  "Data_Book_NLK_Log.nlk_service_projection_checkpoint_local",
+		"service_checkpoint_latest": "Data_Book_NLK_Log.v_nlk_service_projection_checkpoint_latest",
 	}
 	got := map[string]string{
-		"raw":               config.RawTable,
-		"raw_local":         config.RawLocalTable,
-		"run":               config.RunTable,
-		"run_local":         config.RunLocalTable,
-		"checkpoint":        config.CheckpointTable,
-		"checkpoint_local":  config.CheckpointLocal,
-		"run_latest":        config.RunLatestView,
-		"checkpoint_latest": config.CheckpointLatestView,
+		"raw":                       config.RawTable,
+		"raw_local":                 config.RawLocalTable,
+		"run":                       config.RunTable,
+		"run_local":                 config.RunLocalTable,
+		"checkpoint":                config.CheckpointTable,
+		"checkpoint_local":          config.CheckpointLocal,
+		"run_latest":                config.RunLatestView,
+		"checkpoint_latest":         config.CheckpointLatestView,
+		"service_checkpoint":        config.ServiceCheckpointTable,
+		"service_checkpoint_local":  config.ServiceCheckpointLocal,
+		"service_checkpoint_latest": config.ServiceCheckpointLatestView,
 	}
 	for key, expected := range want {
 		if got[key] != expected {

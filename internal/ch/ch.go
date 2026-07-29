@@ -224,6 +224,14 @@ func (c *Client) Exec(sql string) error {
 	return err
 }
 
+// ExecSingleAttempt is the explicit no-retry path for heavy INSERT SELECT
+// operations. Callers must treat any transport or server failure as ambiguous
+// and must not advance a durable checkpoint automatically.
+func (c *Client) ExecSingleAttempt(sql string) error {
+	_, err := c.post(strings.TrimSpace(sql), nil)
+	return err
+}
+
 func (c *Client) QueryJSONEachRow(sql string) ([]map[string]any, error) {
 	payload, err := c.post(ensureJSONEachRow(sql), nil)
 	if err != nil {

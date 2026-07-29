@@ -23,15 +23,18 @@ var tableIdentifierPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-
 const existingRawIndexLookupChunkSize = 5000
 
 type Config struct {
-	RawTable             string
-	RawLocalTable        string
-	RunTable             string
-	RunLocalTable        string
-	CheckpointTable      string
-	CheckpointLocal      string
-	RunLatestView        string
-	CheckpointLatestView string
-	RequireHTTPS         bool
+	RawTable                    string
+	RawLocalTable               string
+	RunTable                    string
+	RunLocalTable               string
+	CheckpointTable             string
+	CheckpointLocal             string
+	RunLatestView               string
+	CheckpointLatestView        string
+	ServiceCheckpointTable      string
+	ServiceCheckpointLocal      string
+	ServiceCheckpointLatestView string
+	RequireHTTPS                bool
 }
 
 func ConfigFromEnv() Config {
@@ -44,7 +47,19 @@ func ConfigFromEnv() Config {
 		CheckpointLocal:      envx.String("NLK_IMPORT_CHECKPOINT_LOCAL_TABLE", "Data_Book_NLK_Log.nlk_import_entry_checkpoint_local"),
 		RunLatestView:        envx.String("NLK_IMPORT_RUN_LATEST_VIEW", "Data_Book_NLK_Log.v_nlk_import_run_latest"),
 		CheckpointLatestView: envx.String("NLK_IMPORT_CHECKPOINT_LATEST_VIEW", "Data_Book_NLK_Log.v_nlk_import_entry_checkpoint_latest"),
-		RequireHTTPS:         boolEnv("NLK_REQUIRE_CLICKHOUSE_HTTPS", true),
+		ServiceCheckpointTable: envx.String(
+			"NLK_SERVICE_CHECKPOINT_TABLE",
+			"Data_Book_NLK_Log.nlk_service_projection_checkpoint",
+		),
+		ServiceCheckpointLocal: envx.String(
+			"NLK_SERVICE_CHECKPOINT_LOCAL_TABLE",
+			"Data_Book_NLK_Log.nlk_service_projection_checkpoint_local",
+		),
+		ServiceCheckpointLatestView: envx.String(
+			"NLK_SERVICE_CHECKPOINT_LATEST_VIEW",
+			"Data_Book_NLK_Log.v_nlk_service_projection_checkpoint_latest",
+		),
+		RequireHTTPS: boolEnv("NLK_REQUIRE_CLICKHOUSE_HTTPS", true),
 	}
 }
 
@@ -66,7 +81,13 @@ func NewClickHouse(client *ch.Client, config Config) (*ClickHouseStore, error) {
 		config.CheckpointLocal,
 		config.RunLatestView,
 		config.CheckpointLatestView,
+		config.ServiceCheckpointTable,
+		config.ServiceCheckpointLocal,
+		config.ServiceCheckpointLatestView,
 	} {
+		if strings.TrimSpace(table) == "" {
+			continue
+		}
 		if !tableIdentifierPattern.MatchString(strings.TrimSpace(table)) {
 			return nil, &StoreError{Category: "configuration"}
 		}
@@ -84,6 +105,13 @@ func (e *StoreError) Error() string {
 		category = "unknown"
 	}
 	return "NLK ClickHouse operation failed category=" + category
+}
+
+func (e *StoreError) SafeCategory() string {
+	if e == nil || strings.TrimSpace(e.Category) == "" {
+		return "unknown"
+	}
+	return strings.TrimSpace(e.Category)
 }
 
 func (s *ClickHouseStore) Validate(ctx context.Context) error {

@@ -1,0 +1,145 @@
+name: NLK Service Projection Range Backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      snapshot_date:
+        description: "NLK snapshot date in YYYY-MM-DD"
+        required: true
+        type: string
+        default: "2026-05-29"
+      range_size:
+        description: "Contiguous source_record_index range size"
+        required: true
+        type: number
+        default: 50000
+      projections:
+        description: "Optional comma-separated projection allowlist; empty runs the default seven"
+        required: false
+        type: string
+        default: ""
+      transform_version:
+        description: "Immutable service projection transform version"
+        required: true
+        type: string
+        default: "nlk_service_projection_v1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: statground-nlk-service-projection-backfill
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Validate manual inputs
+        env:
+          SNAPSHOT_DATE: ${{ inputs.snapshot_date }}
+          RANGE_SIZE: ${{ inputs.range_size }}
+          TRANSFORM_VERSION: ${{ inputs.transform_version }}
+        run: |
+          set -euo pipefail
+          [[ "$SNAPSHOT_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || {
+            echo "snapshot_date must use YYYY-MM-DD"
+            exit 1
+          }
+          [[ "$RANGE_SIZE" =~ ^[0-9]+$ ]] || {
+            echo "range_size must be a positive integer"
+            exit 1
+          }
+          (( RANGE_SIZE >= 1 && RANGE_SIZE <= 1000000 )) || {
+            echo "range_size must be between 1 and 1000000"
+            exit 1
+          }
+          test -n "$TRANSFORM_VERSION" || {
+            echo "transform_version is required"
+            exit 1
+          }
+
+      - name: Validate ClickHouse secrets
+        env:
+          CH_HOST: ${{ secrets.CLICKHOUSE_HOST || secrets.CH_HOST }}
+          CH_USER: ${{ secrets.CLICKHOUSE_USER || secrets.CH_USER }}
+          CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD || secrets.CH_PASSWORD }}
+          CH_PROTOCOL: ${{ secrets.CLICKHOUSE_PROTOCOL || secrets.CH_PROTOCOL || 'https' }}
+        run: |
+          set -euo pipefail
+          test -n "$CH_HOST" || {
+            echo "CLICKHOUSE_HOST or CH_HOST secret is required"
+            exit 1
+          }
+          test -n "$CH_USER" || {
+            echo "CLICKHOUSE_USER or CH_USER secret is required"
+            exit 1
+          }
+          test -n "$CH_PASSWORD" || {
+            echo "CLICKHOUSE_PASSWORD or CH_PASSWORD secret is required"
+            exit 1
+          }
+          case "$CH_HOST" in
+            127.0.0.1|localhost|0.0.0.0|::1|[::1])
+              echo "ClickHouse host must be externally reachable"
+              exit 1
+              ;;
+          esac
+          normalized_protocol="$(printf '%s' "$CH_PROTOCOL" | tr '[:upper:]' '[:lower:]')"
+          case "$CH_HOST" in
+            https://*) ;;
+            *) test "$normalized_protocol" = "https" || {
+              echo "ClickHouse transport must be https"
+              exit 1
+            } ;;
+          esac
+
+      - name: Test and build NLK range backfill
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+        run: |
+          set -euo pipefail
+          go mod download all
+          go mod verify
+          go test -mod=mod ./...
+          go build -mod=mod ./cmd/backfill_nlk_service
+
+      - name: Run NLK service projection range backfill
+        env:
+          SNAPSHOT_DATE: ${{ inputs.snapshot_date }}
+          RANGE_SIZE: ${{ inputs.range_size }}
+          PROJECTIONS: ${{ inputs.projections }}
+          TRANSFORM_VERSION: ${{ inputs.transform_version }}
+          CH_HOST: ${{ secrets.CLICKHOUSE_HOST || secrets.CH_HOST }}
+          CH_PORT: ${{ secrets.CLICKHOUSE_PORT || secrets.CH_PORT || '8123' }}
+          CH_USER: ${{ secrets.CLICKHOUSE_USER || secrets.CH_USER }}
+          CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD || secrets.CH_PASSWORD }}
+          CH_PROTOCOL: ${{ secrets.CLICKHOUSE_PROTOCOL || secrets.CH_PROTOCOL || 'https' }}
+          CH_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH || secrets.CH_HTTP_URL_PATH }}
+          CH_DATABASE: Data_Book_NLK_Log
+          NLK_REQUIRE_CLICKHOUSE_HTTPS: "true"
+          NLK_SERVICE_BACKFILL_TIMEOUT_SECONDS: "1810"
+        run: |
+          set -euo pipefail
+          args=(
+            "--snapshot-date=$SNAPSHOT_DATE"
+            "--range-size=$RANGE_SIZE"
+            "--transform-version=$TRANSFORM_VERSION"
+            "--concurrency=1"
+          )
+          if [[ -n "${PROJECTIONS//[[:space:]]/}" ]]; then
+            args+=("--projections=$PROJECTIONS")
+          fi
+          go run -mod=mod ./cmd/backfill_nlk_service "${args[@]}"

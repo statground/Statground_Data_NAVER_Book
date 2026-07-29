@@ -172,6 +172,28 @@ func TestTableExistsRejectsUnsafeIdentifierBeforeRequest(t *testing.T) {
 	}
 }
 
+func TestExecSingleAttemptDoesNotRetryAmbiguousFailure(t *testing.T) {
+	requests := 0
+	client := &Client{
+		Host: "http://clickhouse.test",
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			requests++
+			return &http.Response{
+				StatusCode: http.StatusGatewayTimeout,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("")),
+				Request:    request,
+			}, nil
+		})},
+	}
+	if err := client.ExecSingleAttempt("INSERT INTO db.target SELECT 1"); err == nil {
+		t.Fatal("ExecSingleAttempt() error = nil, want ambiguous failure")
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want exactly 1", requests)
+	}
+}
+
 func TestInsertJSONEachRowDurableUsesFixedForegroundQuorumSettings(t *testing.T) {
 	var body string
 	client := &Client{
