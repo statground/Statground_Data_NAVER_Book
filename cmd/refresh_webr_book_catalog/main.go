@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -13,6 +14,7 @@ import (
 )
 
 var qualifiedIdentifierRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$`)
+var errBookRefreshBusy = errors.New("another book refresh is already running")
 
 func main() {
 	if err := run(); err != nil {
@@ -43,6 +45,10 @@ func run() error {
 		envx.String("BOOK_PROVIDER_REFRESH_VIEW", "Data_Book_Service.mv_book_catalog_latest_refresh"),
 		envx.String("BOOK_PROVIDER_COUNT_VIEW", "Data_Book_Service.v_book_catalog_latest_current"),
 	); err != nil {
+		if errors.Is(err, errBookRefreshBusy) {
+			fmt.Println("[book-catalog] refresh skipped because the serial Book refresh chain is already running")
+			return nil
+		}
 		return err
 	}
 	if err := refreshCatalog(client, "webr-book", envx.String("WEBR_BOOK_REFRESH_VIEW", "webr_book.mv_naver_r_book_catalog_refresh"), envx.String("WEBR_BOOK_COUNT_VIEW", "webr_book.v_naver_r_book_catalog")); err != nil {
@@ -148,7 +154,12 @@ func triggerRefreshWithRetry(client *ch.Client, refreshView string, attempts int
 		if err != nil {
 			lastErr = err
 		} else if exists {
-			if err := client.Exec("SYSTEM REFRESH VIEW " + refreshView); err == nil {
+			busy, err := anyBookRefreshRunning(client)
+			if err != nil {
+				lastErr = err
+			} else if busy {
+				return errBookRefreshBusy
+			} else if err := client.Exec("SYSTEM REFRESH VIEW " + refreshView); err == nil {
 				if err := client.Exec("SYSTEM WAIT VIEW " + refreshView); err == nil {
 					return nil
 				} else {
@@ -168,6 +179,26 @@ func triggerRefreshWithRetry(client *ch.Client, refreshView string, attempts int
 		}
 	}
 	return lastErr
+}
+
+func anyBookRefreshRunning(client *ch.Client) (bool, error) {
+	value, err := client.QueryScalarValue(`
+		SELECT count() > 0 AS value
+		FROM system.view_refreshes
+		WHERE status IN ('Running', 'RunningOnAnotherReplica')
+		  AND (
+		        (database = 'Data_Book_Service' AND view IN (
+		            'mv_book_catalog_latest_refresh',
+		            'mv_book_bibliography_discovery_refresh'
+		        ))
+		     OR (database = 'webr_book' AND view = 'mv_naver_r_book_catalog_refresh')
+		     OR (database = 'mirtype_book' AND view = 'mv_naver_language_book_catalog_refresh')
+		  )
+	`)
+	if err != nil {
+		return false, err
+	}
+	return util.ToInt64(value) > 0, nil
 }
 
 func mirtypeRefreshEnabled() bool {

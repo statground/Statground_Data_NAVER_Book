@@ -200,8 +200,8 @@ jobs:
           CH_DATABASE: Data_Book_KAKAO_Raw
         run: go run -mod=mod ./cmd/collect_kakao
 
-      - name: Refresh provider-neutral serving catalogs
-        if: ${{ inputs.dry_run != true }}
+      - name: Refresh provider-neutral serving catalogs for manual runs
+        if: ${{ inputs.dry_run != true && inputs.run_kind != 'scheduled' }}
         env:
           CH_HOST: ${{ secrets.CLICKHOUSE_HOST }}
           CH_PORT: ${{ secrets.CLICKHOUSE_PORT || '8123' }}
