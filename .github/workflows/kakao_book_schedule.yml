@@ -8,6 +8,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # Serialize with the temporary NAVER rollback schedule. Provider API calls
+  # are independent, but their direct ingest and lookup paths share the same
+  # ClickHouse capacity.
+  group: statground-book-provider-schedule
+  cancel-in-progress: false
+
 jobs:
   discovery:
     if: github.event_name == 'workflow_dispatch' || vars.KAKAO_BOOK_SCHEDULE_ENABLED != 'false'

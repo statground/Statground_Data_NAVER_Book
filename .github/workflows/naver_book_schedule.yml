@@ -9,8 +9,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: statground-book-naver-schedule
-  cancel-in-progress: true
+  # NAVER remains a time-bounded rollback source until its sunset, while Kakao
+  # is the primary provider. They still share the same ClickHouse serving
+  # sources, so never let the two scheduled collectors overlap.
+  group: statground-book-provider-schedule
+  cancel-in-progress: false
 
 jobs:
   sunset_guard:
