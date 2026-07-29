@@ -37,9 +37,17 @@ func TestTriggerRefreshWithRetryFindsSingleCoordinator(t *testing.T) {
 			responseBody := ""
 			switch call {
 			case 1:
-				responseBody = "{\"value\":0}\n"
+				if !strings.Contains(body, "EXISTS TABLE `Data_Book_Service`.`mv_book_catalog_latest_refresh`") ||
+					strings.Contains(body, "system.tables") {
+					t.Fatalf("unexpected coordinator probe body=%q", body)
+				}
+				responseBody = "{\"result\":0}\n"
 			case 2:
-				responseBody = "{\"value\":1}\n"
+				if !strings.Contains(body, "EXISTS TABLE `Data_Book_Service`.`mv_book_catalog_latest_refresh`") ||
+					strings.Contains(body, "system.tables") {
+					t.Fatalf("unexpected coordinator probe body=%q", body)
+				}
+				responseBody = "{\"result\":1}\n"
 			case 3:
 				if body != "SYSTEM REFRESH VIEW Data_Book_Service.mv_book_catalog_latest_refresh" {
 					t.Fatalf("unexpected refresh body=%q", body)
@@ -72,10 +80,19 @@ func TestTriggerRefreshWithRetryFailsWhenCoordinatorIsUnavailable(t *testing.T) 
 	client := &ch.Client{
 		Host: "http://clickhouse.test",
 		HTTPClient: &http.Client{Transport: refreshRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			payload, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := string(payload)
+			if !strings.Contains(body, "EXISTS TABLE `webr_book`.`mv_naver_r_book_catalog_refresh`") ||
+				strings.Contains(body, "system.tables") {
+				t.Fatalf("unexpected coordinator probe body=%q", body)
+			}
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Header:     make(http.Header),
-				Body:       io.NopCloser(strings.NewReader("{\"value\":0}\n")),
+				Body:       io.NopCloser(strings.NewReader("{\"result\":0}\n")),
 				Request:    request,
 			}, nil
 		})},

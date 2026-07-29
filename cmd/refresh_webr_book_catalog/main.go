@@ -139,19 +139,15 @@ func triggerRefreshOnCoordinator(client *ch.Client, refreshView string) error {
 // ClickHouse endpoint can select any replica, so locate the coordinator through
 // bounded connection retries before issuing SYSTEM REFRESH VIEW.
 func triggerRefreshWithRetry(client *ch.Client, refreshView string, attempts int, retryDelay time.Duration) error {
-	database, table := ch.SplitQualifiedTable(refreshView, "")
 	var lastErr error
 	for attempt := 1; attempt <= attempts; attempt++ {
-		exists, err := client.QueryScalarInt(fmt.Sprintf(`
-			SELECT count() AS value
-			FROM system.tables
-			WHERE database = %s
-			  AND name = %s
-			  AND engine = 'MaterializedView'
-		`, util.SQLString(database), util.SQLString(table)))
+		// Resolve only the requested coordinator. A system.tables scan can wait
+		// on unrelated failed metadata while ClickHouse is recovering, even
+		// though this exact refreshable view is already usable.
+		exists, err := client.TableExists(refreshView)
 		if err != nil {
 			lastErr = err
-		} else if exists > 0 {
+		} else if exists {
 			if err := client.Exec("SYSTEM REFRESH VIEW " + refreshView); err == nil {
 				if err := client.Exec("SYSTEM WAIT VIEW " + refreshView); err == nil {
 					return nil
