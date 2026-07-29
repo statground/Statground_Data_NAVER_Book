@@ -132,7 +132,7 @@ func (s *ClickHouseStore) LoadProjectionCheckpoint(
 			dataset_name,
 			source_archive,
 			source_entry,
-			projection,
+			`+"`projection`"+`,
 			transform_version,
 			status,
 			next_record_index,
@@ -149,7 +149,7 @@ func (s *ClickHouseStore) LoadProjectionCheckpoint(
 		  AND dataset_name = %s
 		  AND source_archive = %s
 		  AND source_entry = %s
-		  AND projection = %s
+		  AND `+"`projection`"+` = %s
 		  AND transform_version = %s
 		LIMIT 1
 		SETTINGS max_threads = 1, max_execution_time = 30
