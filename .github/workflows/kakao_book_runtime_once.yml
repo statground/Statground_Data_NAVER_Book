@@ -1,6 +1,6 @@
 name: Kakao Book Runtime Verification Once
 
-# Retry 3 adds only closed, non-sensitive collector stage/reason labels.
+# Retry 4 validates the bounded provider-key lookup and read-only retry path.
 
 on:
   push:

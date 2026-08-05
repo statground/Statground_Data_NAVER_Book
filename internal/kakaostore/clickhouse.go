@@ -2,7 +2,9 @@ package kakaostore
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net"
 	"net/url"
@@ -20,34 +22,34 @@ import (
 var tableIdentifierPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$`)
 
 type Config struct {
-	RawTable          string
-	RawLocalTable     string
-	CollectLogTable   string
-	CollectLocalTable string
-	CallLogTable      string
-	CallLocalTable    string
-	FrontierTable     string
-	FrontierLocal     string
-	CurrentView       string
-	Source            string
-	LineageTopic      string
-	RequireHTTPS      bool
+	RawTable            string
+	RawLocalTable       string
+	CollectLogTable     string
+	CollectLocalTable   string
+	CallLogTable        string
+	CallLocalTable      string
+	FrontierTable       string
+	FrontierLocal       string
+	ProviderLatestTable string
+	Source              string
+	LineageTopic        string
+	RequireHTTPS        bool
 }
 
 func ConfigFromEnv() Config {
 	return Config{
-		RawTable:          envx.String("KAKAO_RAW_TABLE", "Data_Book_KAKAO_Raw.kakao_book_raw"),
-		RawLocalTable:     envx.String("KAKAO_RAW_LOCAL_TABLE", "Data_Book_KAKAO_Raw.kakao_book_raw_local"),
-		CollectLogTable:   envx.String("KAKAO_COLLECT_LOG_TABLE", "Data_Book_KAKAO_Log.kakao_collect_log"),
-		CollectLocalTable: envx.String("KAKAO_COLLECT_LOG_LOCAL_TABLE", "Data_Book_KAKAO_Log.kakao_collect_log_local"),
-		CallLogTable:      envx.String("KAKAO_API_CALL_LOG_TABLE", "Data_Book_KAKAO_Log.kakao_api_call_log"),
-		CallLocalTable:    envx.String("KAKAO_API_CALL_LOG_LOCAL_TABLE", "Data_Book_KAKAO_Log.kakao_api_call_log_local"),
-		FrontierTable:     envx.String("KAKAO_QUERY_FRONTIER_TABLE", "Data_Book_KAKAO_Log.kakao_query_frontier"),
-		FrontierLocal:     envx.String("KAKAO_QUERY_FRONTIER_LOCAL_TABLE", "Data_Book_KAKAO_Log.kakao_query_frontier_local"),
-		CurrentView:       envx.String("KAKAO_BOOK_CURRENT_VIEW", "Data_Book_Service.v_book_provider_latest_current"),
-		Source:            envx.String("PRODUCER_SOURCE", "github_actions"),
-		LineageTopic:      envx.String("KAKAO_DIRECT_INGEST_TOPIC", "direct.statground_book.kakao_book"),
-		RequireHTTPS:      boolEnv("KAKAO_REQUIRE_CLICKHOUSE_HTTPS", true),
+		RawTable:            envx.String("KAKAO_RAW_TABLE", "Data_Book_KAKAO_Raw.kakao_book_raw"),
+		RawLocalTable:       envx.String("KAKAO_RAW_LOCAL_TABLE", "Data_Book_KAKAO_Raw.kakao_book_raw_local"),
+		CollectLogTable:     envx.String("KAKAO_COLLECT_LOG_TABLE", "Data_Book_KAKAO_Log.kakao_collect_log"),
+		CollectLocalTable:   envx.String("KAKAO_COLLECT_LOG_LOCAL_TABLE", "Data_Book_KAKAO_Log.kakao_collect_log_local"),
+		CallLogTable:        envx.String("KAKAO_API_CALL_LOG_TABLE", "Data_Book_KAKAO_Log.kakao_api_call_log"),
+		CallLocalTable:      envx.String("KAKAO_API_CALL_LOG_LOCAL_TABLE", "Data_Book_KAKAO_Log.kakao_api_call_log_local"),
+		FrontierTable:       envx.String("KAKAO_QUERY_FRONTIER_TABLE", "Data_Book_KAKAO_Log.kakao_query_frontier"),
+		FrontierLocal:       envx.String("KAKAO_QUERY_FRONTIER_LOCAL_TABLE", "Data_Book_KAKAO_Log.kakao_query_frontier_local"),
+		ProviderLatestTable: envx.String("KAKAO_PROVIDER_LATEST_TABLE", "Data_Book_Service.book_provider_latest"),
+		Source:              envx.String("PRODUCER_SOURCE", "github_actions"),
+		LineageTopic:        envx.String("KAKAO_DIRECT_INGEST_TOPIC", "direct.statground_book.kakao_book"),
+		RequireHTTPS:        boolEnv("KAKAO_REQUIRE_CLICKHOUSE_HTTPS", true),
 	}
 }
 
@@ -69,7 +71,7 @@ func NewClickHouse(client *ch.Client, config Config) (*ClickHouseStore, error) {
 		"API call local":    config.CallLocalTable,
 		"frontier":          config.FrontierTable,
 		"frontier local":    config.FrontierLocal,
-		"current view":      config.CurrentView,
+		"provider latest":   config.ProviderLatestTable,
 	} {
 		if !tableIdentifierPattern.MatchString(strings.TrimSpace(table)) {
 			return nil, fmt.Errorf("invalid Kakao %s table identifier", name)
@@ -109,7 +111,7 @@ func (s *ClickHouseStore) Validate(ctx context.Context) error {
 		s.Config.FrontierTable,
 		s.Config.FrontierLocal,
 	}
-	for _, table := range append(writableTables, s.Config.CurrentView) {
+	for _, table := range append(writableTables, s.Config.ProviderLatestTable) {
 		if err := s.tableExists(ctx, table); err != nil {
 			return err
 		}
@@ -119,7 +121,7 @@ func (s *ClickHouseStore) Validate(ctx context.Context) error {
 			return err
 		}
 	}
-	for _, table := range []string{s.Config.CallLogTable, s.Config.FrontierTable, s.Config.CurrentView} {
+	for _, table := range []string{s.Config.CallLogTable, s.Config.FrontierTable, s.Config.ProviderLatestTable} {
 		if err := s.checkGrant(ctx, "SELECT", table); err != nil {
 			return err
 		}
@@ -258,14 +260,25 @@ func (s *ClickHouseStore) ExistingContentHashes(ctx context.Context, canonicalIS
 	for offset := 0; offset < len(cleaned); offset += lookupBatchSize {
 		end := min(offset+lookupBatchSize, len(cleaned))
 		sql := fmt.Sprintf(`
-            SELECT canonical_isbn, content_hash
-            FROM %s
-            WHERE provider = 'kakao'
-              AND canonical_isbn IN (%s)
-            SETTINGS max_threads = 1, max_execution_time = 10
-        `, s.Config.CurrentView, util.QuoteStringList(cleaned[offset:end]))
-		rows, err := s.Client.QueryJSONEachRow(sql)
+			SELECT
+				canonical_isbn,
+				argMax(content_hash, tuple(version, updated_at, ingested_at, uuid)) AS content_hash
+			FROM %s
+			WHERE provider = 'kakao'
+			  AND isbn_valid = 1
+			  AND notEmpty(canonical_isbn)
+			  AND canonical_isbn IN (%s)
+			GROUP BY canonical_isbn
+			SETTINGS
+				optimize_skip_unused_shards = 1,
+				max_threads = 1,
+				max_execution_time = 10
+		`, s.Config.ProviderLatestTable, util.QuoteStringList(cleaned[offset:end]))
+		rows, err := s.queryJSONEachRowReadOnly(ctx, sql)
 		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, err
+			}
 			return nil, sanitizeStoreError("existing_hashes", err)
 		}
 		for _, row := range rows {
@@ -277,6 +290,31 @@ func (s *ClickHouseStore) ExistingContentHashes(ctx context.Context, canonicalIS
 		}
 	}
 	return out, nil
+}
+
+// queryJSONEachRowReadOnly provides a read-specific retry boundary. Insert
+// paths retain their separate deterministic deduplication-token policy.
+func (s *ClickHouseStore) queryJSONEachRowReadOnly(ctx context.Context, sql string) ([]map[string]any, error) {
+	for attempt := 1; attempt <= 3; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		rows, err := s.Client.QueryJSONEachRow(sql)
+		if err == nil {
+			return rows, nil
+		}
+		if !retryableStoreError(err) || attempt == 3 {
+			return nil, err
+		}
+		timer := time.NewTimer(time.Duration(attempt) * time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil, fmt.Errorf("read-only query retry exhausted")
 }
 
 func (s *ClickHouseStore) InsertCallLog(ctx context.Context, record CallLog) error {
@@ -496,11 +534,19 @@ func retryableStoreError(err error) bool {
 	if err == nil {
 		return false
 	}
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+	var networkError net.Error
+	if errors.As(err, &networkError) && (networkError.Timeout() || networkError.Temporary()) {
+		return true
+	}
 	message := strings.ToLower(err.Error())
 	for _, marker := range []string{
 		"timeout", "deadline", "connection reset", "connection refused",
+		"connection aborted", "broken pipe", "unexpected eof",
 		"not initialized", "keeper", "coordination", "readonly",
-		"http status=429", "http status=500", "http status=502",
+		"http status=408", "http status=429", "http status=500", "http status=502",
 		"http status=503", "http status=504",
 	} {
 		if strings.Contains(message, marker) {
