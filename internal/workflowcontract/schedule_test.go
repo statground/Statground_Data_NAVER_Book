@@ -2,6 +2,7 @@ package workflowcontract
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -42,19 +43,42 @@ func TestLegacyNAVERWorkflowIsManualOnly(t *testing.T) {
 	}
 }
 
-func TestKakaoWorkflowRequiresApprovedTLSEndpointTuple(t *testing.T) {
+func TestKakaoWorkflowAllowsOnlyApprovedClickHouseTransportTuples(t *testing.T) {
 	t.Parallel()
 
 	text := readWorkflow(t, "../../.github/workflows/kakao_book_collect.yml")
 	for _, contract := range []string{
 		"ClickHouse host must be a hostname without a URL scheme",
-		"ClickHouse TLS endpoint must use a certificate hostname instead of an IP address",
-		"ClickHouse TLS protocol is required",
-		"ClickHouse TLS endpoint must use port 443",
-		"ClickHouse TLS endpoint path must be empty",
+		"ClickHouse endpoint path must be empty",
+		"Approved ClickHouse IP endpoint requires HTTP",
+		"Approved ClickHouse IP/HTTP endpoint requires its explicit non-TLS port",
+		"ClickHouse hostname endpoint requires HTTPS",
+		"ClickHouse hostname/HTTPS endpoint requires port 443",
+		"Approved legacy ClickHouse IP/HTTP transport is active",
 	} {
 		if !strings.Contains(text, contract) {
-			t.Errorf("Kakao workflow is missing TLS endpoint contract %q", contract)
+			t.Errorf("Kakao workflow is missing approved transport contract %q", contract)
+		}
+	}
+	if count := strings.Count(text, `KAKAO_REQUIRE_CLICKHOUSE_HTTPS: "false"`); count != 1 {
+		t.Fatalf("Kakao HTTP override count=%d, want exactly one collector-step override", count)
+	}
+}
+
+func TestKakaoHTTPOverrideIsNotSharedWithOtherWorkflows(t *testing.T) {
+	t.Parallel()
+
+	paths, err := filepath.Glob("../../.github/workflows/*.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range paths {
+		if strings.HasSuffix(path, "kakao_book_collect.yml") {
+			continue
+		}
+		text := readWorkflow(t, path)
+		if strings.Contains(text, `KAKAO_REQUIRE_CLICKHOUSE_HTTPS: "false"`) {
+			t.Errorf("Kakao HTTP override leaked into %s", path)
 		}
 	}
 }

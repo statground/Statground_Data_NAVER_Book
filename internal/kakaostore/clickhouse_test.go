@@ -65,6 +65,30 @@ func TestConnectionBoundaryRejectsLoopbackAndPlainHTTP(t *testing.T) {
 	}
 }
 
+func TestConnectionBoundaryAllowsExplicitKakaoRemoteIPHTTPOverride(t *testing.T) {
+	t.Setenv("KAKAO_REQUIRE_CLICKHOUSE_HTTPS", "false")
+	config := ConfigFromEnv()
+	if config.RequireHTTPS {
+		t.Fatal("explicit Kakao HTTP override was ignored")
+	}
+
+	client := testClient()
+	client.Host = "192.0.2.10"
+	client.Port = 50005
+	store, err := NewClickHouse(client, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.validateConnectionBoundary(); err != nil {
+		t.Fatalf("approved remote IP/HTTP endpoint rejected: %v", err)
+	}
+
+	store.Client.Host = "127.0.0.1"
+	if err := store.validateConnectionBoundary(); err == nil {
+		t.Fatal("HTTP override must not allow loopback ClickHouse endpoints")
+	}
+}
+
 func TestParseTimeAndAllowlist(t *testing.T) {
 	if got := parseTime("2026-07-26 12:34:56.000"); got.IsZero() {
 		t.Fatal("ClickHouse time was not parsed")

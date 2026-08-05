@@ -169,7 +169,7 @@ jobs:
               ;;
           esac
 
-      - name: Validate ClickHouse TLS endpoint contract
+      - name: Validate ClickHouse approved transport contract
         env:
           CH_HOST: ${{ secrets.CLICKHOUSE_HOST }}
           CH_PORT: ${{ secrets.CLICKHOUSE_PORT || '443' }}
@@ -180,14 +180,35 @@ jobs:
           case "$CH_HOST" in
             *://*) echo "::error::ClickHouse host must be a hostname without a URL scheme"; exit 1 ;;
           esac
-          case "$CH_HOST" in
-            *:* ) echo "::error::ClickHouse TLS endpoint must use a certificate hostname instead of an IP address"; exit 1 ;;
-            *[!0-9.]* ) ;;
-            * ) echo "::error::ClickHouse TLS endpoint must use a certificate hostname instead of an IP address"; exit 1 ;;
+          case "$CH_PORT" in
+            ''|*[!0-9]*) echo "::error::ClickHouse port must be an integer"; exit 1 ;;
           esac
-          test "$normalized_protocol" = "https" || { echo "::error::ClickHouse TLS protocol is required"; exit 1; }
-          test "$CH_PORT" = "443" || { echo "::error::ClickHouse TLS endpoint must use port 443"; exit 1; }
-          test -z "$CH_HTTP_URL_PATH" || { echo "::error::ClickHouse TLS endpoint path must be empty"; exit 1; }
+          test "$CH_PORT" -ge 1 && test "$CH_PORT" -le 65535 || { echo "::error::ClickHouse port is outside the valid range"; exit 1; }
+          test -z "$CH_HTTP_URL_PATH" || { echo "::error::ClickHouse endpoint path must be empty"; exit 1; }
+
+          host_kind="$(python3 - <<'PY'
+          import ipaddress
+          import os
+
+          host = os.environ["CH_HOST"].strip()
+          candidate = host[1:-1] if host.startswith("[") and host.endswith("]") else host
+          try:
+              ipaddress.ip_address(candidate)
+          except ValueError:
+              print("hostname")
+          else:
+              print("ip")
+          PY
+          )"
+
+          if [ "$host_kind" = "ip" ]; then
+            test "$normalized_protocol" = "http" || { echo "::error::Approved ClickHouse IP endpoint requires HTTP"; exit 1; }
+            test "$CH_PORT" != "443" || { echo "::error::Approved ClickHouse IP/HTTP endpoint requires its explicit non-TLS port"; exit 1; }
+            echo "::warning::Approved legacy ClickHouse IP/HTTP transport is active; credentials and payloads are not TLS-protected"
+          else
+            test "$normalized_protocol" = "https" || { echo "::error::ClickHouse hostname endpoint requires HTTPS"; exit 1; }
+            test "$CH_PORT" = "443" || { echo "::error::ClickHouse hostname/HTTPS endpoint requires port 443"; exit 1; }
+          fi
 
       - name: Validate ClickHouse credentials
         env:
@@ -200,6 +221,7 @@ jobs:
       - name: Collect Kakao books into provider tables
         env:
           KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
+          KAKAO_REQUIRE_CLICKHOUSE_HTTPS: "false"
           CH_HOST: ${{ secrets.CLICKHOUSE_HOST }}
           CH_PORT: ${{ secrets.CLICKHOUSE_PORT || '8123' }}
           CH_USER: ${{ secrets.CLICKHOUSE_USER }}
