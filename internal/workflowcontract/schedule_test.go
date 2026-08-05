@@ -66,8 +66,16 @@ func TestKakaoWorkflowAllowsOnlyApprovedClickHouseTransportTuples(t *testing.T) 
 	if count := strings.Count(text, `CH_PROTOCOL: ${{ steps.clickhouse_transport.outputs.protocol }}`); count != 2 {
 		t.Fatalf("derived ClickHouse protocol consumer count=%d, want collect and refresh", count)
 	}
-	if strings.Contains(text, `CH_PROTOCOL: ${{ secrets.CLICKHOUSE_PROTOCOL`) {
-		t.Fatal("Kakao collector still trusts the stale protocol secret instead of the approved host tuple")
+	if count := strings.Count(text, `CH_PORT: ${{ steps.clickhouse_transport.outputs.port }}`); count != 2 {
+		t.Fatalf("derived ClickHouse port consumer count=%d, want collect and refresh", count)
+	}
+	if !strings.Contains(text, `echo "port=$CH_PORT" >> "$GITHUB_OUTPUT"`) {
+		t.Fatal("Kakao collector does not expose the validated ClickHouse port to downstream steps")
+	}
+
+	schedule := readWorkflow(t, "../../.github/workflows/kakao_book_schedule.yml")
+	if strings.Contains(text+schedule, "CLICKHOUSE_PROTOCOL") {
+		t.Fatal("Kakao workflows still propagate the stale protocol secret instead of the approved host tuple")
 	}
 }
 
