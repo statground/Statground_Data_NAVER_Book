@@ -1,6 +1,7 @@
 name: Kakao Book Runtime Verification Once
 
-# Retry 4 validates the bounded provider-key lookup and read-only retry path.
+# Final verification mirrors the scheduled workflow's discovery inputs and
+# exercises the manual post-collection catalog refresh path.
 
 on:
   push:
@@ -19,14 +20,14 @@ jobs:
   verify:
     uses: ./.github/workflows/kakao_book_collect.yml
     with:
-      run_kind: scheduled
+      run_kind: manual
       mode: fixed_keyword
-      queries: 통계학
+      queries: 통계학;R 프로그래밍;외국어 학습;언어 학습
       sort: latest
       page_cap: 1
-      page_size: 1
+      page_size: 50
       dry_run: false
-      respect_frontier_due: false
+      respect_frontier_due: true
       schedule_enabled: true
       auto_daily_budget: 2000
     secrets:
