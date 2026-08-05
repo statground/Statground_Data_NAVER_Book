@@ -1,0 +1,105 @@
+name: Temporary ClickHouse Endpoint Contract Probe
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Classify stored endpoint tuple without exposing values
+        env:
+          CH_HOST: ${{ secrets.CLICKHOUSE_HOST }}
+          CH_PORT: ${{ secrets.CLICKHOUSE_PORT }}
+          CH_PROTOCOL: ${{ secrets.CLICKHOUSE_PROTOCOL }}
+          CH_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH }}
+        run: |
+          set +x
+          normalized_protocol="$(printf '%s' "$CH_PROTOCOL" | tr '[:upper:]' '[:lower:]')"
+
+          if [ -n "$CH_HOST" ]; then
+            echo "host_present=yes"
+          else
+            echo "host_present=no"
+          fi
+          case "$CH_HOST" in
+            *://*) echo "host_has_scheme=yes" ;;
+            *) echo "host_has_scheme=no" ;;
+          esac
+          case "$CH_HOST" in
+            ''|*[!0-9.]*) echo "host_kind=hostname" ;;
+            *) echo "host_kind=ipv4" ;;
+          esac
+          if [ "$normalized_protocol" = "https" ]; then
+            echo "protocol_tls=yes"
+          else
+            echo "protocol_tls=no"
+          fi
+          if [ "$CH_PORT" = "443" ]; then
+            echo "port_443=yes"
+          else
+            echo "port_443=no"
+          fi
+          if [ -z "$CH_HTTP_URL_PATH" ]; then
+            echo "path_empty=yes"
+          else
+            echo "path_empty=no"
+          fi
+
+      - name: Probe canonical TLS port without credentials or writes
+        env:
+          CH_HOST: ${{ secrets.CLICKHOUSE_HOST }}
+        run: |
+          set +x
+          if [ -z "$CH_HOST" ]; then
+            echo "canonical_tls=skipped_missing_host"
+            exit 0
+          fi
+          case "$CH_HOST" in
+            *://*) echo "canonical_tls=skipped_host_has_scheme"; exit 0 ;;
+          esac
+
+          curl_status=0
+          status_code="$(curl --silent --output /dev/null --write-out '%{http_code}' --connect-timeout 10 --max-time 15 "https://${CH_HOST}:443/ping")" || curl_status=$?
+          if [ "$curl_status" -eq 0 ]; then
+            echo "canonical_tls=reachable"
+            echo "canonical_tls_status_code=$status_code"
+          else
+            echo "canonical_tls=unreachable"
+            echo "canonical_tls_curl_exit=$curl_status"
+          fi
+
+      - name: Probe stored endpoint without credentials or writes
+        env:
+          CH_HOST: ${{ secrets.CLICKHOUSE_HOST }}
+          CH_PORT: ${{ secrets.CLICKHOUSE_PORT }}
+          CH_PROTOCOL: ${{ secrets.CLICKHOUSE_PROTOCOL }}
+        run: |
+          set +x
+          normalized_protocol="$(printf '%s' "$CH_PROTOCOL" | tr '[:upper:]' '[:lower:]')"
+          if [ -z "$CH_HOST" ] || [ -z "$CH_PORT" ]; then
+            echo "stored_endpoint=skipped_missing_component"
+            exit 0
+          fi
+          case "$CH_HOST" in
+            *://*) echo "stored_endpoint=skipped_host_has_scheme"; exit 0 ;;
+          esac
+          case "$normalized_protocol" in
+            http|https) ;;
+            *) echo "stored_endpoint=skipped_invalid_protocol"; exit 0 ;;
+          esac
+
+          curl_status=0
+          status_code="$(curl --silent --output /dev/null --write-out '%{http_code}' --connect-timeout 10 --max-time 15 "${normalized_protocol}://${CH_HOST}:${CH_PORT}/ping")" || curl_status=$?
+          if [ "$curl_status" -eq 0 ]; then
+            echo "stored_endpoint=reachable"
+            echo "stored_endpoint_status_code=$status_code"
+          else
+            echo "stored_endpoint=unreachable"
+            echo "stored_endpoint_curl_exit=$curl_status"
+          fi
