@@ -169,16 +169,20 @@ jobs:
               ;;
           esac
 
-      - name: Validate ClickHouse HTTPS transport
+      - name: Validate ClickHouse TLS endpoint contract
         env:
           CH_HOST: ${{ secrets.CLICKHOUSE_HOST }}
+          CH_PORT: ${{ secrets.CLICKHOUSE_PORT || '443' }}
           CH_PROTOCOL: ${{ secrets.CLICKHOUSE_PROTOCOL || 'https' }}
+          CH_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH }}
         run: |
           normalized_protocol="$(printf '%s' "$CH_PROTOCOL" | tr '[:upper:]' '[:lower:]')"
           case "$CH_HOST" in
-            https://*) ;;
-            *) test "$normalized_protocol" = "https" || { echo "ClickHouse transport must be https"; exit 1; } ;;
+            *://*) echo "::error::ClickHouse host must be a hostname without a URL scheme"; exit 1 ;;
           esac
+          test "$normalized_protocol" = "https" || { echo "::error::ClickHouse TLS protocol is required"; exit 1; }
+          test "$CH_PORT" = "443" || { echo "::error::ClickHouse TLS endpoint must use port 443"; exit 1; }
+          test -z "$CH_HTTP_URL_PATH" || { echo "::error::ClickHouse TLS endpoint path must be empty"; exit 1; }
 
       - name: Validate ClickHouse credentials
         env:

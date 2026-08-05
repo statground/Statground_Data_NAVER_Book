@@ -1,47 +1,20 @@
-name: NAVER Book Scheduled Pipeline
+name: NAVER Book Manual Rollback Pipeline
 
 on:
-  schedule:
-    - cron: "29 1-23/6 * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  # NAVER remains a time-bounded rollback source until its sunset, while Kakao
-  # is the primary provider. They still share the same ClickHouse serving
-  # sources, so never let the two scheduled collectors overlap.
+  # The manual NAVER rollback path and the scheduled Kakao collector still
+  # share ClickHouse serving sources, so never let the two providers overlap.
   group: statground-book-provider-schedule
   cancel-in-progress: false
 
 jobs:
-  sunset_guard:
-    name: NAVER API sunset guard
-    runs-on: ubuntu-latest
-    outputs:
-      run_naver: ${{ steps.decision.outputs.run_naver }}
-    steps:
-      - name: Keep manual rollback alias and stop scheduled calls at the announced cutoff
-        id: decision
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-        run: |
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            echo "run_naver=true" >> "$GITHUB_OUTPUT"
-            echo "NAVER Book manual rollback path enabled"
-          elif [ "$(date -u +%s)" -lt "1785510000" ]; then
-            echo "run_naver=true" >> "$GITHUB_OUTPUT"
-            echo "NAVER Book scheduled path remains inside the pre-sunset window"
-          else
-            echo "run_naver=false" >> "$GITHUB_OUTPUT"
-            echo "NAVER Book scheduled API calls disabled after 2026-08-01 00:00 KST"
-          fi
-
   seed:
     name: Publisher seed
-    needs: sunset_guard
-    if: needs.sunset_guard.outputs.run_naver == 'true'
     uses: ./.github/workflows/naver_book_collect_all.yml
     with:
       stage: seed
@@ -66,7 +39,6 @@ jobs:
   refresh:
     name: Serving refresh
     needs: catalog
-    if: github.event_name == 'workflow_dispatch'
     uses: ./.github/workflows/naver_book_collect_all.yml
     with:
       stage: refresh

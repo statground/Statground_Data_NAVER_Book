@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestBookProviderSchedulesShareNonCancellingConcurrency(t *testing.T) {
+func TestBookProviderRunsShareNonCancellingConcurrency(t *testing.T) {
 	t.Parallel()
 
 	for _, path := range []string{
@@ -25,4 +25,45 @@ func TestBookProviderSchedulesShareNonCancellingConcurrency(t *testing.T) {
 			t.Errorf("%s can still cancel an in-progress provider collection", path)
 		}
 	}
+}
+
+func TestLegacyNAVERWorkflowIsManualOnly(t *testing.T) {
+	t.Parallel()
+
+	text := readWorkflow(t, "../../.github/workflows/naver_book_schedule.yml")
+	if strings.Contains(text, "  schedule:\n") {
+		t.Fatal("legacy NAVER workflow still has a scheduled trigger")
+	}
+	if !strings.Contains(text, "  workflow_dispatch:\n") {
+		t.Fatal("legacy NAVER manual rollback trigger is missing")
+	}
+	if !strings.Contains(text, "name: NAVER Book Manual Rollback Pipeline") {
+		t.Fatal("legacy NAVER workflow is still presented as a scheduled pipeline")
+	}
+}
+
+func TestKakaoWorkflowRequiresApprovedTLSEndpointTuple(t *testing.T) {
+	t.Parallel()
+
+	text := readWorkflow(t, "../../.github/workflows/kakao_book_collect.yml")
+	for _, contract := range []string{
+		"ClickHouse host must be a hostname without a URL scheme",
+		"ClickHouse TLS protocol is required",
+		"ClickHouse TLS endpoint must use port 443",
+		"ClickHouse TLS endpoint path must be empty",
+	} {
+		if !strings.Contains(text, contract) {
+			t.Errorf("Kakao workflow is missing TLS endpoint contract %q", contract)
+		}
+	}
+}
+
+func readWorkflow(t *testing.T, path string) string {
+	t.Helper()
+
+	source, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(source)
 }
