@@ -129,6 +129,7 @@ jobs:
       KAKAO_API_BACKOFF_MIN: "0.5"
       KAKAO_API_BACKOFF_MAX: "4.0"
       KAKAO_MAX_WORKERS: "1"
+      KAKAO_CLICKHOUSE_RAW_WRITE_TIMEOUT_SECONDS: "660"
       PRODUCER_SOURCE: "github_actions"
     steps:
       - name: Checkout

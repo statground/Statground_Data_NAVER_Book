@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -31,6 +32,7 @@ type Config struct {
 	FrontierTable       string
 	FrontierLocal       string
 	ProviderLatestTable string
+	RawWriteTimeout     time.Duration
 	Source              string
 	LineageTopic        string
 	RequireHTTPS        bool
@@ -47,6 +49,7 @@ func ConfigFromEnv() Config {
 		FrontierTable:       envx.String("KAKAO_QUERY_FRONTIER_TABLE", "Data_Book_KAKAO_Log.kakao_query_frontier"),
 		FrontierLocal:       envx.String("KAKAO_QUERY_FRONTIER_LOCAL_TABLE", "Data_Book_KAKAO_Log.kakao_query_frontier_local"),
 		ProviderLatestTable: envx.String("KAKAO_PROVIDER_LATEST_TABLE", "Data_Book_Service.book_provider_latest"),
+		RawWriteTimeout:     rawWriteTimeoutFromEnv(),
 		Source:              envx.String("PRODUCER_SOURCE", "github_actions"),
 		LineageTopic:        envx.String("KAKAO_DIRECT_INGEST_TOPIC", "direct.statground_book.kakao_book"),
 		RequireHTTPS:        boolEnv("KAKAO_REQUIRE_CLICKHOUSE_HTTPS", true),
@@ -54,8 +57,9 @@ func ConfigFromEnv() Config {
 }
 
 type ClickHouseStore struct {
-	Client *ch.Client
-	Config Config
+	Client          *ch.Client
+	RawInsertClient *ch.Client
+	Config          Config
 }
 
 func NewClickHouse(client *ch.Client, config Config) (*ClickHouseStore, error) {
@@ -77,7 +81,18 @@ func NewClickHouse(client *ch.Client, config Config) (*ClickHouseStore, error) {
 			return nil, fmt.Errorf("invalid Kakao %s table identifier", name)
 		}
 	}
-	return &ClickHouseStore{Client: client, Config: config}, nil
+	if config.RawWriteTimeout < 60*time.Second || config.RawWriteTimeout > 15*time.Minute {
+		config.RawWriteTimeout = 660 * time.Second
+	}
+	rawInsertClient := *client
+	if client.HTTPClient == nil {
+		rawInsertClient.HTTPClient = &http.Client{Timeout: config.RawWriteTimeout}
+	} else {
+		rawHTTPClient := *client.HTTPClient
+		rawHTTPClient.Timeout = config.RawWriteTimeout
+		rawInsertClient.HTTPClient = &rawHTTPClient
+	}
+	return &ClickHouseStore{Client: client, RawInsertClient: &rawInsertClient, Config: config}, nil
 }
 
 type StoreError struct {
@@ -357,7 +372,7 @@ func (s *ClickHouseStore) InsertRawRows(ctx context.Context, rows []map[string]a
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := s.Client.InsertJSONEachRow(s.Config.RawTable, rows); err != nil {
+	if err := s.RawInsertClient.InsertJSONEachRow(s.Config.RawTable, rows); err != nil {
 		return sanitizeStoreError("insert_raw", err)
 	}
 	return nil
@@ -573,6 +588,14 @@ func allowedErrorCategory(category string) string {
 
 func normalizeQuery(value string) string {
 	return strings.Join(strings.Fields(value), " ")
+}
+
+func rawWriteTimeoutFromEnv() time.Duration {
+	seconds := envx.Int("KAKAO_CLICKHOUSE_RAW_WRITE_TIMEOUT_SECONDS", 660)
+	if seconds < 60 || seconds > 900 {
+		seconds = 660
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 func cleanStrings(values []string) []string {

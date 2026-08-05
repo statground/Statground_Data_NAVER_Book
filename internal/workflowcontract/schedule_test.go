@@ -69,6 +69,9 @@ func TestKakaoWorkflowAllowsOnlyApprovedClickHouseTransportTuples(t *testing.T) 
 	if count := strings.Count(text, `CH_PORT: ${{ steps.clickhouse_transport.outputs.port }}`); count != 2 {
 		t.Fatalf("derived ClickHouse port consumer count=%d, want collect and refresh", count)
 	}
+	if count := strings.Count(text, `KAKAO_CLICKHOUSE_RAW_WRITE_TIMEOUT_SECONDS: "660"`); count != 1 {
+		t.Fatalf("Kakao raw-write timeout count=%d, want exactly one bounded collector setting", count)
+	}
 	if !strings.Contains(text, `echo "port=$CH_PORT" >> "$GITHUB_OUTPUT"`) {
 		t.Fatal("Kakao collector does not expose the validated ClickHouse port to downstream steps")
 	}

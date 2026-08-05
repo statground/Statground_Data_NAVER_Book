@@ -1,7 +1,7 @@
 name: Kakao Book Runtime Verification Once
 
-# Final verification mirrors the scheduled workflow's discovery inputs and
-# exercises the manual post-collection catalog refresh path.
+# Retry 5 validates the bounded raw-insert timeout against the scheduled
+# workflow's discovery inputs and manual catalog refresh path.
 
 on:
   push:

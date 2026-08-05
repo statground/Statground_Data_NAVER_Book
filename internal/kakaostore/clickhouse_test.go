@@ -25,6 +25,7 @@ func TestConfigFromEnvDefaults(t *testing.T) {
 		"KAKAO_QUERY_FRONTIER_LOCAL_TABLE",
 		"KAKAO_PROVIDER_LATEST_TABLE",
 		"KAKAO_BOOK_CURRENT_VIEW",
+		"KAKAO_CLICKHOUSE_RAW_WRITE_TIMEOUT_SECONDS",
 		"KAKAO_REQUIRE_CLICKHOUSE_HTTPS",
 	} {
 		t.Setenv(name, "")
@@ -34,8 +35,42 @@ func TestConfigFromEnvDefaults(t *testing.T) {
 		config.CallLogTable != "Data_Book_KAKAO_Log.kakao_api_call_log" ||
 		config.FrontierTable != "Data_Book_KAKAO_Log.kakao_query_frontier" ||
 		config.ProviderLatestTable != "Data_Book_Service.book_provider_latest" ||
+		config.RawWriteTimeout != 660*time.Second ||
 		!config.RequireHTTPS {
 		t.Fatalf("unexpected default config: %#v", config)
+	}
+}
+
+func TestNewClickHouseScopesLongTimeoutToRawInsertClient(t *testing.T) {
+	client := testClient()
+	client.HTTPClient = &http.Client{Timeout: 60 * time.Second}
+	config := ConfigFromEnv()
+	config.RawWriteTimeout = 7 * time.Minute
+	store, err := NewClickHouse(client, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.RawInsertClient == store.Client || store.RawInsertClient.HTTPClient == store.Client.HTTPClient {
+		t.Fatal("raw insert timeout must use cloned clients")
+	}
+	if store.RawInsertClient.HTTPClient.Timeout != 7*time.Minute {
+		t.Fatalf("raw insert timeout=%s, want 7m", store.RawInsertClient.HTTPClient.Timeout)
+	}
+	if store.Client.HTTPClient.Timeout != 60*time.Second {
+		t.Fatalf("read/log client timeout changed to %s", store.Client.HTTPClient.Timeout)
+	}
+}
+
+func TestRawWriteTimeoutEnvIsBounded(t *testing.T) {
+	t.Setenv("KAKAO_CLICKHOUSE_RAW_WRITE_TIMEOUT_SECONDS", "360")
+	if got := rawWriteTimeoutFromEnv(); got != 360*time.Second {
+		t.Fatalf("raw write timeout=%s, want 6m", got)
+	}
+	for _, invalid := range []string{"59", "901", "invalid"} {
+		t.Setenv("KAKAO_CLICKHOUSE_RAW_WRITE_TIMEOUT_SECONDS", invalid)
+		if got := rawWriteTimeoutFromEnv(); got != 660*time.Second {
+			t.Fatalf("raw write timeout for %q=%s, want 11m fallback", invalid, got)
+		}
 	}
 }
 
