@@ -180,6 +180,11 @@ jobs:
           case "$CH_HOST" in
             *://*) echo "::error::ClickHouse host must be a hostname without a URL scheme"; exit 1 ;;
           esac
+          case "$CH_HOST" in
+            *:* ) echo "::error::ClickHouse TLS endpoint must use a certificate hostname instead of an IP address"; exit 1 ;;
+            *[!0-9.]* ) ;;
+            * ) echo "::error::ClickHouse TLS endpoint must use a certificate hostname instead of an IP address"; exit 1 ;;
+          esac
           test "$normalized_protocol" = "https" || { echo "::error::ClickHouse TLS protocol is required"; exit 1; }
           test "$CH_PORT" = "443" || { echo "::error::ClickHouse TLS endpoint must use port 443"; exit 1; }
           test -z "$CH_HTTP_URL_PATH" || { echo "::error::ClickHouse TLS endpoint path must be empty"; exit 1; }

@@ -48,6 +48,7 @@ func TestKakaoWorkflowRequiresApprovedTLSEndpointTuple(t *testing.T) {
 	text := readWorkflow(t, "../../.github/workflows/kakao_book_collect.yml")
 	for _, contract := range []string{
 		"ClickHouse host must be a hostname without a URL scheme",
+		"ClickHouse TLS endpoint must use a certificate hostname instead of an IP address",
 		"ClickHouse TLS protocol is required",
 		"ClickHouse TLS endpoint must use port 443",
 		"ClickHouse TLS endpoint path must be empty",
