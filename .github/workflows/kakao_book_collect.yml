@@ -169,14 +169,13 @@ jobs:
               ;;
           esac
 
-      - name: Validate ClickHouse approved transport contract
+      - name: Resolve ClickHouse approved transport contract
+        id: clickhouse_transport
         env:
           CH_HOST: ${{ secrets.CLICKHOUSE_HOST }}
           CH_PORT: ${{ secrets.CLICKHOUSE_PORT || '443' }}
-          CH_PROTOCOL: ${{ secrets.CLICKHOUSE_PROTOCOL || 'https' }}
           CH_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH }}
         run: |
-          normalized_protocol="$(printf '%s' "$CH_PROTOCOL" | tr '[:upper:]' '[:lower:]')"
           case "$CH_HOST" in
             *://*) echo "::error::ClickHouse host must be a hostname without a URL scheme"; exit 1 ;;
           esac
@@ -202,12 +201,12 @@ jobs:
           )"
 
           if [ "$host_kind" = "ip" ]; then
-            test "$normalized_protocol" = "http" || { echo "::error::Approved ClickHouse IP endpoint requires HTTP"; exit 1; }
             test "$CH_PORT" != "443" || { echo "::error::Approved ClickHouse IP/HTTP endpoint requires its explicit non-TLS port"; exit 1; }
+            echo "protocol=http" >> "$GITHUB_OUTPUT"
             echo "::warning::Approved legacy ClickHouse IP/HTTP transport is active; credentials and payloads are not TLS-protected"
           else
-            test "$normalized_protocol" = "https" || { echo "::error::ClickHouse hostname endpoint requires HTTPS"; exit 1; }
             test "$CH_PORT" = "443" || { echo "::error::ClickHouse hostname/HTTPS endpoint requires port 443"; exit 1; }
+            echo "protocol=https" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Validate ClickHouse credentials
@@ -226,7 +225,7 @@ jobs:
           CH_PORT: ${{ secrets.CLICKHOUSE_PORT || '8123' }}
           CH_USER: ${{ secrets.CLICKHOUSE_USER }}
           CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
-          CH_PROTOCOL: ${{ secrets.CLICKHOUSE_PROTOCOL || 'https' }}
+          CH_PROTOCOL: ${{ steps.clickhouse_transport.outputs.protocol }}
           CH_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH }}
           CH_DATABASE: Data_Book_KAKAO_Raw
         run: go run -mod=mod ./cmd/collect_kakao
@@ -238,7 +237,7 @@ jobs:
           CH_PORT: ${{ secrets.CLICKHOUSE_PORT || '8123' }}
           CH_USER: ${{ secrets.CLICKHOUSE_USER }}
           CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
-          CH_PROTOCOL: ${{ secrets.CLICKHOUSE_PROTOCOL || 'https' }}
+          CH_PROTOCOL: ${{ steps.clickhouse_transport.outputs.protocol }}
           CH_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH }}
           CH_DATABASE: Data_Book_Service
           BOOK_PROVIDER_REFRESH_VIEW: Data_Book_Service.mv_book_catalog_latest_refresh

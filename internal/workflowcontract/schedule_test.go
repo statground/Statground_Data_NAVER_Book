@@ -50,11 +50,11 @@ func TestKakaoWorkflowAllowsOnlyApprovedClickHouseTransportTuples(t *testing.T) 
 	for _, contract := range []string{
 		"ClickHouse host must be a hostname without a URL scheme",
 		"ClickHouse endpoint path must be empty",
-		"Approved ClickHouse IP endpoint requires HTTP",
 		"Approved ClickHouse IP/HTTP endpoint requires its explicit non-TLS port",
-		"ClickHouse hostname endpoint requires HTTPS",
 		"ClickHouse hostname/HTTPS endpoint requires port 443",
 		"Approved legacy ClickHouse IP/HTTP transport is active",
+		`echo "protocol=http" >> "$GITHUB_OUTPUT"`,
+		`echo "protocol=https" >> "$GITHUB_OUTPUT"`,
 	} {
 		if !strings.Contains(text, contract) {
 			t.Errorf("Kakao workflow is missing approved transport contract %q", contract)
@@ -62,6 +62,12 @@ func TestKakaoWorkflowAllowsOnlyApprovedClickHouseTransportTuples(t *testing.T) 
 	}
 	if count := strings.Count(text, `KAKAO_REQUIRE_CLICKHOUSE_HTTPS: "false"`); count != 1 {
 		t.Fatalf("Kakao HTTP override count=%d, want exactly one collector-step override", count)
+	}
+	if count := strings.Count(text, `CH_PROTOCOL: ${{ steps.clickhouse_transport.outputs.protocol }}`); count != 2 {
+		t.Fatalf("derived ClickHouse protocol consumer count=%d, want collect and refresh", count)
+	}
+	if strings.Contains(text, `CH_PROTOCOL: ${{ secrets.CLICKHOUSE_PROTOCOL`) {
+		t.Fatal("Kakao collector still trusts the stale protocol secret instead of the approved host tuple")
 	}
 }
 
