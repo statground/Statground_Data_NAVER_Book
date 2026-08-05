@@ -530,6 +530,29 @@ func ErrorStage(err error) string {
 	}
 }
 
+// ErrorReason preserves only a closed transport/query category produced by
+// kakaostore. Raw ClickHouse bodies and driver errors remain suppressed.
+func ErrorReason(err error) string {
+	var storeErr *kakaostore.StoreError
+	if !errors.As(err, &storeErr) {
+		return ""
+	}
+	switch storeErr.Reason {
+	case "query_rejected",
+		"auth_or_permission",
+		"object_unavailable",
+		"read_timeout",
+		"query_admission",
+		"server_unavailable",
+		"transport_timeout",
+		"transport_interrupted",
+		"request_failed":
+		return storeErr.Reason
+	default:
+		return ""
+	}
+}
+
 func storeErrorCategory(err error) string {
 	var storeErr *kakaostore.StoreError
 	if errors.As(err, &storeErr) {

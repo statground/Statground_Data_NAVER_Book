@@ -275,6 +275,29 @@ func TestErrorStageUsesClosedStoreOperationAllowlist(t *testing.T) {
 	}
 }
 
+func TestErrorReasonUsesClosedStoreReasonAllowlist(t *testing.T) {
+	for _, reason := range []string{
+		"query_rejected",
+		"auth_or_permission",
+		"object_unavailable",
+		"read_timeout",
+		"query_admission",
+		"server_unavailable",
+		"transport_timeout",
+		"transport_interrupted",
+		"request_failed",
+	} {
+		err := &kakaostore.StoreError{Operation: "existing_hashes", Category: "clickhouse_contract", Reason: reason}
+		if got := ErrorReason(err); got != reason {
+			t.Fatalf("ErrorReason(%q)=%q", reason, got)
+		}
+	}
+	unsafe := &kakaostore.StoreError{Operation: "existing_hashes", Category: "clickhouse_contract", Reason: "raw SQL"}
+	if got := ErrorReason(unsafe); got != "" {
+		t.Fatalf("unsafe reason escaped as %q", got)
+	}
+}
+
 func testCollector(t *testing.T, client *kakao.Client, store *fakeStore) *Collector {
 	t.Helper()
 	config := quota.DefaultConfig()

@@ -47,8 +47,8 @@ func TestOperationalHoldDurationsCanBeConfigured(t *testing.T) {
 }
 
 func TestSafeErrorIncludesOnlyPreSanitizedStage(t *testing.T) {
-	err := (&safeError{category: "clickhouse_contract", stage: "insert_call_log"}).Error()
-	if err != "kakao book collection failed category=clickhouse_contract stage=insert_call_log" {
+	err := (&safeError{category: "clickhouse_contract", stage: "insert_call_log", reason: "read_timeout"}).Error()
+	if err != "kakao book collection failed category=clickhouse_contract stage=insert_call_log reason=read_timeout" {
 		t.Fatalf("safe error=%q", err)
 	}
 }

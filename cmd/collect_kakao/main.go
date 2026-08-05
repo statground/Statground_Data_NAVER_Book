@@ -20,6 +20,7 @@ import (
 type safeError struct {
 	category string
 	stage    string
+	reason   string
 }
 
 func (e *safeError) Error() string {
@@ -30,6 +31,9 @@ func (e *safeError) Error() string {
 	message := "kakao book collection failed category=" + category
 	if stage := strings.TrimSpace(e.stage); stage != "" {
 		message += " stage=" + stage
+	}
+	if reason := strings.TrimSpace(e.reason); reason != "" {
+		message += " reason=" + reason
 	}
 	return message
 }
@@ -65,17 +69,17 @@ func run() error {
 		return &safeError{category: "clickhouse_contract"}
 	}
 	if err := store.Validate(ctx); err != nil {
-		return &safeError{category: kakaocollector.ErrorCategory(err), stage: kakaocollector.ErrorStage(err)}
+		return &safeError{category: kakaocollector.ErrorCategory(err), stage: kakaocollector.ErrorStage(err), reason: kakaocollector.ErrorReason(err)}
 	}
 
 	now := util.NowKST()
 	observedCalls, err := store.ObservedCallsToday(ctx, now)
 	if err != nil {
-		return &safeError{category: kakaocollector.ErrorCategory(err), stage: kakaocollector.ErrorStage(err)}
+		return &safeError{category: kakaocollector.ErrorCategory(err), stage: kakaocollector.ErrorStage(err), reason: kakaocollector.ErrorReason(err)}
 	}
 	stop, err := store.LatestQuotaStop(ctx)
 	if err != nil {
-		return &safeError{category: kakaocollector.ErrorCategory(err), stage: kakaocollector.ErrorStage(err)}
+		return &safeError{category: kakaocollector.ErrorCategory(err), stage: kakaocollector.ErrorStage(err), reason: kakaocollector.ErrorReason(err)}
 	}
 	quotaHold := durationHours("KAKAO_QUOTA_EXHAUSTED_HOLD_HOURS", 24*time.Hour)
 	rateLimitHold := durationMinutes("KAKAO_RATE_LIMIT_HOLD_MINUTES", 30*time.Minute)
@@ -169,7 +173,7 @@ func run() error {
 		total.ChangedISBN += result.ChangedISBN
 		total.Duplicates += result.Duplicates
 		if collectErr != nil {
-			return &safeError{category: result.ErrorCategory, stage: kakaocollector.ErrorStage(collectErr)}
+			return &safeError{category: result.ErrorCategory, stage: kakaocollector.ErrorStage(collectErr), reason: kakaocollector.ErrorReason(collectErr)}
 		}
 		if runtimeBudget.IsExhausted() {
 			break

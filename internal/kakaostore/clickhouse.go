@@ -81,10 +81,15 @@ func NewClickHouse(client *ch.Client, config Config) (*ClickHouseStore, error) {
 type StoreError struct {
 	Operation string
 	Category  string
+	Reason    string
 }
 
 func (e *StoreError) Error() string {
-	return fmt.Sprintf("kakao clickhouse operation failed operation=%s category=%s", e.Operation, e.Category)
+	message := fmt.Sprintf("kakao clickhouse operation failed operation=%s category=%s", e.Operation, e.Category)
+	if e.Reason != "" {
+		message += " reason=" + e.Reason
+	}
+	return message
 }
 
 func (s *ClickHouseStore) Validate(ctx context.Context) error {
@@ -450,7 +455,41 @@ func sanitizeStoreError(operation string, err error) error {
 	if retryableStoreError(err) {
 		category = "clickhouse_transient"
 	}
-	return &StoreError{Operation: operation, Category: category}
+	return &StoreError{Operation: operation, Category: category, Reason: safeStoreErrorReason(err)}
+}
+
+func safeStoreErrorReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	message := strings.ToLower(err.Error())
+	for marker, reason := range map[string]string{
+		"http status=400": "query_rejected",
+		"http status=401": "auth_or_permission",
+		"http status=403": "auth_or_permission",
+		"http status=404": "object_unavailable",
+		"http status=408": "read_timeout",
+		"http status=429": "query_admission",
+		"http status=500": "server_unavailable",
+		"http status=502": "server_unavailable",
+		"http status=503": "server_unavailable",
+		"http status=504": "server_unavailable",
+	} {
+		if strings.Contains(message, marker) {
+			return reason
+		}
+	}
+	for _, marker := range []string{"timeout", "deadline"} {
+		if strings.Contains(message, marker) {
+			return "transport_timeout"
+		}
+	}
+	for _, marker := range []string{"connection reset", "connection refused", "broken pipe", "unexpected eof"} {
+		if strings.Contains(message, marker) {
+			return "transport_interrupted"
+		}
+	}
+	return "request_failed"
 }
 
 func retryableStoreError(err error) bool {

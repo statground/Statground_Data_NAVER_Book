@@ -1,6 +1,6 @@
 name: Kakao Book Runtime Verification Once
 
-# Retry 2 adds only a closed, non-sensitive collector stage to failures.
+# Retry 3 adds only closed, non-sensitive collector stage/reason labels.
 
 on:
   push:

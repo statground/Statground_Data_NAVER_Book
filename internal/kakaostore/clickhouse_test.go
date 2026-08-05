@@ -2,6 +2,7 @@ package kakaostore
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -98,6 +99,21 @@ func TestParseTimeAndAllowlist(t *testing.T) {
 	}
 	if got := nullableTime(time.Time{}); got != nil {
 		t.Fatalf("zero nullable time=%v", got)
+	}
+}
+
+func TestSafeStoreErrorReasonDoesNotExposeResponseBodies(t *testing.T) {
+	for raw, want := range map[string]string{
+		"clickhouse http status=400 secret query text": "query_rejected",
+		"clickhouse http status=403 internal object":   "auth_or_permission",
+		"clickhouse http status=408":                   "read_timeout",
+		"context deadline exceeded for private host":   "transport_timeout",
+		"read: connection reset by peer":               "transport_interrupted",
+		"unclassified secret driver failure":           "request_failed",
+	} {
+		if got := safeStoreErrorReason(errors.New(raw)); got != want {
+			t.Fatalf("safeStoreErrorReason(%q)=%q want=%q", raw, got, want)
+		}
 	}
 }
 
