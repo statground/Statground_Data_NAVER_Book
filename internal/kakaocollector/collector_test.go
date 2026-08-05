@@ -244,6 +244,37 @@ func TestRespectFrontierDueSkipsWithoutExternalRequest(t *testing.T) {
 	}
 }
 
+func TestErrorStageUsesClosedStoreOperationAllowlist(t *testing.T) {
+	for _, stage := range []string{
+		"preflight_connection",
+		"preflight_table",
+		"preflight_grant",
+		"observed_calls",
+		"latest_quota_stop",
+		"load_frontier",
+		"insert_call_log",
+		"complete_call_log",
+		"existing_hashes",
+		"insert_raw",
+		"insert_collect_log",
+		"insert_frontier",
+	} {
+		err := &kakaostore.StoreError{Operation: stage, Category: "clickhouse_contract"}
+		if got := ErrorStage(err); got != stage {
+			t.Fatalf("ErrorStage(%q)=%q", stage, got)
+		}
+	}
+
+	for _, err := range []error{
+		fmt.Errorf("raw endpoint and SQL must not escape"),
+		&kakaostore.StoreError{Operation: "SELECT secret FROM internal", Category: "clickhouse_contract"},
+	} {
+		if got := ErrorStage(err); got != "" {
+			t.Fatalf("unsafe error stage escaped as %q", got)
+		}
+	}
+}
+
 func testCollector(t *testing.T, client *kakao.Client, store *fakeStore) *Collector {
 	t.Helper()
 	config := quota.DefaultConfig()

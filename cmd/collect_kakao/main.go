@@ -19,6 +19,7 @@ import (
 
 type safeError struct {
 	category string
+	stage    string
 }
 
 func (e *safeError) Error() string {
@@ -26,7 +27,11 @@ func (e *safeError) Error() string {
 	if category == "" {
 		category = "unknown"
 	}
-	return "kakao book collection failed category=" + category
+	message := "kakao book collection failed category=" + category
+	if stage := strings.TrimSpace(e.stage); stage != "" {
+		message += " stage=" + stage
+	}
+	return message
 }
 
 func main() {
@@ -60,17 +65,17 @@ func run() error {
 		return &safeError{category: "clickhouse_contract"}
 	}
 	if err := store.Validate(ctx); err != nil {
-		return &safeError{category: kakaocollector.ErrorCategory(err)}
+		return &safeError{category: kakaocollector.ErrorCategory(err), stage: kakaocollector.ErrorStage(err)}
 	}
 
 	now := util.NowKST()
 	observedCalls, err := store.ObservedCallsToday(ctx, now)
 	if err != nil {
-		return &safeError{category: kakaocollector.ErrorCategory(err)}
+		return &safeError{category: kakaocollector.ErrorCategory(err), stage: kakaocollector.ErrorStage(err)}
 	}
 	stop, err := store.LatestQuotaStop(ctx)
 	if err != nil {
-		return &safeError{category: kakaocollector.ErrorCategory(err)}
+		return &safeError{category: kakaocollector.ErrorCategory(err), stage: kakaocollector.ErrorStage(err)}
 	}
 	quotaHold := durationHours("KAKAO_QUOTA_EXHAUSTED_HOLD_HOURS", 24*time.Hour)
 	rateLimitHold := durationMinutes("KAKAO_RATE_LIMIT_HOLD_MINUTES", 30*time.Minute)
@@ -164,7 +169,7 @@ func run() error {
 		total.ChangedISBN += result.ChangedISBN
 		total.Duplicates += result.Duplicates
 		if collectErr != nil {
-			return &safeError{category: result.ErrorCategory}
+			return &safeError{category: result.ErrorCategory, stage: kakaocollector.ErrorStage(collectErr)}
 		}
 		if runtimeBudget.IsExhausted() {
 			break

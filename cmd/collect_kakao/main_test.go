@@ -45,3 +45,10 @@ func TestOperationalHoldDurationsCanBeConfigured(t *testing.T) {
 		t.Fatalf("rate hold=%s", got)
 	}
 }
+
+func TestSafeErrorIncludesOnlyPreSanitizedStage(t *testing.T) {
+	err := (&safeError{category: "clickhouse_contract", stage: "insert_call_log"}).Error()
+	if err != "kakao book collection failed category=clickhouse_contract stage=insert_call_log" {
+		t.Fatalf("safe error=%q", err)
+	}
+}

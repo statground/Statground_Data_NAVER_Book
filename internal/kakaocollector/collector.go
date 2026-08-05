@@ -504,6 +504,32 @@ func ErrorCategory(err error) string {
 	return storeErrorCategory(err)
 }
 
+// ErrorStage returns only a closed, non-sensitive operation label. It never
+// includes an endpoint, table name, SQL text, or driver response.
+func ErrorStage(err error) string {
+	var storeErr *kakaostore.StoreError
+	if !errors.As(err, &storeErr) {
+		return ""
+	}
+	switch storeErr.Operation {
+	case "preflight_connection",
+		"preflight_table",
+		"preflight_grant",
+		"observed_calls",
+		"latest_quota_stop",
+		"load_frontier",
+		"insert_call_log",
+		"complete_call_log",
+		"existing_hashes",
+		"insert_raw",
+		"insert_collect_log",
+		"insert_frontier":
+		return storeErr.Operation
+	default:
+		return ""
+	}
+}
+
 func storeErrorCategory(err error) string {
 	var storeErr *kakaostore.StoreError
 	if errors.As(err, &storeErr) {
