@@ -26,6 +26,8 @@ func TestConfigFromEnvDefaults(t *testing.T) {
 		"KAKAO_PROVIDER_LATEST_TABLE",
 		"KAKAO_BOOK_CURRENT_VIEW",
 		"KAKAO_CLICKHOUSE_RAW_WRITE_TIMEOUT_SECONDS",
+		"CLICKHOUSE_PREFLIGHT_RETRY_BUDGET_SECONDS",
+		"CLICKHOUSE_PREFLIGHT_RETRY_BACKOFF_SECONDS",
 		"KAKAO_REQUIRE_CLICKHOUSE_HTTPS",
 	} {
 		t.Setenv(name, "")
@@ -36,6 +38,8 @@ func TestConfigFromEnvDefaults(t *testing.T) {
 		config.FrontierTable != "Data_Book_KAKAO_Log.kakao_query_frontier" ||
 		config.ProviderLatestTable != "Data_Book_Service.book_provider_latest" ||
 		config.RawWriteTimeout != 660*time.Second ||
+		config.PreflightRetryBudget != 90*time.Second ||
+		config.PreflightRetryBackoff != 5*time.Second ||
 		!config.RequireHTTPS {
 		t.Fatalf("unexpected default config: %#v", config)
 	}
@@ -71,6 +75,79 @@ func TestRawWriteTimeoutEnvIsBounded(t *testing.T) {
 		if got := rawWriteTimeoutFromEnv(); got != 660*time.Second {
 			t.Fatalf("raw write timeout for %q=%s, want 11m fallback", invalid, got)
 		}
+	}
+}
+
+func TestPreflightRetryEnvIsBounded(t *testing.T) {
+	t.Setenv("CLICKHOUSE_PREFLIGHT_RETRY_BUDGET_SECONDS", "120")
+	t.Setenv("CLICKHOUSE_PREFLIGHT_RETRY_BACKOFF_SECONDS", "3")
+	config := ConfigFromEnv()
+	if config.PreflightRetryBudget != 120*time.Second || config.PreflightRetryBackoff != 3*time.Second {
+		t.Fatalf("preflight retry config=%s/%s, want 120s/3s", config.PreflightRetryBudget, config.PreflightRetryBackoff)
+	}
+	for _, invalid := range []string{"0", "601", "invalid"} {
+		t.Setenv("CLICKHOUSE_PREFLIGHT_RETRY_BUDGET_SECONDS", invalid)
+		if got := ConfigFromEnv().PreflightRetryBudget; got != 90*time.Second {
+			t.Fatalf("preflight budget for %q=%s, want 90s", invalid, got)
+		}
+	}
+}
+
+func TestRetryPreflightRecoversTransientFailure(t *testing.T) {
+	store := &ClickHouseStore{Config: Config{PreflightRetryBackoff: time.Millisecond}}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	calls := 0
+	err := store.retryPreflight(ctx, func(context.Context) error {
+		calls++
+		if calls < 3 {
+			return errors.New("connection refused")
+		}
+		return nil
+	})
+	if err != nil || calls != 3 {
+		t.Fatalf("calls=%d error=%v, want recovery on third attempt", calls, err)
+	}
+}
+
+func TestRetryPreflightStopsAtContextBudget(t *testing.T) {
+	store := &ClickHouseStore{Config: Config{PreflightRetryBackoff: 5 * time.Millisecond}}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	calls := 0
+	err := store.retryPreflight(ctx, func(context.Context) error {
+		calls++
+		return errors.New("connection refused")
+	})
+	if err == nil || calls < 2 || time.Since(started) > 250*time.Millisecond {
+		t.Fatalf("calls=%d elapsed=%s error=%v, want bounded transient retries", calls, time.Since(started), err)
+	}
+}
+
+func TestRetryPreflightFailsContractImmediately(t *testing.T) {
+	for _, message := range []string{
+		"clickhouse http status=401",
+		"clickhouse http status=500 code=60",
+	} {
+		store := &ClickHouseStore{Config: Config{PreflightRetryBackoff: time.Millisecond}}
+		calls := 0
+		err := store.retryPreflight(context.Background(), func(context.Context) error {
+			calls++
+			return errors.New(message)
+		})
+		if err == nil || calls != 1 {
+			t.Fatalf("message=%q calls=%d error=%v, want immediate contract failure", message, calls, err)
+		}
+	}
+}
+
+func TestRetryPreflightHonorsCanceledContext(t *testing.T) {
+	store := &ClickHouseStore{Config: Config{PreflightRetryBackoff: time.Second}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := store.retryPreflight(ctx, func(context.Context) error { return nil }); !errors.Is(err, context.Canceled) {
+		t.Fatalf("error=%v, want context.Canceled", err)
 	}
 }
 

@@ -20,39 +20,46 @@ import (
 	"statground_naver_book_go/internal/util"
 )
 
-var tableIdentifierPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$`)
+var (
+	tableIdentifierPattern     = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$`)
+	storeClickHouseCodePattern = regexp.MustCompile(`\bcode=([0-9]+)\b`)
+)
 
 type Config struct {
-	RawTable            string
-	RawLocalTable       string
-	CollectLogTable     string
-	CollectLocalTable   string
-	CallLogTable        string
-	CallLocalTable      string
-	FrontierTable       string
-	FrontierLocal       string
-	ProviderLatestTable string
-	RawWriteTimeout     time.Duration
-	Source              string
-	LineageTopic        string
-	RequireHTTPS        bool
+	RawTable              string
+	RawLocalTable         string
+	CollectLogTable       string
+	CollectLocalTable     string
+	CallLogTable          string
+	CallLocalTable        string
+	FrontierTable         string
+	FrontierLocal         string
+	ProviderLatestTable   string
+	RawWriteTimeout       time.Duration
+	PreflightRetryBudget  time.Duration
+	PreflightRetryBackoff time.Duration
+	Source                string
+	LineageTopic          string
+	RequireHTTPS          bool
 }
 
 func ConfigFromEnv() Config {
 	return Config{
-		RawTable:            envx.String("KAKAO_RAW_TABLE", "Data_Book_KAKAO_Raw.kakao_book_raw"),
-		RawLocalTable:       envx.String("KAKAO_RAW_LOCAL_TABLE", "Data_Book_KAKAO_Raw.kakao_book_raw_local"),
-		CollectLogTable:     envx.String("KAKAO_COLLECT_LOG_TABLE", "Data_Book_KAKAO_Log.kakao_collect_log"),
-		CollectLocalTable:   envx.String("KAKAO_COLLECT_LOG_LOCAL_TABLE", "Data_Book_KAKAO_Log.kakao_collect_log_local"),
-		CallLogTable:        envx.String("KAKAO_API_CALL_LOG_TABLE", "Data_Book_KAKAO_Log.kakao_api_call_log"),
-		CallLocalTable:      envx.String("KAKAO_API_CALL_LOG_LOCAL_TABLE", "Data_Book_KAKAO_Log.kakao_api_call_log_local"),
-		FrontierTable:       envx.String("KAKAO_QUERY_FRONTIER_TABLE", "Data_Book_KAKAO_Log.kakao_query_frontier"),
-		FrontierLocal:       envx.String("KAKAO_QUERY_FRONTIER_LOCAL_TABLE", "Data_Book_KAKAO_Log.kakao_query_frontier_local"),
-		ProviderLatestTable: envx.String("KAKAO_PROVIDER_LATEST_TABLE", "Data_Book_Service.book_provider_latest"),
-		RawWriteTimeout:     rawWriteTimeoutFromEnv(),
-		Source:              envx.String("PRODUCER_SOURCE", "github_actions"),
-		LineageTopic:        envx.String("KAKAO_DIRECT_INGEST_TOPIC", "direct.statground_book.kakao_book"),
-		RequireHTTPS:        boolEnv("KAKAO_REQUIRE_CLICKHOUSE_HTTPS", true),
+		RawTable:              envx.String("KAKAO_RAW_TABLE", "Data_Book_KAKAO_Raw.kakao_book_raw"),
+		RawLocalTable:         envx.String("KAKAO_RAW_LOCAL_TABLE", "Data_Book_KAKAO_Raw.kakao_book_raw_local"),
+		CollectLogTable:       envx.String("KAKAO_COLLECT_LOG_TABLE", "Data_Book_KAKAO_Log.kakao_collect_log"),
+		CollectLocalTable:     envx.String("KAKAO_COLLECT_LOG_LOCAL_TABLE", "Data_Book_KAKAO_Log.kakao_collect_log_local"),
+		CallLogTable:          envx.String("KAKAO_API_CALL_LOG_TABLE", "Data_Book_KAKAO_Log.kakao_api_call_log"),
+		CallLocalTable:        envx.String("KAKAO_API_CALL_LOG_LOCAL_TABLE", "Data_Book_KAKAO_Log.kakao_api_call_log_local"),
+		FrontierTable:         envx.String("KAKAO_QUERY_FRONTIER_TABLE", "Data_Book_KAKAO_Log.kakao_query_frontier"),
+		FrontierLocal:         envx.String("KAKAO_QUERY_FRONTIER_LOCAL_TABLE", "Data_Book_KAKAO_Log.kakao_query_frontier_local"),
+		ProviderLatestTable:   envx.String("KAKAO_PROVIDER_LATEST_TABLE", "Data_Book_Service.book_provider_latest"),
+		RawWriteTimeout:       rawWriteTimeoutFromEnv(),
+		PreflightRetryBudget:  boundedSecondsFromEnv("CLICKHOUSE_PREFLIGHT_RETRY_BUDGET_SECONDS", 90, 1, 600),
+		PreflightRetryBackoff: boundedSecondsFromEnv("CLICKHOUSE_PREFLIGHT_RETRY_BACKOFF_SECONDS", 5, 1, 30),
+		Source:                envx.String("PRODUCER_SOURCE", "github_actions"),
+		LineageTopic:          envx.String("KAKAO_DIRECT_INGEST_TOPIC", "direct.statground_book.kakao_book"),
+		RequireHTTPS:          boolEnv("KAKAO_REQUIRE_CLICKHOUSE_HTTPS", true),
 	}
 }
 
@@ -83,6 +90,15 @@ func NewClickHouse(client *ch.Client, config Config) (*ClickHouseStore, error) {
 	}
 	if config.RawWriteTimeout < 60*time.Second || config.RawWriteTimeout > 15*time.Minute {
 		config.RawWriteTimeout = 660 * time.Second
+	}
+	if config.PreflightRetryBudget <= 0 || config.PreflightRetryBudget > 10*time.Minute {
+		config.PreflightRetryBudget = 90 * time.Second
+	}
+	if config.PreflightRetryBackoff <= 0 || config.PreflightRetryBackoff > 30*time.Second {
+		config.PreflightRetryBackoff = 5 * time.Second
+	}
+	if config.PreflightRetryBackoff > config.PreflightRetryBudget {
+		config.PreflightRetryBackoff = config.PreflightRetryBudget
 	}
 	rawInsertClient := *client
 	if client.HTTPClient == nil {
@@ -116,6 +132,8 @@ func (s *ClickHouseStore) Validate(ctx context.Context) error {
 	if err := s.validateConnectionBoundary(); err != nil {
 		return err
 	}
+	retryCtx, cancel := context.WithTimeout(ctx, s.Config.PreflightRetryBudget)
+	defer cancel()
 	writableTables := []string{
 		s.Config.RawTable,
 		s.Config.RawLocalTable,
@@ -127,17 +145,26 @@ func (s *ClickHouseStore) Validate(ctx context.Context) error {
 		s.Config.FrontierLocal,
 	}
 	for _, table := range append(writableTables, s.Config.ProviderLatestTable) {
-		if err := s.tableExists(ctx, table); err != nil {
+		if err := s.tableExists(retryCtx, table); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return err
 		}
 	}
 	for _, table := range writableTables {
-		if err := s.checkGrant(ctx, "INSERT", table); err != nil {
+		if err := s.checkGrant(retryCtx, "INSERT", table); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return err
 		}
 	}
 	for _, table := range []string{s.Config.CallLogTable, s.Config.FrontierTable, s.Config.ProviderLatestTable} {
-		if err := s.checkGrant(ctx, "SELECT", table); err != nil {
+		if err := s.checkGrant(retryCtx, "SELECT", table); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return err
 		}
 	}
@@ -450,34 +477,58 @@ func (s *ClickHouseStore) InsertFrontier(ctx context.Context, record FrontierRec
 }
 
 func (s *ClickHouseStore) tableExists(ctx context.Context, table string) error {
-	for attempt := 1; attempt <= 3; attempt++ {
-		exists, err := s.Client.TableExists(table)
-		if err == nil && exists {
-			return nil
+	err := s.retryPreflight(ctx, func(attemptCtx context.Context) error {
+		exists, queryErr := s.Client.TableExistsContext(attemptCtx, table)
+		if queryErr != nil {
+			return queryErr
 		}
-		if err == nil {
-			return &StoreError{Operation: "preflight_table", Category: "clickhouse_contract"}
+		if !exists {
+			return errPreflightTableMissing
 		}
-		if !retryableStoreError(err) || attempt == 3 {
-			return sanitizeStoreError("preflight_table", err)
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Duration(attempt) * time.Second):
-		}
+		return nil
+	})
+	if errors.Is(err, errPreflightTableMissing) {
+		return &StoreError{Operation: "preflight_table", Category: "clickhouse_contract"}
 	}
-	return &StoreError{Operation: "preflight_table", Category: "unknown"}
+	if err != nil {
+		return sanitizeStoreError("preflight_table", err)
+	}
+	return nil
 }
 
 func (s *ClickHouseStore) checkGrant(ctx context.Context, privilege, table string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := s.Client.Exec(fmt.Sprintf("CHECK GRANT %s ON %s", privilege, table)); err != nil {
+	err := s.retryPreflight(ctx, func(attemptCtx context.Context) error {
+		return s.Client.ExecContext(attemptCtx, fmt.Sprintf("CHECK GRANT %s ON %s", privilege, table))
+	})
+	if err != nil {
 		return sanitizeStoreError("preflight_grant", err)
 	}
 	return nil
+}
+
+var errPreflightTableMissing = errors.New("preflight table is missing")
+
+func (s *ClickHouseStore) retryPreflight(ctx context.Context, operation func(context.Context) error) error {
+	var lastErr error
+	for {
+		if err := ctx.Err(); err != nil {
+			if lastErr != nil {
+				return lastErr
+			}
+			return err
+		}
+		lastErr = operation(ctx)
+		if lastErr == nil || !retryableStoreError(lastErr) {
+			return lastErr
+		}
+		timer := time.NewTimer(s.Config.PreflightRetryBackoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return lastErr
+		case <-timer.C:
+		}
+	}
 }
 
 func (s *ClickHouseStore) validateConnectionBoundary() error {
@@ -516,6 +567,14 @@ func safeStoreErrorReason(err error) string {
 		return ""
 	}
 	message := strings.ToLower(err.Error())
+	if code := clickHouseErrorCode(message); code != 0 {
+		switch code {
+		case 497, 516:
+			return "auth_or_permission"
+		case 6, 27, 47, 60, 62, 81:
+			return "query_rejected"
+		}
+	}
 	for marker, reason := range map[string]string{
 		"http status=400": "query_rejected",
 		"http status=401": "auth_or_permission",
@@ -557,6 +616,14 @@ func retryableStoreError(err error) bool {
 		return true
 	}
 	message := strings.ToLower(err.Error())
+	if code := clickHouseErrorCode(message); code != 0 {
+		switch code {
+		case 6, 27, 47, 60, 62, 81, 497, 516:
+			return false
+		case 159, 202, 209, 210, 241, 242, 252, 394, 667, 999:
+			return true
+		}
+	}
 	for _, marker := range []string{
 		"timeout", "deadline", "connection reset", "connection refused",
 		"connection aborted", "broken pipe", "unexpected eof",
@@ -569,6 +636,15 @@ func retryableStoreError(err error) bool {
 		}
 	}
 	return false
+}
+
+func clickHouseErrorCode(message string) int {
+	matches := storeClickHouseCodePattern.FindStringSubmatch(strings.ToLower(message))
+	if len(matches) != 2 {
+		return 0
+	}
+	code, _ := strconv.Atoi(matches[1])
+	return code
 }
 
 func allowedErrorCategory(category string) string {
@@ -594,6 +670,14 @@ func rawWriteTimeoutFromEnv() time.Duration {
 	seconds := envx.Int("KAKAO_CLICKHOUSE_RAW_WRITE_TIMEOUT_SECONDS", 660)
 	if seconds < 60 || seconds > 900 {
 		seconds = 660
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func boundedSecondsFromEnv(name string, fallback, minimum, maximum int) time.Duration {
+	seconds := envx.Int(name, fallback)
+	if seconds < minimum || seconds > maximum {
+		seconds = fallback
 	}
 	return time.Duration(seconds) * time.Second
 }

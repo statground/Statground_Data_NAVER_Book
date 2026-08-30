@@ -72,6 +72,12 @@ func TestKakaoWorkflowAllowsOnlyApprovedClickHouseTransportTuples(t *testing.T) 
 	if count := strings.Count(text, `KAKAO_CLICKHOUSE_RAW_WRITE_TIMEOUT_SECONDS: "660"`); count != 1 {
 		t.Fatalf("Kakao raw-write timeout count=%d, want exactly one bounded collector setting", count)
 	}
+	if count := strings.Count(text, `CLICKHOUSE_PREFLIGHT_RETRY_BUDGET_SECONDS: "90"`); count != 1 {
+		t.Fatalf("Kakao preflight retry budget count=%d, want one job-level setting", count)
+	}
+	if count := strings.Count(text, `CLICKHOUSE_PREFLIGHT_RETRY_BACKOFF_SECONDS: "5"`); count != 1 {
+		t.Fatalf("Kakao preflight retry backoff count=%d, want one job-level setting", count)
+	}
 	if !strings.Contains(text, `echo "port=$CH_PORT" >> "$GITHUB_OUTPUT"`) {
 		t.Fatal("Kakao collector does not expose the validated ClickHouse port to downstream steps")
 	}

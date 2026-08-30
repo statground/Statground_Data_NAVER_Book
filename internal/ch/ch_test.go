@@ -1,11 +1,52 @@
 package ch
 
 import (
+	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 )
+
+func TestTableExistsContextHonorsCancellationBeforeTransport(t *testing.T) {
+	calls := 0
+	client := &Client{
+		Host:     "clickhouse.example.invalid",
+		Port:     8123,
+		Database: "Data_Book_KAKAO_Raw",
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			calls++
+			return nil, errors.New("transport should not be called")
+		})},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := client.TableExistsContext(ctx, "Data_Book_KAKAO_Raw.kakao_book_raw")
+	if !errors.Is(err, context.Canceled) || calls != 0 {
+		t.Fatalf("error=%v calls=%d, want canceled before transport", err, calls)
+	}
+}
+
+func TestClientHTTPErrorKeepsOnlyStatusAndClickHouseCode(t *testing.T) {
+	client := &Client{
+		Host:     "clickhouse.example.invalid",
+		Port:     8123,
+		Database: "Data_Book_KAKAO_Raw",
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusInternalServerError,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("Code: 60. DB::Exception: secret internal table")),
+				Request:    request,
+			}, nil
+		})},
+	}
+	err := client.Exec("SELECT 1")
+	if err == nil || err.Error() != "clickhouse http status=500 code=60" {
+		t.Fatalf("error=%v, want sanitized status and code", err)
+	}
+}
 
 func TestClientBaseURLUsesProtocolAndPath(t *testing.T) {
 	c := &Client{

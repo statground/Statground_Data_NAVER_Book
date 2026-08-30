@@ -3,6 +3,7 @@ package ch
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -18,7 +19,10 @@ import (
 	"statground_naver_book_go/internal/util"
 )
 
-var identifierPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+var (
+	identifierPattern          = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	clickHouseErrorCodePattern = regexp.MustCompile(`(?i)\bcode:\s*([0-9]+)\b`)
+)
 
 type Client struct {
 	Host       string
@@ -188,7 +192,14 @@ func allDigits(value string) bool {
 }
 
 func (c *Client) post(body string, extra url.Values) ([]byte, error) {
-	req, err := http.NewRequest(http.MethodPost, c.endpoint(extra), strings.NewReader(body))
+	return c.postContext(context.Background(), body, extra)
+}
+
+func (c *Client) postContext(ctx context.Context, body string, extra url.Values) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint(extra), strings.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -206,6 +217,9 @@ func (c *Client) post(body string, extra url.Values) ([]byte, error) {
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
+		if matches := clickHouseErrorCodePattern.FindSubmatch(payload); len(matches) == 2 {
+			return nil, fmt.Errorf("clickhouse http status=%d code=%s", resp.StatusCode, matches[1])
+		}
 		return nil, fmt.Errorf("clickhouse http status=%d", resp.StatusCode)
 	}
 	return payload, nil
@@ -220,7 +234,11 @@ func ensureJSONEachRow(sql string) string {
 }
 
 func (c *Client) Exec(sql string) error {
-	_, err := c.post(strings.TrimSpace(sql), nil)
+	return c.ExecContext(context.Background(), sql)
+}
+
+func (c *Client) ExecContext(ctx context.Context, sql string) error {
+	_, err := c.postContext(ctx, strings.TrimSpace(sql), nil)
 	return err
 }
 
@@ -233,7 +251,11 @@ func (c *Client) ExecSingleAttempt(sql string) error {
 }
 
 func (c *Client) QueryJSONEachRow(sql string) ([]map[string]any, error) {
-	payload, err := c.post(ensureJSONEachRow(sql), nil)
+	return c.QueryJSONEachRowContext(context.Background(), sql)
+}
+
+func (c *Client) QueryJSONEachRowContext(ctx context.Context, sql string) ([]map[string]any, error) {
+	payload, err := c.postContext(ctx, ensureJSONEachRow(sql), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -282,7 +304,11 @@ func (c *Client) QueryScalarInt(sql string) (int64, error) {
 }
 
 func (c *Client) QuerySingleRow(sql string) (map[string]any, error) {
-	rows, err := c.QueryJSONEachRow(sql)
+	return c.QuerySingleRowContext(context.Background(), sql)
+}
+
+func (c *Client) QuerySingleRowContext(ctx context.Context, sql string) (map[string]any, error) {
+	rows, err := c.QueryJSONEachRowContext(ctx, sql)
 	if err != nil {
 		return nil, err
 	}
@@ -293,7 +319,11 @@ func (c *Client) QuerySingleRow(sql string) (map[string]any, error) {
 }
 
 func (c *Client) QueryScalarValue(sql string) (any, error) {
-	row, err := c.QuerySingleRow(sql)
+	return c.QueryScalarValueContext(context.Background(), sql)
+}
+
+func (c *Client) QueryScalarValueContext(ctx context.Context, sql string) (any, error) {
+	row, err := c.QuerySingleRowContext(ctx, sql)
 	if err != nil {
 		return nil, err
 	}
@@ -335,11 +365,15 @@ func QualifiedTableIdentifier(raw, defaultDatabase string) (string, error) {
 // avoids querying system.tables because a metadata-wide scan can block startup
 // while unrelated table metadata is recovering.
 func (c *Client) TableExists(table string) (bool, error) {
+	return c.TableExistsContext(context.Background(), table)
+}
+
+func (c *Client) TableExistsContext(ctx context.Context, table string) (bool, error) {
 	qualified, err := QualifiedTableIdentifier(table, c.Database)
 	if err != nil {
 		return false, err
 	}
-	value, err := c.QueryScalarValue("EXISTS TABLE " + qualified)
+	value, err := c.QueryScalarValueContext(ctx, "EXISTS TABLE "+qualified)
 	if err != nil {
 		return false, err
 	}
