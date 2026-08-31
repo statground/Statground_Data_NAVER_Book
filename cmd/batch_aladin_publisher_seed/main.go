@@ -440,13 +440,20 @@ func collectSampledPublishers(client *ch.Client, rawNaverTable string, keys []na
 
 	failed := 0
 	var firstErr error
+	var durabilityErr error
 	for err := range errs {
 		if err != nil {
 			failed++
 			if firstErr == nil {
 				firstErr = err
 			}
+			if durabilityErr == nil && dbingest.IsDurabilityError(err) {
+				durabilityErr = err
+			}
 		}
+	}
+	if durabilityErr != nil {
+		return fmt.Errorf("aladin publisher collection persistence failed: %w", durabilityErr)
 	}
 	if failed > 0 {
 		if aladinPublisherCollectionRequired() {

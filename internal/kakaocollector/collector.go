@@ -523,7 +523,10 @@ func ErrorStage(err error) string {
 		"existing_hashes",
 		"insert_raw",
 		"insert_collect_log",
-		"insert_frontier":
+		"insert_frontier",
+		"enqueue_outbox",
+		"replay_outbox",
+		"mark_outbox":
 		return storeErr.Operation
 	default:
 		return ""

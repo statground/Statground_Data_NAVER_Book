@@ -25,27 +25,39 @@ permissions:
   contents: read
 
 concurrency:
-  group: statground-book-naver-${{ inputs.stage || 'all' }}
-  cancel-in-progress: true
+  group: statground-book-naver-writer-replayer
+  cancel-in-progress: false
 
 jobs:
   collect_all:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
+      CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME: ${{ vars.CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME || secrets.CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME }}
       DB_PREFLIGHT_REQUIRED: "true"
       DB_LOG_WRITE_TIMEOUT_SECONDS: "60"
       DB_LOG_BEST_EFFORT_TIMEOUT_SECONDS: "8"
+      NAVER_OUTBOX_REPLAY_LIMIT: "25"
+      NAVER_OUTBOX_MAX_REPLICA_QUEUE: "1000"
+      NAVER_OUTBOX_MAX_REPLICA_DELAY_SECONDS: "900"
       COLLECT_TERM_REQUIRED: "false"
       COLLECT_REQUIRE_SUCCESSFUL_TERM: "false"
       COLLECT_MAX_CONSECUTIVE_FAILURES: "20"
       COLLECT_SLEEP_MIN: "0.05"
       COLLECT_SLEEP_MAX: "0.20"
       EXISTING_ISBN_LOOKUP_ENABLED: "false"
-      SEARCH_LOG_REQUIRED: "false"
+      SEARCH_LOG_REQUIRED: "true"
       NAVER_API_ATTEMPTS: "3"
       NAVER_API_BACKOFF_MIN: "0.5"
       NAVER_API_BACKOFF_MAX: "4.0"
+      CLICKHOUSE_PRESSURE_GATE_MIN_AVAILABLE_BYTES: "107374182400"
+      CLICKHOUSE_PRESSURE_GATE_MAX_USED_RATIO: "0.90"
+      CLICKHOUSE_PRESSURE_GATE_MIN_AVAILABLE_INODES: "1000000"
+      CLICKHOUSE_PRESSURE_GATE_MAX_USED_INODE_RATIO: "0.95"
+      CLICKHOUSE_PRESSURE_GATE_MAX_REPLICA_QUEUE: "2000"
+      CLICKHOUSE_PRESSURE_GATE_MAX_REPLICA_DELAY_SECONDS: "900"
+      CLICKHOUSE_PRESSURE_GATE_MAX_IOWAIT_NORMALIZED: "0.50"
+      CLICKHOUSE_PRESSURE_GATE_TIMEOUT_SECONDS: "15"
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -70,6 +82,7 @@ jobs:
             test -n "$NAVER_API_KEYS" || { echo "NAVER_API_KEYS secret is required"; exit 1; }
           fi
           test -n "$CH_HOST" || { echo "CLICKHOUSE_HOST or CH_HOST secret is required"; exit 1; }
+          test -n "$CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME" || { echo "CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME variable or secret is required"; exit 1; }
           test -n "$CH_USER" || { echo "CLICKHOUSE_USER or CH_USER secret is required"; exit 1; }
           test -n "$CH_PASSWORD" || { echo "CLICKHOUSE_PASSWORD or CH_PASSWORD secret is required"; exit 1; }
           if [[ "${CH_PROTOCOL,,}" != "https" ]]; then
@@ -78,9 +91,15 @@ jobs:
           python3 - <<'PY'
           import hashlib
           import os
+          import re
 
           host = os.environ.get("CH_HOST", "")
           print(f"CLICKHOUSE_HOST_SHA256={hashlib.sha256(host.encode()).hexdigest()}")
+          expected = os.environ.get("CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME", "")
+          if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,251}[A-Za-z0-9])?", expected):
+              raise SystemExit("CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME must identify one physical ClickHouse node")
+          if "gateway" in expected.lower():
+              raise SystemExit("CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME must not identify a load-balancing gateway")
           PY
           case "$CH_HOST" in
             127.0.0.1|localhost|0.0.0.0|::1|[::1])
@@ -107,6 +126,28 @@ jobs:
           GOPROXY: https://proxy.golang.org,direct
         run: go test -mod=mod ./...
 
+      - name: Gate ClickHouse writes on storage pressure
+        env:
+          CLICKHOUSE_PRESSURE_GATE_TARGETS: >-
+            replica:Data_Book_NAVER_Raw.naver_book_raw_local,
+            replica:Data_Book_NAVER_Log.naver_collect_log_local,
+            replica:Data_Book_NAVER_Log.aladin_publisher_cache_local,
+            replica:Data_Book_NAVER_Service.naver_book_latest_local,
+            replica:Data_Book_NAVER_Service.naver_book_recent_local,
+            replica:Data_Book_Service.book_catalog_latest_local,
+            replica:webr_book.naver_r_book_catalog_local,
+            replica:mirtype_book.naver_language_book_catalog_local,
+            replica:mirtype_content.provider_practice_content_local,
+            replica:mirtype_content.provider_practice_content_serving_local,
+            local:Data_Book_NAVER_Log.naver_direct_insert_outbox
+          CH_HOST: ${{ secrets.CLICKHOUSE_HOST || secrets.CH_HOST }}
+          CH_PORT: ${{ secrets.CLICKHOUSE_PORT || secrets.CH_PORT }}
+          CH_USER: ${{ secrets.CLICKHOUSE_USER || secrets.CH_USER }}
+          CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD || secrets.CH_PASSWORD }}
+          CH_PROTOCOL: ${{ secrets.CLICKHOUSE_PROTOCOL || secrets.CH_PROTOCOL || 'http' }}
+          CH_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH || secrets.CH_HTTP_URL_PATH }}
+        run: python3 scripts/clickhouse_pressure_gate.py
+
       - name: Collect Aladin publisher seed and NAVER books via direct DB
         if: inputs.stage == 'all' || inputs.stage == 'seed'
         env:
@@ -123,7 +164,7 @@ jobs:
           CH_DATABASE: Data_Book_NAVER_Raw
           NAVER_API_KEYS: ${{ secrets.NAVER_API_KEYS }}
           ALADIN_PUBLISHER_SEED_REQUIRED: "false"
-          ALADIN_PUBLISHER_CACHE_REQUIRED: "false"
+          ALADIN_PUBLISHER_CACHE_REQUIRED: "true"
           ALADIN_PUBLISHER_COLLECTION_REQUIRED: "false"
           ALADIN_HTTP_ATTEMPTS: "3"
           ALADIN_HTTP_BACKOFF_MIN: "0.5"

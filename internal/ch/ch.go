@@ -6,12 +6,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,7 +24,61 @@ import (
 var (
 	identifierPattern          = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 	clickHouseErrorCodePattern = regexp.MustCompile(`(?i)\bcode:\s*([0-9]+)\b`)
+	directEndpointHostPattern  = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$`)
 )
+
+const maxClickHouseErrorBodyBytes = 64 * 1024
+
+// HTTPError preserves only the bounded status/code contract needed by callers.
+// ClickHouse exception text is deliberately not retained because it can contain
+// schema details or values from a rejected row.
+type HTTPError struct {
+	StatusCode int
+	Code       int
+	Truncated  bool
+}
+
+func (e *HTTPError) Error() string {
+	if e.Code != 0 {
+		return fmt.Sprintf("clickhouse http status=%d code=%d", e.StatusCode, e.Code)
+	}
+	return fmt.Sprintf("clickhouse http status=%d", e.StatusCode)
+}
+
+// deliveryUnknownError means http.Client.Do started, so a write may have
+// reached ClickHouse even though no authoritative response was received.
+// INSERT callers must reconcile or preserve the batch; they must not retry it
+// immediately.
+type deliveryUnknownError struct {
+	err error
+}
+
+func (e *deliveryUnknownError) Error() string { return e.err.Error() }
+func (e *deliveryUnknownError) Unwrap() error { return e.err }
+
+// IsAmbiguousInsertError reports failures for which ClickHouse may already have
+// accepted some or all of an INSERT. UNKNOWN_STATUS_OF_INSERT is the explicit
+// server-side case; transport/read failures after Do begins are conservative
+// client-side cases.
+func IsAmbiguousInsertError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var deliveryErr *deliveryUnknownError
+	if errors.As(err, &deliveryErr) {
+		return true
+	}
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		return false
+	}
+	switch httpErr.Code {
+	case 319, 394, 677, 734, 735:
+		return true
+	default:
+		return false
+	}
+}
 
 type Client struct {
 	Host       string
@@ -191,6 +247,33 @@ func allDigits(value string) bool {
 	return true
 }
 
+// ValidateDirectEndpointHostnameContext proves that the configured HTTP
+// endpoint terminates on the one physical ClickHouse node that owns the local
+// outbox. A load-balancing gateway is not a valid endpoint for this contract.
+func (c *Client) ValidateDirectEndpointHostnameContext(ctx context.Context, expected string) error {
+	if expected == "" || expected != strings.TrimSpace(expected) {
+		return fmt.Errorf("CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME is required")
+	}
+	if !directEndpointHostPattern.MatchString(expected) || strings.Contains(strings.ToLower(expected), "gateway") {
+		return fmt.Errorf("CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME must identify one physical ClickHouse node")
+	}
+	if c == nil {
+		return fmt.Errorf("clickhouse direct endpoint client is not configured")
+	}
+	rows, err := c.QueryJSONEachRowContext(ctx, "SELECT hostName() AS value SETTINGS max_threads = 1, max_execution_time = 5")
+	if err != nil {
+		return err
+	}
+	if len(rows) != 1 {
+		return fmt.Errorf("clickhouse direct endpoint hostname mismatch")
+	}
+	actual, ok := rows[0]["value"].(string)
+	if !ok || actual != expected {
+		return fmt.Errorf("clickhouse direct endpoint hostname mismatch")
+	}
+	return nil
+}
+
 func (c *Client) post(body string, extra url.Values) ([]byte, error) {
 	return c.postContext(context.Background(), body, extra)
 }
@@ -207,20 +290,37 @@ func (c *Client) postContext(ctx context.Context, body string, extra url.Values)
 		req.SetBasicAuth(c.User, c.Password)
 	}
 	req.Header.Set("Content-Type", "text/plain; charset=utf-8")
-	resp, err := c.HTTPClient.Do(req)
+	httpClient := c.HTTPClient
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	requestClient := *httpClient
+	requestClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	resp, err := requestClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, &deliveryUnknownError{err: err}
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		payload, readErr := io.ReadAll(io.LimitReader(resp.Body, maxClickHouseErrorBodyBytes+1))
+		if readErr != nil {
+			return nil, &deliveryUnknownError{err: readErr}
+		}
+		truncated := len(payload) > maxClickHouseErrorBodyBytes
+		if truncated {
+			payload = payload[:maxClickHouseErrorBodyBytes]
+		}
+		if matches := clickHouseErrorCodePattern.FindSubmatch(payload); len(matches) == 2 {
+			code, _ := strconv.Atoi(string(matches[1]))
+			return nil, &HTTPError{StatusCode: resp.StatusCode, Code: code, Truncated: truncated}
+		}
+		return nil, &HTTPError{StatusCode: resp.StatusCode, Truncated: truncated}
+	}
 	payload, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		if matches := clickHouseErrorCodePattern.FindSubmatch(payload); len(matches) == 2 {
-			return nil, fmt.Errorf("clickhouse http status=%d code=%s", resp.StatusCode, matches[1])
-		}
-		return nil, fmt.Errorf("clickhouse http status=%d", resp.StatusCode)
+		return nil, &deliveryUnknownError{err: err}
 	}
 	return payload, nil
 }
@@ -255,6 +355,14 @@ func (c *Client) QueryJSONEachRow(sql string) ([]map[string]any, error) {
 }
 
 func (c *Client) QueryJSONEachRowContext(ctx context.Context, sql string) ([]map[string]any, error) {
+	return c.queryJSONEachRowContext(ctx, sql, false)
+}
+
+func (c *Client) queryJSONEachRowNumberContext(ctx context.Context, sql string) ([]map[string]any, error) {
+	return c.queryJSONEachRowContext(ctx, sql, true)
+}
+
+func (c *Client) queryJSONEachRowContext(ctx context.Context, sql string, useNumber bool) ([]map[string]any, error) {
 	payload, err := c.postContext(ctx, ensureJSONEachRow(sql), nil)
 	if err != nil {
 		return nil, err
@@ -268,7 +376,11 @@ func (c *Client) QueryJSONEachRowContext(ctx context.Context, sql string) ([]map
 			continue
 		}
 		var row map[string]any
-		if err := json.Unmarshal(line, &row); err != nil {
+		decoder := json.NewDecoder(bytes.NewReader(line))
+		if useNumber {
+			decoder.UseNumber()
+		}
+		if err := decoder.Decode(&row); err != nil {
 			return nil, fmt.Errorf("decode json row: %w; line_prefix=%s", err, truncateForError(line, 512))
 		}
 		rows = append(rows, row)
@@ -423,14 +535,146 @@ func normalizeValue(v any) any {
 	}
 }
 
+func jsonEachRowColumns(rows []map[string]any) []string {
+	colSet := map[string]struct{}{}
+	for _, row := range rows {
+		for column := range row {
+			colSet[column] = struct{}{}
+		}
+	}
+	columns := make([]string, 0, len(colSet))
+	for column := range colSet {
+		columns = append(columns, column)
+	}
+	sort.Strings(columns)
+	return columns
+}
+
+// encodeJSONEachRow preserves the pre-outbox client behavior for all existing
+// callers. Outbox producers pass already-canonical rows into this encoder.
+func encodeJSONEachRow(rows []map[string]any) ([]string, []byte, error) {
+	columns := jsonEachRowColumns(rows)
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	for _, row := range rows {
+		normalized := make(map[string]any, len(columns))
+		for _, column := range columns {
+			normalized[column] = normalizeValue(row[column])
+		}
+		if err := encoder.Encode(normalized); err != nil {
+			return nil, nil, err
+		}
+	}
+	return columns, buffer.Bytes(), nil
+}
+
+// CanonicalJSONEachRow prepares one immutable logical JSONEachRow batch. It
+// fills the same sorted union of columns in every row, applies ClickHouse time
+// formatting, and round-trips through JSON so an outbox replay cannot change
+// Go-specific value representations (for example time.Time or json.Marshaler).
+// The returned payload is exactly what insertJSONEachRow sends after preparing
+// the returned rows again.
+func CanonicalJSONEachRow(rows []map[string]any) (columns []string, canonicalRows []map[string]any, payload []byte, err error) {
+	if len(rows) == 0 {
+		return nil, nil, nil, nil
+	}
+	columns = jsonEachRowColumns(rows)
+
+	canonicalRows = make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		normalized := make(map[string]any, len(columns))
+		for _, column := range columns {
+			normalized[column] = normalizeValue(row[column])
+		}
+		encoded, encodeErr := json.Marshal(normalized)
+		if encodeErr != nil {
+			return nil, nil, nil, encodeErr
+		}
+		decoder := json.NewDecoder(bytes.NewReader(encoded))
+		decoder.UseNumber()
+		canonical := make(map[string]any, len(columns))
+		if decodeErr := decoder.Decode(&canonical); decodeErr != nil {
+			return nil, nil, nil, decodeErr
+		}
+		canonicalRows = append(canonicalRows, canonical)
+	}
+
+	encodedColumns, payload, encodeErr := encodeJSONEachRow(canonicalRows)
+	if encodeErr != nil {
+		return nil, nil, nil, encodeErr
+	}
+	return encodedColumns, canonicalRows, payload, nil
+}
+
+// JSONEachRowDeduplicationToken binds a token to the exact normalized payload
+// and target contract used by the ClickHouse insert.
+func JSONEachRowDeduplicationToken(table string, columns []string, payload []byte) string {
+	lineage := []byte(table + "\x1f" + strings.Join(columns, "\x1f") + "\x1f")
+	return fmt.Sprintf("%x", sha256.Sum256(append(lineage, payload...)))
+}
+
+// JSONEachRowPayloadAsArray wraps canonical single-line JSONEachRow objects in
+// one JSON array without re-marshalling their values. Each stored array element
+// therefore remains byte-identical to the corresponding target payload row.
+func JSONEachRowPayloadAsArray(payload []byte) ([]byte, error) {
+	if len(payload) == 0 || payload[len(payload)-1] != '\n' {
+		return nil, fmt.Errorf("JSONEachRow payload must end with a newline")
+	}
+	lines := bytes.Split(payload[:len(payload)-1], []byte{'\n'})
+	var array bytes.Buffer
+	array.WriteByte('[')
+	for index, line := range lines {
+		if len(line) == 0 || !json.Valid(line) {
+			return nil, fmt.Errorf("JSONEachRow payload contains an invalid row")
+		}
+		if index > 0 {
+			array.WriteByte(',')
+		}
+		array.Write(line)
+	}
+	array.WriteByte(']')
+	if !json.Valid(array.Bytes()) {
+		return nil, fmt.Errorf("JSONEachRow payload cannot be represented as an array")
+	}
+	return array.Bytes(), nil
+}
+
 func (c *Client) InsertJSONEachRow(table string, rows []map[string]any) error {
-	return c.insertJSONEachRow(table, rows, "", false)
+	return c.InsertJSONEachRowContext(context.Background(), table, rows)
+}
+
+func (c *Client) InsertJSONEachRowContext(ctx context.Context, table string, rows []map[string]any) error {
+	return c.insertJSONEachRowContext(ctx, table, rows, "", false, false)
+}
+
+// InsertJSONEachRowSynchronous writes one deterministic logical batch through
+// a Distributed table without leaving an asynchronous coordinator queue file.
+// A caller that receives an error must preserve the same rows and token in a
+// durable outbox before treating the logical batch as accepted.
+func (c *Client) InsertJSONEachRowSynchronous(table string, rows []map[string]any, deduplicationToken string) error {
+	return c.InsertJSONEachRowSynchronousContext(context.Background(), table, rows, deduplicationToken)
+}
+
+func (c *Client) InsertJSONEachRowSynchronousContext(ctx context.Context, table string, rows []map[string]any, deduplicationToken string) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	deduplicationToken = strings.TrimSpace(deduplicationToken)
+	if !isLowerHexSHA256(deduplicationToken) {
+		return fmt.Errorf("invalid synchronous insert deduplication token")
+	}
+	return c.insertJSONEachRowContext(ctx, table, rows, deduplicationToken, false, true)
 }
 
 // InsertJSONEachRowDurable applies the fixed foreground/quorum settings used by
 // resumable bulk import ledgers and raw data. The caller-supplied token must be
 // a lowercase SHA-256 of immutable logical lineage, never volatile row JSON.
 func (c *Client) InsertJSONEachRowDurable(table string, rows []map[string]any, deduplicationToken string) error {
+	return c.InsertJSONEachRowDurableContext(context.Background(), table, rows, deduplicationToken)
+}
+
+func (c *Client) InsertJSONEachRowDurableContext(ctx context.Context, table string, rows []map[string]any, deduplicationToken string) error {
 	if len(rows) == 0 {
 		return nil
 	}
@@ -438,60 +682,35 @@ func (c *Client) InsertJSONEachRowDurable(table string, rows []map[string]any, d
 	if !isLowerHexSHA256(deduplicationToken) {
 		return fmt.Errorf("invalid durable insert deduplication token")
 	}
-	return c.insertJSONEachRow(table, rows, deduplicationToken, true)
+	return c.insertJSONEachRowContext(ctx, table, rows, deduplicationToken, true, false)
 }
 
-func (c *Client) insertJSONEachRow(table string, rows []map[string]any, deduplicationToken string, durable bool) error {
+func (c *Client) insertJSONEachRowContext(ctx context.Context, table string, rows []map[string]any, deduplicationToken string, durable, distributedSync bool) error {
 	if len(rows) == 0 {
 		return nil
 	}
-	colSet := map[string]struct{}{}
-	for _, row := range rows {
-		for k := range row {
-			colSet[k] = struct{}{}
-		}
-	}
-	columns := make([]string, 0, len(colSet))
-	for col := range colSet {
-		columns = append(columns, col)
-	}
-	sort.Strings(columns)
-
-	var payload bytes.Buffer
-	enc := json.NewEncoder(&payload)
-	enc.SetEscapeHTML(false)
-	for _, row := range rows {
-		normalized := make(map[string]any, len(columns))
-		for _, col := range columns {
-			normalized[col] = normalizeValue(row[col])
-		}
-		if err := enc.Encode(normalized); err != nil {
-			return err
-		}
+	columns, payload, err := encodeJSONEachRow(rows)
+	if err != nil {
+		return err
 	}
 	token := deduplicationToken
 	if token == "" {
-		token = fmt.Sprintf("%x", sha256.Sum256(append([]byte(table+"\x1f"+strings.Join(columns, "\x1f")+"\x1f"), payload.Bytes()...)))
+		token = JSONEachRowDeduplicationToken(table, columns, payload)
 	}
 	settings := fmt.Sprintf(
 		"insert_deduplicate = 1, insert_deduplication_token = '%s'",
 		token,
 	)
+	if distributedSync {
+		settings += ", insert_distributed_sync = 1"
+	}
 	if durable {
 		settings += ", distributed_foreground_insert = 1, insert_quorum = 2, insert_quorum_parallel = 1, insert_quorum_timeout = 600000, parallel_view_processing = 1, receive_timeout = 660, send_timeout = 660, load_balancing = 'first_or_random', load_balancing_first_offset = 0, prefer_localhost_replica = 0"
 	}
 	body := fmt.Sprintf("INSERT INTO %s (%s) SETTINGS %s FORMAT JSONEachRow\n%s",
-		table, strings.Join(columns, ", "), settings, payload.String())
-	var lastErr error
-	for attempt := 1; attempt <= 2; attempt++ {
-		if _, lastErr = c.post(body, nil); lastErr == nil {
-			return nil
-		}
-		if attempt < 2 {
-			time.Sleep(time.Second)
-		}
-	}
-	return lastErr
+		table, strings.Join(columns, ", "), settings, payload)
+	_, err = c.postContext(ctx, body, nil)
+	return err
 }
 
 func isLowerHexSHA256(value string) bool {

@@ -235,7 +235,9 @@ func (c *Collector) CollectTerm(term, mode string, reqsPerTerm, display int) err
 		total, items, err := naver.FetchItems(term, sort, 1, display, c.Keys, c.Rand)
 		meta := SearchMeta{Mode: mode, Query: term, Sort: sort, Start: 1, Display: display, Total: total}
 		if err != nil {
-			_ = c.publishSearchLogBestEffort(meta, "ERROR", 0, err.Error(), fmt.Sprintf("auto_search_error|mode=%s|term=%s|sort=%s", mode, term, sort))
+			if logErr := c.publishSearchLogBestEffort(meta, "ERROR", 0, err.Error(), fmt.Sprintf("auto_search_error|mode=%s|term=%s|sort=%s", mode, term, sort)); logErr != nil {
+				return logErr
+			}
 			return err
 		}
 		if len(items) == 0 {
@@ -300,7 +302,9 @@ func (c *Collector) CollectManual(keyword string) error {
 			total, items, err := naver.FetchItems(keyword, sort, start, 100, c.Keys, c.Rand)
 			meta := SearchMeta{Mode: "manual", Query: keyword, Sort: sort, Start: start, Display: 100, Total: total}
 			if err != nil {
-				_ = c.publishSearchLogBestEffort(meta, "ERROR", 0, err.Error(), fmt.Sprintf("manual_search_error|keyword=%s|sort=%s|start=%d", keyword, sort, start))
+				if logErr := c.publishSearchLogBestEffort(meta, "ERROR", 0, err.Error(), fmt.Sprintf("manual_search_error|keyword=%s|sort=%s|start=%d", keyword, sort, start)); logErr != nil {
+					return logErr
+				}
 				return err
 			}
 			if len(items) == 0 {
@@ -350,7 +354,9 @@ func (c *Collector) CollectPublisherAllPages(publisher string, reqsPerTerm, disp
 			}
 			meta := SearchMeta{Mode: "aladin_publisher_seed", Query: publisher, Sort: sort, Start: start, Display: display, Total: t}
 			if err != nil {
-				_ = c.publishSearchLogBestEffort(meta, "ERROR", 0, err.Error(), fmt.Sprintf("aladin_publisher_seed_error|publisher=%s|sort=%s|start=%d", publisher, sort, start))
+				if logErr := c.publishSearchLogBestEffort(meta, "ERROR", 0, err.Error(), fmt.Sprintf("aladin_publisher_seed_error|publisher=%s|sort=%s|start=%d", publisher, sort, start)); logErr != nil {
+					return logErr
+				}
 				return err
 			}
 			if start == 1 && maxTotal > 0 && t > maxTotal {
