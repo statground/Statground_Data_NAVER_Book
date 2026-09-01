@@ -116,6 +116,34 @@ jobs:
           go test -mod=mod ./...
           go build -mod=mod ./cmd/backfill_nlk_service
 
+      - name: Gate ClickHouse writes on storage pressure
+        env:
+          CLICKHOUSE_PRESSURE_GATE_TARGETS: >-
+            replica:Data_Book_NLK_Raw.nlk_resource_raw_local,
+            replica:Data_Book_NLK_Log.nlk_service_projection_checkpoint_local,
+            replica:Data_Book_NLK_Service.nlk_authority_local,
+            replica:Data_Book_NLK_Service.nlk_bibliography_local,
+            replica:Data_Book_NLK_Service.nlk_library_local,
+            replica:Data_Book_Service.book_provider_latest_local,
+            replica:Data_Book_Service.book_bibliography_context_local,
+            replica:Data_Book_Service.book_kdc_summary_local,
+            replica:Data_Book_Service.book_isbn_alias_local
+          CLICKHOUSE_PRESSURE_GATE_MIN_AVAILABLE_BYTES: "107374182400"
+          CLICKHOUSE_PRESSURE_GATE_MAX_USED_RATIO: "0.90"
+          CLICKHOUSE_PRESSURE_GATE_MIN_AVAILABLE_INODES: "1000000"
+          CLICKHOUSE_PRESSURE_GATE_MAX_USED_INODE_RATIO: "0.95"
+          CLICKHOUSE_PRESSURE_GATE_MAX_REPLICA_QUEUE: "2000"
+          CLICKHOUSE_PRESSURE_GATE_MAX_REPLICA_DELAY_SECONDS: "900"
+          CLICKHOUSE_PRESSURE_GATE_MAX_IOWAIT_NORMALIZED: "0.50"
+          CLICKHOUSE_PRESSURE_GATE_TIMEOUT_SECONDS: "15"
+          CH_HOST: ${{ secrets.CLICKHOUSE_HOST || secrets.CH_HOST }}
+          CH_PORT: ${{ secrets.CLICKHOUSE_PORT || secrets.CH_PORT }}
+          CH_USER: ${{ secrets.CLICKHOUSE_USER || secrets.CH_USER }}
+          CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD || secrets.CH_PASSWORD }}
+          CH_PROTOCOL: ${{ secrets.CLICKHOUSE_PROTOCOL || secrets.CH_PROTOCOL || 'https' }}
+          CH_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH || secrets.CH_HTTP_URL_PATH }}
+        run: python3 scripts/clickhouse_pressure_gate.py
+
       - name: Run NLK service projection range backfill
         env:
           SNAPSHOT_DATE: ${{ inputs.snapshot_date }}

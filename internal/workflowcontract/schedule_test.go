@@ -166,6 +166,36 @@ func TestKakaoHTTPOverrideIsNotSharedWithOtherWorkflows(t *testing.T) {
 	}
 }
 
+func TestNLKRangeBackfillIsPressureGatedToItsExactTables(t *testing.T) {
+	t.Parallel()
+
+	text := readWorkflow(t, "../../.github/workflows/nlk_service_backfill.yml")
+	if count := strings.Count(text, "Gate ClickHouse writes on storage pressure"); count != 1 {
+		t.Fatalf("NLK pressure-gate step count=%d, want one", count)
+	}
+	for _, target := range []string{
+		"replica:Data_Book_NLK_Raw.nlk_resource_raw_local",
+		"replica:Data_Book_NLK_Log.nlk_service_projection_checkpoint_local",
+		"replica:Data_Book_NLK_Service.nlk_authority_local",
+		"replica:Data_Book_NLK_Service.nlk_bibliography_local",
+		"replica:Data_Book_NLK_Service.nlk_library_local",
+		"replica:Data_Book_Service.book_provider_latest_local",
+		"replica:Data_Book_Service.book_bibliography_context_local",
+		"replica:Data_Book_Service.book_kdc_summary_local",
+		"replica:Data_Book_Service.book_isbn_alias_local",
+	} {
+		if count := strings.Count(text, target); count != 1 {
+			t.Errorf("NLK pressure-gate target %q count=%d, want one", target, count)
+		}
+	}
+	if strings.Contains(text, "CLICKHOUSE_PRESSURE_GATE_MAX_DISTRIBUTED_FILES") {
+		t.Fatal("NLK backfill is coupled to unrelated distributed queues")
+	}
+	if !strings.Contains(text, "run: python3 scripts/clickhouse_pressure_gate.py") {
+		t.Fatal("NLK pressure gate does not execute the shared fail-closed checker")
+	}
+}
+
 func readWorkflow(t *testing.T, path string) string {
 	t.Helper()
 
