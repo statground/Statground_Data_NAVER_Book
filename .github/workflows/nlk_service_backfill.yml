@@ -37,6 +37,7 @@ jobs:
     timeout-minutes: 360
     env:
       GOTOOLCHAIN: local
+      CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME: ${{ vars.CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME || secrets.CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6

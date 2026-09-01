@@ -14,6 +14,8 @@ class ClickHousePressureGateTest(unittest.TestCase):
     def setUp(self):
         self.thresholds = gate.load_thresholds({})
         self.healthy = {
+            "endpoint_hostname": "Clickhouse_S1_R1",
+            "expected_endpoint_hostname": "Clickhouse_S1_R1",
             "distributed_files": 20,
             "broken_distributed_files": 0,
             "available_samples": 1,
@@ -39,6 +41,19 @@ class ClickHousePressureGateTest(unittest.TestCase):
 
     def test_healthy_snapshot_passes(self):
         self.assertEqual(gate.evaluate(self.healthy, self.thresholds), [])
+
+    def test_expected_endpoint_contract_is_strict_and_fail_closed(self):
+        self.assertEqual(
+            gate.load_expected_endpoint_hostname({gate.ENDPOINT_ENV: "Clickhouse_S1_R1"}),
+            "Clickhouse_S1_R1",
+        )
+        for raw in ("", " Clickhouse_S1_R1", "clickhouse-gateway", "bad/host"):
+            with self.subTest(raw=raw), self.assertRaises(ValueError):
+                gate.load_expected_endpoint_hostname({gate.ENDPOINT_ENV: raw})
+        mismatch = dict(self.healthy, endpoint_hostname="Clickhouse_S1_R2")
+        self.assertIn("endpoint_hostname_mismatch", gate.evaluate(mismatch, self.thresholds))
+        missing = dict(self.healthy, endpoint_hostname="")
+        self.assertIn("endpoint_hostname_mismatch", gate.evaluate(missing, self.thresholds))
 
     def test_each_pressure_dimension_blocks(self):
         cases = {
@@ -113,6 +128,7 @@ class ClickHousePressureGateTest(unittest.TestCase):
             }
         )
         query = gate.build_pressure_query(targets)
+        self.assertIn("hostName() AS endpoint_hostname", query)
         self.assertIn("system.metrics", query)
         self.assertIn("system.asynchronous_metrics", query)
         self.assertIn("system.disks", query)
@@ -138,11 +154,18 @@ class ClickHousePressureGateTest(unittest.TestCase):
         workflows = root / ".github" / "workflows"
         naver = (workflows / "naver_book_collect_all.yml").read_text()
         kakao = (workflows / "kakao_book_collect.yml").read_text()
+        nlk = (workflows / "nlk_service_backfill.yml").read_text()
         gate_step = "run: python3 scripts/clickhouse_pressure_gate.py"
         self.assertEqual(naver.count(gate_step), 1)
         self.assertLess(naver.index(gate_step), naver.index("go run -mod=mod ./cmd/batch_aladin_publisher_seed"))
         self.assertEqual(kakao.count(gate_step), 1)
         self.assertLess(kakao.index(gate_step), kakao.index("go run -mod=mod ./cmd/collect_kakao"))
+        self.assertEqual(nlk.count(gate_step), 1)
+        self.assertLess(nlk.index(gate_step), nlk.index("go run -mod=mod ./cmd/backfill_nlk_service"))
+        endpoint_binding = "CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME: ${{ vars.CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME || secrets.CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME }}"
+        self.assertEqual(naver.count(endpoint_binding), 1)
+        self.assertEqual(kakao.count(endpoint_binding), 1)
+        self.assertEqual(nlk.count(endpoint_binding), 1)
         kakao_gate_block = kakao[kakao.index("- name: Gate ClickHouse writes on storage pressure") : kakao.index("- name: Collect Kakao books into provider tables")]
         self.assertNotIn("\n        if:", kakao_gate_block)
         self.assertIn("CLICKHOUSE_PRESSURE_GATE_TARGETS: >-", naver)
@@ -153,6 +176,7 @@ class ClickHousePressureGateTest(unittest.TestCase):
         self.assertIn("replica:Data_Book_KAKAO_Raw.kakao_book_raw_local", kakao)
         self.assertIn("replica:Data_Book_Service.book_isbn_alias_local", kakao)
         self.assertIn("local:Data_Book_KAKAO_Log.kakao_direct_insert_outbox", kakao)
+        self.assertIn("replica:Data_Book_NLK_Raw.nlk_resource_raw_local", nlk)
         self.assertNotIn("polymarket_market_latest_v2_local", naver + kakao)
         kakao_main = (root / "cmd/collect_kakao/main.go").read_text()
         self.assertLess(kakao_main.index("store.Validate(ctx)"), kakao_main.index('boolEnv("KAKAO_DRY_RUN", false)'))
