@@ -42,6 +42,14 @@ class ClickHousePressureGateTest(unittest.TestCase):
     def test_healthy_snapshot_passes(self):
         self.assertEqual(gate.evaluate(self.healthy, self.thresholds), [])
 
+    def test_distributed_threshold_is_configurable_and_validated(self):
+        self.assertEqual(self.thresholds["max_distributed_files"], 10_000)
+        custom = gate.load_thresholds({"CLICKHOUSE_PRESSURE_GATE_MAX_DISTRIBUTED_FILES": "123"})
+        self.assertEqual(custom["max_distributed_files"], 123)
+        for raw in ("-1", "not-a-number"):
+            with self.subTest(raw=raw), self.assertRaises(ValueError):
+                gate.load_thresholds({"CLICKHOUSE_PRESSURE_GATE_MAX_DISTRIBUTED_FILES": raw})
+
     def test_expected_endpoint_contract_is_strict_and_fail_closed(self):
         self.assertEqual(
             gate.load_expected_endpoint_hostname({gate.ENDPOINT_ENV: "Clickhouse_S1_R1"}),
@@ -70,9 +78,13 @@ class ClickHousePressureGateTest(unittest.TestCase):
                 snapshot = dict(self.healthy, **{key: value})
                 self.assertTrue(gate.evaluate(snapshot, self.thresholds))
 
-    def test_unrelated_global_distributed_backlog_is_observability_only(self):
-        snapshot = dict(self.healthy, distributed_files=606_448, broken_distributed_files=7)
-        self.assertEqual(gate.evaluate(snapshot, self.thresholds), [])
+    def test_distributed_backlog_and_broken_files_fail_closed(self):
+        at_limit = dict(self.healthy, distributed_files=10_000)
+        self.assertEqual(gate.evaluate(at_limit, self.thresholds), [])
+        over_limit = dict(self.healthy, distributed_files=606_448)
+        self.assertIn("distributed_files=606448", gate.evaluate(over_limit, self.thresholds))
+        broken = dict(self.healthy, broken_distributed_files=7)
+        self.assertIn("broken_distributed_files=7", gate.evaluate(broken, self.thresholds))
 
     def test_idle_replica_delay_does_not_block(self):
         snapshot = dict(self.healthy, max_replica_queue=0, max_replica_delay_seconds=9_999_999)
@@ -168,6 +180,10 @@ class ClickHousePressureGateTest(unittest.TestCase):
         self.assertEqual(nlk.count(endpoint_binding), 1)
         self.assertNotIn("secrets.CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME", naver + kakao + nlk)
         self.assertNotIn("vars.CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME", naver + kakao + nlk)
+        self.assertEqual(
+            (naver + kakao + nlk).count('CLICKHOUSE_PRESSURE_GATE_MAX_DISTRIBUTED_FILES: "10000"'),
+            3,
+        )
         kakao_gate_block = kakao[kakao.index("- name: Gate ClickHouse writes on storage pressure") : kakao.index("- name: Collect Kakao books into provider tables")]
         self.assertNotIn("\n        if:", kakao_gate_block)
         self.assertIn("CLICKHOUSE_PRESSURE_GATE_TARGETS: >-", naver)
@@ -182,6 +198,16 @@ class ClickHousePressureGateTest(unittest.TestCase):
         self.assertNotIn("polymarket_market_latest_v2_local", naver + kakao)
         kakao_main = (root / "cmd/collect_kakao/main.go").read_text()
         self.assertLess(kakao_main.index("store.Validate(ctx)"), kakao_main.index('boolEnv("KAKAO_DRY_RUN", false)'))
+
+    def test_contract_workflow_is_secret_free_and_read_only(self):
+        workflow = (Path(__file__).parents[1] / ".github/workflows/book_contract_tests.yml").read_text()
+        self.assertIn("push:\n    branches: [main]", workflow)
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("go test -mod=mod ./...", workflow)
+        self.assertIn("python3 -m unittest scripts/test_clickhouse_pressure_gate.py", workflow)
+        self.assertIn("github.com/rhysd/actionlint/cmd/actionlint@v1.7.11", workflow)
+        self.assertNotIn("secrets.", workflow)
+        self.assertNotIn("run: python3 scripts/clickhouse_pressure_gate.py", workflow)
 
 
 if __name__ == "__main__":

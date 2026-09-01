@@ -191,8 +191,8 @@ func TestNLKRangeBackfillIsPressureGatedToItsExactTables(t *testing.T) {
 			t.Errorf("NLK pressure-gate target %q count=%d, want one", target, count)
 		}
 	}
-	if strings.Contains(text, "CLICKHOUSE_PRESSURE_GATE_MAX_DISTRIBUTED_FILES") {
-		t.Fatal("NLK backfill is coupled to unrelated distributed queues")
+	if count := strings.Count(text, `CLICKHOUSE_PRESSURE_GATE_MAX_DISTRIBUTED_FILES: "10000"`); count != 1 {
+		t.Fatalf("NLK global distributed-queue ceiling count=%d, want one", count)
 	}
 	if !strings.Contains(text, "run: python3 scripts/clickhouse_pressure_gate.py") {
 		t.Fatal("NLK pressure gate does not execute the shared fail-closed checker")

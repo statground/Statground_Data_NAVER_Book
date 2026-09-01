@@ -38,3 +38,11 @@ jobs:
 
       - name: Verify dry-run planner performs no external calls
         run: go run -mod=mod ./cmd/plan_kakao_book_requests
+
+      - name: Validate pressure-gate and workflow contracts
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python3 -m unittest scripts/test_clickhouse_pressure_gate.py
+
+      - name: Validate workflow syntax
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.11 -format '{{json .}}' .github/workflows/*.yml
