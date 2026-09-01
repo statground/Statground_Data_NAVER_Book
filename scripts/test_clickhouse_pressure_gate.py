@@ -162,10 +162,12 @@ class ClickHousePressureGateTest(unittest.TestCase):
         self.assertLess(kakao.index(gate_step), kakao.index("go run -mod=mod ./cmd/collect_kakao"))
         self.assertEqual(nlk.count(gate_step), 1)
         self.assertLess(nlk.index(gate_step), nlk.index("go run -mod=mod ./cmd/backfill_nlk_service"))
-        endpoint_binding = "CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME: ${{ vars.CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME || secrets.CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME }}"
+        endpoint_binding = "CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME: clickhouse-s1-r1"
         self.assertEqual(naver.count(endpoint_binding), 1)
         self.assertEqual(kakao.count(endpoint_binding), 1)
         self.assertEqual(nlk.count(endpoint_binding), 1)
+        self.assertNotIn("secrets.CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME", naver + kakao + nlk)
+        self.assertNotIn("vars.CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME", naver + kakao + nlk)
         kakao_gate_block = kakao[kakao.index("- name: Gate ClickHouse writes on storage pressure") : kakao.index("- name: Collect Kakao books into provider tables")]
         self.assertNotIn("\n        if:", kakao_gate_block)
         self.assertIn("CLICKHOUSE_PRESSURE_GATE_TARGETS: >-", naver)

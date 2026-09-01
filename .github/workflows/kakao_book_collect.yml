@@ -54,8 +54,6 @@ on:
         required: true
       CLICKHOUSE_HOST:
         required: true
-      CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME:
-        required: false
       CLICKHOUSE_PORT:
         required: false
       CLICKHOUSE_USER:
@@ -107,7 +105,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
-      CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME: ${{ vars.CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME || secrets.CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME }}
+      # Port 50005 is the durable direct S1_R1 endpoint, never the 50006 gateway.
+      CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME: clickhouse-s1-r1
       KAKAO_RUN_KIND: ${{ inputs.run_kind || 'manual' }}
       KAKAO_COLLECT_MODE: ${{ inputs.mode || 'manual' }}
       KAKAO_QUERIES: ${{ inputs.queries }}

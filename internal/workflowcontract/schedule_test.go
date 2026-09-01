@@ -66,8 +66,11 @@ func TestNAVERWorkflowUsesBoundedFailClosedDirectInsertOutbox(t *testing.T) {
 		!strings.Contains(text, `SEARCH_LOG_REQUIRED: "true"`) {
 		t.Fatal("NAVER search-log persistence is not fail-closed")
 	}
-	if count := strings.Count(text, `CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME: ${{ vars.CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME || secrets.CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME }}`); count != 1 {
+	if count := strings.Count(text, `CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME: clickhouse-s1-r1`); count != 1 {
 		t.Fatalf("NAVER physical endpoint hostname binding count=%d, want one job-level value", count)
+	}
+	if strings.Contains(text, `secrets.CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME`) || strings.Contains(text, `vars.CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME`) {
+		t.Fatal("NAVER physical endpoint identity still depends on manual repository configuration")
 	}
 	if count := strings.Count(text, `test -n "$CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME"`); count != 1 {
 		t.Fatalf("NAVER required physical endpoint hostname validation count=%d, want one", count)
@@ -129,7 +132,7 @@ func TestKakaoWorkflowAllowsOnlyApprovedClickHouseTransportTuples(t *testing.T) 
 	if !strings.Contains(text, `echo "port=$CH_PORT" >> "$GITHUB_OUTPUT"`) {
 		t.Fatal("Kakao collector does not expose the validated ClickHouse port to downstream steps")
 	}
-	if count := strings.Count(text, `CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME: ${{ vars.CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME || secrets.CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME }}`); count != 1 {
+	if count := strings.Count(text, `CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME: clickhouse-s1-r1`); count != 1 {
 		t.Fatalf("Kakao physical endpoint hostname binding count=%d, want one job-level value", count)
 	}
 	if count := strings.Count(text, `test -n "$CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME"`); count != 1 {
@@ -140,8 +143,8 @@ func TestKakaoWorkflowAllowsOnlyApprovedClickHouseTransportTuples(t *testing.T) 
 	}
 
 	schedule := readWorkflow(t, "../../.github/workflows/kakao_book_schedule.yml")
-	if count := strings.Count(schedule, `CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME: ${{ secrets.CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME }}`); count != 1 {
-		t.Fatalf("Kakao schedule expected-hostname secret forwarding count=%d, want one", count)
+	if strings.Contains(text+schedule, `secrets.CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME`) || strings.Contains(text+schedule, `vars.CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME`) {
+		t.Fatal("Kakao physical endpoint identity still depends on manual repository configuration")
 	}
 	if strings.Contains(text+schedule, "CLICKHOUSE_PROTOCOL") {
 		t.Fatal("Kakao workflows still propagate the stale protocol secret instead of the approved host tuple")

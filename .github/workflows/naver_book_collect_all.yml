@@ -33,7 +33,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
-      CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME: ${{ vars.CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME || secrets.CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME }}
+      # Port 50005 is the durable direct S1_R1 endpoint, never the 50006 gateway.
+      CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME: clickhouse-s1-r1
       DB_PREFLIGHT_REQUIRED: "true"
       DB_LOG_WRITE_TIMEOUT_SECONDS: "60"
       DB_LOG_BEST_EFFORT_TIMEOUT_SECONDS: "8"

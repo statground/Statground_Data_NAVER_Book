@@ -37,7 +37,8 @@ jobs:
     timeout-minutes: 360
     env:
       GOTOOLCHAIN: local
-      CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME: ${{ vars.CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME || secrets.CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME }}
+      # Port 50005 is the durable direct S1_R1 endpoint, never the 50006 gateway.
+      CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME: clickhouse-s1-r1
     steps:
       - name: Checkout
         uses: actions/checkout@v6
