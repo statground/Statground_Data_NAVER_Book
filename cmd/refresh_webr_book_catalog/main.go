@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -16,6 +17,13 @@ import (
 var qualifiedIdentifierRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$`)
 var errBookRefreshBusy = errors.New("another book refresh is already running")
 
+var bookRefreshScheduleViews = []string{
+	"Data_Book_Service.mv_book_catalog_latest_refresh",
+	"webr_book.mv_naver_r_book_catalog_refresh",
+	"mirtype_book.mv_naver_language_book_catalog_refresh",
+	"Data_Book_Service.mv_book_bibliography_discovery_refresh",
+}
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -23,7 +31,7 @@ func main() {
 	}
 }
 
-func run() error {
+func run() (runErr error) {
 	settleSeconds := envx.Int("WEBR_BOOK_REFRESH_SETTLE_SECONDS", 20)
 	if settleSeconds > 0 {
 		fmt.Printf("[book-catalog] waiting %ds for direct ClickHouse ingestion to settle\n", settleSeconds)
@@ -39,6 +47,14 @@ func run() error {
 		timeoutSeconds = 900
 	}
 	client.HTTPClient.Timeout = time.Duration(timeoutSeconds) * time.Second
+	// Manual refreshes must never leave one coordinator-local schedule disabled.
+	// Exact START is idempotent and preserves every external TO target. Run the
+	// restoration even when a refresh or WAIT below fails.
+	defer func() {
+		if err := restoreBookRefreshSchedules(client); err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("restore Book refresh schedules: %w", err))
+		}
+	}()
 
 	if err := refreshProviderCatalog(
 		client,
@@ -129,6 +145,11 @@ func refreshCatalog(client *ch.Client, label, refreshView, countView string) err
 }
 
 func triggerRefreshOnCoordinator(client *ch.Client, refreshView string) error {
+	attempts, retryDelay := bookRefreshCoordinatorRetrySettings()
+	return triggerRefreshWithRetry(client, refreshView, attempts, retryDelay)
+}
+
+func bookRefreshCoordinatorRetrySettings() (int, time.Duration) {
 	attempts := envx.Int("BOOK_REFRESH_COORDINATOR_ATTEMPTS", 12)
 	if attempts < 1 {
 		attempts = 12
@@ -137,7 +158,114 @@ func triggerRefreshOnCoordinator(client *ch.Client, refreshView string) error {
 	if retryMilliseconds < 0 {
 		retryMilliseconds = 500
 	}
-	return triggerRefreshWithRetry(client, refreshView, attempts, time.Duration(retryMilliseconds)*time.Millisecond)
+	return attempts, time.Duration(retryMilliseconds) * time.Millisecond
+}
+
+func restoreBookRefreshSchedules(client *ch.Client) error {
+	attempts, retryDelay := bookRefreshCoordinatorRetrySettings()
+	// Give every view its own short recovery window. With four views, the
+	// default bounds the full best-effort restoration to roughly 120 seconds
+	// without allowing one unavailable coordinator to starve the later views.
+	viewTimeoutSeconds := envx.Int("BOOK_REFRESH_SCHEDULE_RESTORE_VIEW_TIMEOUT_SECONDS", 30)
+	if viewTimeoutSeconds <= 0 {
+		viewTimeoutSeconds = 30
+	}
+	return restoreBookRefreshSchedulesWithRetryTimeout(
+		client,
+		bookRefreshScheduleViews,
+		attempts,
+		retryDelay,
+		time.Duration(viewTimeoutSeconds)*time.Second,
+	)
+}
+
+func restoreBookRefreshSchedulesWithRetry(client *ch.Client, refreshViews []string, attempts int, retryDelay time.Duration) error {
+	return restoreBookRefreshSchedulesWithRetryTimeout(client, refreshViews, attempts, retryDelay, 0)
+}
+
+func restoreBookRefreshSchedulesWithRetryTimeout(client *ch.Client, refreshViews []string, attempts int, retryDelay, perViewTimeout time.Duration) error {
+	var restoreErrors []error
+	for _, refreshView := range refreshViews {
+		if err := validateQualifiedIdentifier(refreshView, "BOOK_REFRESH_SCHEDULE_VIEW"); err != nil {
+			restoreErrors = append(restoreErrors, err)
+			continue
+		}
+		var ctx context.Context = context.Background()
+		cancel := func() {}
+		if perViewTimeout > 0 {
+			ctx, cancel = context.WithTimeout(ctx, perViewTimeout)
+		}
+		err := startRefreshScheduleWithRetryContext(ctx, client, refreshView, attempts, retryDelay)
+		cancel()
+		if err != nil {
+			restoreErrors = append(restoreErrors, fmt.Errorf("start %s: %w", refreshView, err))
+			continue
+		}
+		fmt.Printf("[book-catalog] schedule enabled view=%s\n", refreshView)
+	}
+	return errors.Join(restoreErrors...)
+}
+
+func startRefreshScheduleWithRetryContext(ctx context.Context, client *ch.Client, refreshView string, attempts int, retryDelay time.Duration) error {
+	if attempts < 1 {
+		attempts = 1
+	}
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		exists, err := client.TableExistsContext(ctx, refreshView)
+		if err != nil {
+			lastErr = err
+		} else if !exists {
+			lastErr = fmt.Errorf("refresh coordinator unavailable")
+		} else if err := client.ExecContext(ctx, "SYSTEM START VIEW "+refreshView); err != nil {
+			lastErr = err
+		} else if active, err := refreshScheduleIsActive(ctx, client, refreshView); err != nil {
+			lastErr = err
+		} else if !active {
+			lastErr = fmt.Errorf("refresh schedule did not reach an active state")
+		} else {
+			return nil
+		}
+		if client.HTTPClient != nil {
+			client.HTTPClient.CloseIdleConnections()
+		}
+		if attempt < attempts && retryDelay > 0 {
+			timer := time.NewTimer(retryDelay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
+	}
+	return lastErr
+}
+
+func refreshScheduleIsActive(ctx context.Context, client *ch.Client, refreshView string) (bool, error) {
+	database, view, ok := strings.Cut(refreshView, ".")
+	if !ok {
+		return false, fmt.Errorf("invalid refresh view")
+	}
+	value, err := client.QueryScalarValueContext(ctx, fmt.Sprintf(`
+		SELECT status AS value
+		FROM system.view_refreshes
+		WHERE database = %s
+		  AND view = %s
+		LIMIT 1
+	`, util.SQLString(database), util.SQLString(view)))
+	if err != nil {
+		return false, err
+	}
+	switch strings.TrimSpace(util.ToString(value)) {
+	case "Scheduled", "Scheduling", "Running", "RunningOnAnotherReplica", "WaitingForDependencies":
+		return true, nil
+	default:
+		return false, nil
+	}
 }
 
 // Refreshable materialized views intentionally live on one coordinator so a

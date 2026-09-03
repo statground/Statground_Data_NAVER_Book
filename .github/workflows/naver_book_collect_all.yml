@@ -25,8 +25,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: statground-book-naver-writer-replayer
+  group: statground-book-writer-refresh
   cancel-in-progress: false
+  queue: max
 
 jobs:
   collect_all:
@@ -55,7 +56,6 @@ jobs:
       CLICKHOUSE_PRESSURE_GATE_MAX_USED_RATIO: "0.90"
       CLICKHOUSE_PRESSURE_GATE_MIN_AVAILABLE_INODES: "1000000"
       CLICKHOUSE_PRESSURE_GATE_MAX_USED_INODE_RATIO: "0.95"
-      CLICKHOUSE_PRESSURE_GATE_MAX_DISTRIBUTED_FILES: "10000"
       CLICKHOUSE_PRESSURE_GATE_MAX_REPLICA_QUEUE: "2000"
       CLICKHOUSE_PRESSURE_GATE_MAX_REPLICA_DELAY_SECONDS: "900"
       CLICKHOUSE_PRESSURE_GATE_MAX_IOWAIT_NORMALIZED: "0.50"

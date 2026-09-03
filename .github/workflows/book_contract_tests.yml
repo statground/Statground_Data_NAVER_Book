@@ -51,4 +51,6 @@ jobs:
           cache: false
 
       - name: Validate workflow syntax
-        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.11 -shellcheck= -pyflakes= -format '{{json .}}' .github/workflows/*.yml
+        # actionlint 1.7.11 predates GitHub's concurrency.queue key. Ignore only
+        # that known schema lag while retaining every other workflow check.
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.11 -ignore 'unexpected key "queue" for "concurrency" section' -shellcheck= -pyflakes= -format '{{json .}}' .github/workflows/*.yml

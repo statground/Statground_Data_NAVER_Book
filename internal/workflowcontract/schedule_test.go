@@ -25,6 +25,9 @@ func TestBookProviderRunsShareNonCancellingConcurrency(t *testing.T) {
 		if !strings.Contains(text, "cancel-in-progress: false") {
 			t.Errorf("%s can still cancel an in-progress provider collection", path)
 		}
+		if !strings.Contains(text, "queue: max") {
+			t.Errorf("%s can still replace an already pending provider collection", path)
+		}
 	}
 }
 
@@ -47,10 +50,11 @@ func TestNAVERWorkflowUsesBoundedFailClosedDirectInsertOutbox(t *testing.T) {
 	t.Parallel()
 
 	text := readWorkflow(t, "../../.github/workflows/naver_book_collect_all.yml")
-	if !strings.Contains(text, "group: statground-book-naver-writer-replayer") ||
+	if !strings.Contains(text, "group: statground-book-writer-refresh") ||
 		!strings.Contains(text, "cancel-in-progress: false") ||
+		!strings.Contains(text, "queue: max") ||
 		strings.Contains(text, "cancel-in-progress: true") {
-		t.Fatal("NAVER writers and replayers are not serialized without cancellation")
+		t.Fatal("NAVER writers and replayers are not serialized with a retained queue")
 	}
 	for _, contract := range []string{
 		`NAVER_OUTBOX_REPLAY_LIMIT: "25"`,
@@ -84,10 +88,14 @@ func TestKakaoWorkflowAllowsOnlyApprovedClickHouseTransportTuples(t *testing.T) 
 	t.Parallel()
 
 	text := readWorkflow(t, "../../.github/workflows/kakao_book_collect.yml")
-	if !strings.Contains(text, "group: statground-kakao-book-api") ||
+	if !strings.Contains(text, "group: statground-book-writer-refresh") ||
 		!strings.Contains(text, "cancel-in-progress: false") ||
+		!strings.Contains(text, "queue: max") ||
 		strings.Contains(text, "cancel-in-progress: true") {
-		t.Fatal("Kakao writers and replayers are not serialized without cancellation")
+		t.Fatal("Kakao writers and replayers are not serialized with a retained queue")
+	}
+	if !strings.Contains(text, "group: statground-kakao-book-api") {
+		t.Fatal("Kakao collector does not serialize its API calls with the contract smoke")
 	}
 	for _, contract := range []string{
 		"ClickHouse host must be a hostname without a URL scheme",
@@ -151,6 +159,28 @@ func TestKakaoWorkflowAllowsOnlyApprovedClickHouseTransportTuples(t *testing.T) 
 	}
 }
 
+func TestKakaoSmokeSharesAPIConcurrencyWithoutOccupyingWriterQueue(t *testing.T) {
+	t.Parallel()
+
+	text := readWorkflow(t, "../../.github/workflows/kakao_book_smoke.yml")
+	if !strings.Contains(text, "group: statground-kakao-book-api") ||
+		!strings.Contains(text, "cancel-in-progress: false") ||
+		!strings.Contains(text, "queue: max") ||
+		strings.Contains(text, "cancel-in-progress: true") {
+		t.Fatal("Kakao smoke can overlap or replace an already pending Kakao API run")
+	}
+}
+
+func TestActionlintIgnoresOnlyKnownConcurrencyQueueSchemaLag(t *testing.T) {
+	t.Parallel()
+
+	text := readWorkflow(t, "../../.github/workflows/book_contract_tests.yml")
+	want := `-ignore 'unexpected key "queue" for "concurrency" section'`
+	if count := strings.Count(text, want); count != 1 {
+		t.Fatalf("narrow actionlint queue-schema compatibility count=%d, want one", count)
+	}
+}
+
 func TestKakaoHTTPOverrideIsNotSharedWithOtherWorkflows(t *testing.T) {
 	t.Parallel()
 
@@ -191,8 +221,8 @@ func TestNLKRangeBackfillIsPressureGatedToItsExactTables(t *testing.T) {
 			t.Errorf("NLK pressure-gate target %q count=%d, want one", target, count)
 		}
 	}
-	if count := strings.Count(text, `CLICKHOUSE_PRESSURE_GATE_MAX_DISTRIBUTED_FILES: "10000"`); count != 1 {
-		t.Fatalf("NLK global distributed-queue ceiling count=%d, want one", count)
+	if strings.Contains(text, "CLICKHOUSE_PRESSURE_GATE_MAX_DISTRIBUTED_") {
+		t.Fatal("NLK direct writer is still coupled to a node-wide Distributed queue ceiling")
 	}
 	if !strings.Contains(text, "run: python3 scripts/clickhouse_pressure_gate.py") {
 		t.Fatal("NLK pressure gate does not execute the shared fail-closed checker")

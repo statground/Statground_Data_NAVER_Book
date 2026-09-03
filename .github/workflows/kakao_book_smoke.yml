@@ -14,6 +14,7 @@ permissions:
 concurrency:
   group: statground-kakao-book-api
   cancel-in-progress: false
+  queue: max
 
 jobs:
   smoke:

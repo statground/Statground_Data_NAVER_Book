@@ -44,24 +44,21 @@ class ClickHousePressureGateTest(unittest.TestCase):
     def test_healthy_snapshot_passes(self):
         self.assertEqual(gate.evaluate(self.healthy, self.thresholds), [])
 
-    def test_distributed_threshold_is_configurable_and_validated(self):
-        self.assertEqual(self.thresholds["max_distributed_files"], 10_000)
-        self.assertEqual(self.thresholds["max_distributed_bytes"], 512 * 1024**2)
-        custom = gate.load_thresholds(
-            {
-                "CLICKHOUSE_PRESSURE_GATE_MAX_DISTRIBUTED_FILES": "123",
-                "CLICKHOUSE_PRESSURE_GATE_MAX_DISTRIBUTED_BYTES": "456",
-            }
+    def test_unrelated_distributed_queue_is_observed_without_blocking_direct_writer(self):
+        snapshot = dict(
+            self.healthy,
+            distributed_files=606_448,
+            broken_distributed_files=0,
+            distributed_bytes="9007199254740993",
+            broken_distributed_bytes="0",
         )
-        self.assertEqual(custom["max_distributed_files"], 123)
-        self.assertEqual(custom["max_distributed_bytes"], 456)
-        for name in (
-            "CLICKHOUSE_PRESSURE_GATE_MAX_DISTRIBUTED_FILES",
-            "CLICKHOUSE_PRESSURE_GATE_MAX_DISTRIBUTED_BYTES",
-        ):
-            for raw in ("-1", "not-a-number"):
-                with self.subTest(name=name, raw=raw), self.assertRaises(ValueError):
-                    gate.load_thresholds({name: raw})
+        self.assertEqual(gate.evaluate(snapshot, self.thresholds), [])
+
+    def test_broken_distributed_payloads_still_fail_closed(self):
+        broken_files = dict(self.healthy, broken_distributed_files=7)
+        self.assertIn("broken_distributed_files=7", gate.evaluate(broken_files, self.thresholds))
+        broken_bytes = dict(self.healthy, broken_distributed_bytes="7")
+        self.assertIn("broken_distributed_bytes=7", gate.evaluate(broken_bytes, self.thresholds))
 
     def test_expected_endpoint_contract_is_strict_and_fail_closed(self):
         self.assertEqual(
@@ -90,25 +87,6 @@ class ClickHousePressureGateTest(unittest.TestCase):
             with self.subTest(key=key):
                 snapshot = dict(self.healthy, **{key: value})
                 self.assertTrue(gate.evaluate(snapshot, self.thresholds))
-
-    def test_distributed_backlog_and_broken_files_fail_closed(self):
-        at_limit = dict(self.healthy, distributed_files=10_000)
-        self.assertEqual(gate.evaluate(at_limit, self.thresholds), [])
-        over_limit = dict(self.healthy, distributed_files=606_448)
-        self.assertIn("distributed_files=606448", gate.evaluate(over_limit, self.thresholds))
-        broken = dict(self.healthy, broken_distributed_files=7)
-        self.assertIn("broken_distributed_files=7", gate.evaluate(broken, self.thresholds))
-
-    def test_few_large_files_and_broken_bytes_fail_closed(self):
-        limit = 512 * 1024**2
-        at_limit = dict(self.healthy, distributed_files=2, distributed_bytes=limit)
-        self.assertEqual(gate.evaluate(at_limit, self.thresholds), [])
-        over_limit = dict(self.healthy, distributed_files=2, distributed_bytes=str(limit + 1))
-        self.assertIn(f"distributed_bytes={limit + 1}", gate.evaluate(over_limit, self.thresholds))
-        exact = dict(self.healthy, distributed_bytes="9007199254740993")
-        self.assertIn("distributed_bytes=9007199254740993", gate.evaluate(exact, self.thresholds))
-        broken = dict(self.healthy, broken_distributed_bytes="7")
-        self.assertIn("broken_distributed_bytes=7", gate.evaluate(broken, self.thresholds))
 
     def test_invalid_unsigned_metrics_fail_closed(self):
         for raw in (None, True, -1, 1.5, "1.0", ""):
@@ -211,10 +189,7 @@ class ClickHousePressureGateTest(unittest.TestCase):
         self.assertEqual(nlk.count(endpoint_binding), 1)
         self.assertNotIn("secrets.CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME", naver + kakao + nlk)
         self.assertNotIn("vars.CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME", naver + kakao + nlk)
-        self.assertEqual(
-            (naver + kakao + nlk).count('CLICKHOUSE_PRESSURE_GATE_MAX_DISTRIBUTED_FILES: "10000"'),
-            3,
-        )
+        self.assertNotIn("CLICKHOUSE_PRESSURE_GATE_MAX_DISTRIBUTED_", naver + kakao + nlk)
         kakao_gate_block = kakao[kakao.index("- name: Gate ClickHouse writes on storage pressure") : kakao.index("- name: Collect Kakao books into provider tables")]
         self.assertNotIn("\n        if:", kakao_gate_block)
         self.assertIn("CLICKHOUSE_PRESSURE_GATE_TARGETS: >-", naver)

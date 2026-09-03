@@ -11,6 +11,7 @@ concurrency:
   # share ClickHouse serving sources, so never let the two providers overlap.
   group: statground-book-provider-schedule
   cancel-in-progress: false
+  queue: max
 
 jobs:
   seed:
