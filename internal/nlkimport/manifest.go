@@ -406,7 +406,7 @@ func discoverManifestPlans(ctx context.Context, config Config) ([]archivePlan, e
 			}
 			file = verified
 		} else {
-			path, err := containedManifestPath(config.InputDir, file)
+			path, err := containedManifestPath(config.InputDir, file, config.SnapshotDate)
 			if err != nil {
 				return nil, err
 			}
@@ -478,7 +478,7 @@ func (r contextManifestReader) Read(p []byte) (int, error) {
 	return r.reader.Read(p)
 }
 
-func containedManifestPath(root string, file ManifestFile) (string, error) {
+func containedManifestPath(root string, file ManifestFile, snapshot time.Time) (string, error) {
 	if strings.TrimSpace(root) == "" {
 		return "", safeError("input_directory_required")
 	}
@@ -486,15 +486,38 @@ func containedManifestPath(root string, file ManifestFile) (string, error) {
 	if err != nil {
 		return "", safeError("manifest_local_file")
 	}
-	path, err := filepath.EvalSymlinks(filepath.Join(actualRoot, file.Folder, file.Name))
-	if err != nil {
+	dataset, ok := manifestFolderDatasets[file.Folder]
+	if !ok || snapshot.IsZero() {
+		return "", safeError("manifest_file_identity")
+	}
+	// Accept the Drive folder layout and the exact official extracted ZIP
+	// layout, while retaining the original archive/entry checkpoint identity.
+	folders := []string{file.Folder, supportedDatasets[dataset].Stem + "_rdf_" + snapshot.Format("20060102")}
+	selected := ""
+	for _, folder := range folders {
+		candidate := filepath.Join(actualRoot, folder, file.Name)
+		if _, err := os.Lstat(candidate); os.IsNotExist(err) {
+			continue
+		} else if err != nil {
+			return "", safeError("manifest_local_file")
+		}
+		path, err := filepath.EvalSymlinks(candidate)
+		if err != nil {
+			return "", safeError("manifest_local_file")
+		}
+		rel, err := filepath.Rel(actualRoot, path)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return "", safeError("manifest_local_path")
+		}
+		if selected != "" && selected != path {
+			return "", safeError("manifest_local_ambiguous")
+		}
+		selected = path
+	}
+	if selected == "" {
 		return "", safeError("manifest_local_file")
 	}
-	rel, err := filepath.Rel(actualRoot, path)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", safeError("manifest_local_path")
-	}
-	return path, nil
+	return selected, nil
 }
 
 func openManifestEntry(ctx context.Context, config Config, file ManifestFile) (*verifiedEntryReader, error) {
@@ -538,7 +561,7 @@ func openManifestEntry(ctx context.Context, config Config, file ManifestFile) (*
 		}
 		stream = &temporaryManifestFile{File: cache}
 	} else {
-		path, err := containedManifestPath(config.InputDir, file)
+		path, err := containedManifestPath(config.InputDir, file, config.SnapshotDate)
 		if err != nil {
 			return nil, err
 		}

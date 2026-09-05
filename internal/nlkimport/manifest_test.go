@@ -54,6 +54,52 @@ func TestManifestLocalImportPreservesOriginalZIPLineageAndNonISBN(t *testing.T) 
 	}
 }
 
+func TestManifestOfficialExtractedFolderLayoutAndPartialCopy(t *testing.T) {
+	snapshot := time.Date(2026, 5, 29, 0, 0, 0, 0, time.UTC)
+	for _, folder := range []string{"book", "government"} {
+		t.Run(folder, func(t *testing.T) {
+			root := t.TempDir()
+			stem := supportedDatasets[manifestFolderDatasets[folder]].Stem
+			directory := filepath.Join(root, stem+"_rdf_20260529")
+			if err := os.Mkdir(directory, 0700); err != nil {
+				t.Fatal(err)
+			}
+			file := filepath.Join(directory, stem+"_0.rdf")
+			if err := os.WriteFile(file, []byte(manifestRDF[:20]), 0600); err != nil {
+				t.Fatal(err)
+			}
+			manifest := Manifest{Root: manifestRoot, Files: []ManifestFile{{Folder: folder, ID: manifestFileID, Name: stem + "_0.rdf", Size: uint64(len(manifestRDF))}}}
+			store := &fakeStore{}
+			config := Config{InputDir: root, Manifest: &manifest, SnapshotDate: snapshot, Resume: true}
+			_, err := (&Importer{Store: store}).Run(context.Background(), config)
+			if ErrorCategory(err) != "manifest_local_file" || store.validateCalls != 0 || len(store.rawBatches) != 0 || len(store.checkpoints) != 0 {
+				t.Fatalf("in-progress copy reached database: %v", err)
+			}
+			if err := os.WriteFile(file, []byte(manifestRDF), 0600); err != nil {
+				t.Fatal(err)
+			}
+			verified, err := VerifyManifest(context.Background(), config)
+			if err != nil || !strings.HasPrefix(verified.Files[0].Revision, "local:") {
+				t.Fatalf("local verified manifest: %v", err)
+			}
+			config.Manifest = &verified
+			result, err := (&Importer{Store: store, IDGenerator: incrementingID()}).Run(context.Background(), config)
+			if err != nil || result.EntriesCompleted != 1 || store.rawBatches[0][0]["source_entry"] != stem+"_rdf_20260529/"+stem+"_0.rdf" {
+				t.Fatalf("official folder import: %+v %v", result, err)
+			}
+			if err := os.Mkdir(filepath.Join(root, folder), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, folder, stem+"_0.rdf"), []byte(manifestRDF), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := VerifyManifest(context.Background(), config); ErrorCategory(err) != "manifest_local_ambiguous" {
+				t.Fatalf("ambiguous duplicate source accepted: %v", err)
+			}
+		})
+	}
+}
+
 func TestManifestAdoptsVerifiedLegacyCompletedCheckpointWithoutReinsert(t *testing.T) {
 	root, manifest := manifestFixture(t)
 	sum := sha256.Sum256([]byte(manifestRDF))
