@@ -23,6 +23,8 @@ type fakeStore struct {
 	existing       map[uint64]struct{}
 	existingChecks int
 	insertError    error
+	verifyError    error
+	verifiedRows   [][]map[string]any
 }
 
 func (s *fakeStore) Validate(context.Context) error {
@@ -74,10 +76,14 @@ func TestImporterFailureCheckpointDoesNotAdvanceUncommittedCounters(t *testing.T
 	}
 }
 
-func (s *fakeStore) ExistingRawRecordIndexes(_ context.Context, _ RawLineage, indexes []uint64) (map[uint64]struct{}, error) {
+func (s *fakeStore) VerifiedRawRecordIndexes(_ context.Context, _ RawLineage, rows []map[string]any) (map[uint64]struct{}, error) {
 	s.existingChecks++
+	s.verifiedRows = append(s.verifiedRows, append([]map[string]any(nil), rows...))
+	if s.verifyError != nil {
+		return nil, s.verifyError
+	}
 	out := make(map[uint64]struct{})
-	for _, index := range indexes {
+	for _, index := range rawRecordIndexes(rows) {
 		if _, found := s.existing[index]; found {
 			out[index] = struct{}{}
 		}
@@ -213,12 +219,53 @@ func TestImporterResumeFiltersRawRowsConfirmedBeforeCheckpointAdvance(t *testing
 	if len(indexes) != 1 || indexes[0] != 2 {
 		t.Fatalf("resumed indexes=%v", indexes)
 	}
-	if store.existingChecks != 1 {
-		t.Fatalf("existing lineage checks=%d want=1", store.existingChecks)
+	if store.existingChecks != 2 {
+		t.Fatalf("existing lineage checks=%d want=2", store.existingChecks)
 	}
 	final := store.checkpoints[len(store.checkpoints)-1]
 	if final.Attempts != 2 || final.RecordsParsed != 3 || final.RecordsInserted != 3 {
 		t.Fatalf("resumed checkpoint=%+v", final)
+	}
+}
+
+func TestImporterResumeChecksEveryRebatchedSourceHash(t *testing.T) {
+	inputDir := t.TempDir()
+	writeSyntheticArchive(t, inputDir)
+	store := &fakeStore{
+		hasCheckpoint: true, existing: map[uint64]struct{}{0: {}, 1: {}, 2: {}},
+		checkpoint: Checkpoint{DatasetName: "book", EntryCRC32: archiveCRC32(t, inputDir), EntryUncompressed: archiveUncompressedSize(t, inputDir), Status: "failed"},
+	}
+	importer := Importer{Store: store, IDGenerator: incrementingID()}
+	result, err := importer.Run(context.Background(), Config{InputDir: inputDir, Datasets: []string{"book"}, SnapshotDate: time.Date(2026, 5, 29, 0, 0, 0, 0, time.UTC), BatchSize: 1, Resume: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RecordsInserted != 0 || len(store.rawBatches) != 0 || store.existingChecks != 3 {
+		t.Fatalf("ambiguous original batch was reinserted: result=%+v checks=%d", result, store.existingChecks)
+	}
+	for _, batch := range store.verifiedRows {
+		if len(batch) != 1 || len(fmt.Sprint(batch[0]["content_hash"])) != 64 || batch[0]["resource_id"] == "" || batch[0]["source_entry"] == "" {
+			t.Fatal("verification omitted parsed source identity")
+		}
+	}
+	last := store.checkpoints[len(store.checkpoints)-1]
+	if last.Status != "succeeded" || last.NextRecordIndex != 3 || last.RecordsInserted != 3 {
+		t.Fatalf("checkpoint=%+v", last)
+	}
+}
+
+func TestImporterResumeVerificationFailureDoesNotAdvanceOrInsert(t *testing.T) {
+	inputDir := t.TempDir()
+	writeSyntheticArchive(t, inputDir)
+	store := &fakeStore{hasCheckpoint: true, verifyError: errors.New("partial replica"), checkpoint: Checkpoint{DatasetName: "book", EntryCRC32: archiveCRC32(t, inputDir), EntryUncompressed: archiveUncompressedSize(t, inputDir), Status: "failed"}}
+	importer := Importer{Store: store, IDGenerator: incrementingID()}
+	_, err := importer.Run(context.Background(), Config{InputDir: inputDir, Datasets: []string{"book"}, SnapshotDate: time.Date(2026, 5, 29, 0, 0, 0, 0, time.UTC), BatchSize: 1, Resume: true})
+	if ErrorCategory(err) != "existing_range_failed" || len(store.rawBatches) != 0 {
+		t.Fatalf("error=%v raw batches=%d", err, len(store.rawBatches))
+	}
+	last := store.checkpoints[len(store.checkpoints)-1]
+	if last.Status != "failed" || last.NextRecordIndex != 0 || last.RecordsInserted != 0 || last.RecordsParsed != 0 {
+		t.Fatalf("verification failure advanced state: %+v", last)
 	}
 }
 

@@ -107,7 +107,7 @@ type Checkpoint struct {
 type Store interface {
 	Validate(context.Context) error
 	LoadCheckpoint(context.Context, CheckpointKey) (Checkpoint, bool, error)
-	ExistingRawRecordIndexes(context.Context, RawLineage, []uint64) (map[uint64]struct{}, error)
+	VerifiedRawRecordIndexes(context.Context, RawLineage, []map[string]any) (map[uint64]struct{}, error)
 	InsertRawRows(context.Context, []map[string]any) error
 	SaveRun(context.Context, RunState) error
 	SaveCheckpoint(context.Context, Checkpoint) error

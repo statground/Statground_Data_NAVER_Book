@@ -329,13 +329,12 @@ func (i *Importer) processEntry(
 				}
 			}
 			if verifyExisting && len(batchRows) > 0 {
-				indexes := rawRecordIndexes(batchRows)
-				existing, err := i.Store.ExistingRawRecordIndexes(ctx, RawLineage{
+				existing, err := i.Store.VerifiedRawRecordIndexes(ctx, RawLineage{
 					SnapshotDate: config.SnapshotDate,
 					DatasetName:  archive.Dataset,
 					Archive:      archive.BaseName,
 					Entry:        entry.Name,
-				}, indexes)
+				}, batchRows)
 				if err != nil {
 					return safeError("existing_range_failed")
 				}
@@ -361,7 +360,8 @@ func (i *Importer) processEntry(
 				return safeError("checkpoint_insert_failed")
 			}
 		}
-		verifyExisting = false
+		// A previous ambiguous batch may span several newly configured batches.
+		// Keep checking this resumed entry until all its source rows are consumed.
 		batchRows = batchRows[:0]
 		batchBytes = 0
 		batchProcessed = 0
