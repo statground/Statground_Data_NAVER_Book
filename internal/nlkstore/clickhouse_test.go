@@ -274,6 +274,9 @@ func TestValidateUsesExactExistsTablePreflight(t *testing.T) {
 				existsQueries++
 				responseBody = "{\"result\":1}\n"
 			}
+			if strings.HasPrefix(query, "CHECK GRANT") {
+				responseBody = "1\n"
+			}
 			if strings.Contains(query, "system.tables") {
 				t.Fatalf("Validate queried system.tables: %s", query)
 			}

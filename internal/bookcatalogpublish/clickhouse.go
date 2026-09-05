@@ -3,7 +3,6 @@ package bookcatalogpublish
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"strconv"
 	"strings"
 
@@ -22,8 +21,9 @@ const readSettings = "max_threads = 2, max_execution_time = 600, max_memory_usag
 const columns = "catalog_key, record_id, canonical_isbn, isbn, uuid, title, author, publisher, pubdate, description, image, link, updated_at, collected_at, resource_type, kdc, subjects, languages, publication_places, series, extents, browse_key, search_text, row_fingerprint"
 
 type ClickHouse struct {
-	Client   *ch.Client
-	Endpoint string
+	Client           *ch.Client
+	Endpoint         string
+	AllowPrivateHTTP bool
 }
 
 func (s *ClickHouse) query(ctx context.Context, sql string) ([]map[string]any, error) {
@@ -47,15 +47,7 @@ func (s *ClickHouse) Validate(ctx context.Context) error {
 	if s.Client == nil || s.Endpoint == "" {
 		return fail("configuration")
 	}
-	protocol := s.Client.Protocol
-	if strings.Contains(s.Client.Host, "://") {
-		u, e := url.Parse(s.Client.Host)
-		if e != nil || u.User != nil {
-			return fail("endpoint")
-		}
-		protocol = u.Scheme
-	}
-	if protocol != "https" {
+	if s.Client.ValidateTransportContext(ctx, !s.AllowPrivateHTTP) != nil {
 		return fail("https_required")
 	}
 	if s.Client.ValidateDirectEndpointHostnameContext(ctx, s.Endpoint) != nil {
@@ -66,14 +58,14 @@ func (s *ClickHouse) Validate(ctx context.Context) error {
 		if e != nil || !exists {
 			return fail("missing_dependency")
 		}
-		rows, e := s.query(ctx, "CHECK GRANT SELECT ON "+table)
-		if e != nil || len(rows) != 1 || uintValue(rows[0]["result"]) != 1 {
+		allowed, e := s.Client.CheckTableGrantContext(ctx, "SELECT", table)
+		if e != nil || !allowed {
 			return fail("select_grant")
 		}
 	}
 	for _, table := range []string{SnapshotTable, MarkerTable} {
-		rows, e := s.query(ctx, "CHECK GRANT INSERT ON "+table)
-		if e != nil || len(rows) != 1 || uintValue(rows[0]["result"]) != 1 {
+		allowed, e := s.Client.CheckTableGrantContext(ctx, "INSERT", table)
+		if e != nil || !allowed {
 			return fail("insert_grant")
 		}
 	}

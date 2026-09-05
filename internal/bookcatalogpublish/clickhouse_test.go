@@ -26,6 +26,13 @@ func testClickHouse(t *testing.T, handler func(string) []map[string]any) *ClickH
 		rows := handler(string(b))
 		var out strings.Builder
 		for _, row := range rows {
+			if strings.HasPrefix(string(b), "CHECK GRANT") {
+				if strings.Contains(string(b), "FORMAT") || r.URL.Query().Get("default_format") != "TabSeparated" {
+					t.Fatal("CHECK GRANT used an unsupported SQL FORMAT clause")
+				}
+				fmt.Fprintln(&out, row["result"])
+				continue
+			}
 			b, e := json.Marshal(row)
 			if e != nil {
 				t.Fatal(e)
@@ -166,6 +173,51 @@ func TestInsertSQLBindsStableIdentityAndCopiesFullSource(t *testing.T) {
 	}
 }
 
+func TestPrivateHTTPOverrideRetainsGrantAndEndpointValidation(t *testing.T) {
+	for _, test := range []struct {
+		name, host, endpoint, denied, want string
+	}{
+		{"private", "10.0.0.8", "Clickhouse_1", "", ""},
+		{"public_denied", "8.8.8.8", "Clickhouse_1", "", "https_required"},
+		{"wrong_node", "10.0.0.8", "Clickhouse_2", "", "endpoint_identity"},
+		{"select_denied_200", "10.0.0.8", "Clickhouse_1", "SELECT", "select_grant"},
+		{"insert_denied_200", "10.0.0.8", "Clickhouse_1", "INSERT", "insert_grant"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			driver := testClickHouse(t, func(sql string) []map[string]any {
+				calls++
+				switch {
+				case strings.HasPrefix(sql, "SELECT hostName() AS value"):
+					return []map[string]any{{"value": "Clickhouse_1"}}
+				case strings.HasPrefix(sql, "EXISTS TABLE"):
+					return []map[string]any{{"result": 1}}
+				case strings.HasPrefix(sql, "CHECK GRANT"):
+					result := 1
+					if test.denied != "" && strings.HasPrefix(sql, "CHECK GRANT "+test.denied) {
+						result = 0
+					}
+					return []map[string]any{{"result": result}}
+				case strings.Contains(sql, "FROM system.tables"):
+					return []map[string]any{{"engine": "MergeTree"}, {"engine": "MergeTree"}}
+				default:
+					t.Fatal("unexpected database operation")
+					return nil
+				}
+			})
+			driver.Client.Protocol, driver.Client.Host = "http", test.host
+			driver.Endpoint, driver.AllowPrivateHTTP = test.endpoint, true
+			err := driver.Validate(context.Background())
+			if (err == nil) != (test.want == "") || err != nil && SafeCategory(err) != test.want {
+				t.Fatalf("want=%s err=%v", test.want, err)
+			}
+			if test.want == "https_required" && calls != 0 {
+				t.Fatal("public HTTP reached transport")
+			}
+		})
+	}
+}
+
 func TestPublisherRejectsEndpointSwitchAfterSuccessfulPreflight(t *testing.T) {
 	for _, operation := range []string{"source_read", "target_read", "latest_read", "marker_read", "snapshot_insert", "marker_insert"} {
 		t.Run(operation, func(t *testing.T) {
@@ -202,6 +254,10 @@ func TestPublisherRejectsEndpointSwitchAfterSuccessfulPreflight(t *testing.T) {
 				}
 				var response strings.Builder
 				for _, row := range rows {
+					if strings.HasPrefix(statement, "CHECK GRANT") {
+						fmt.Fprintln(&response, row["result"])
+						continue
+					}
 					encoded, _ := json.Marshal(row)
 					response.Write(encoded)
 					response.WriteByte('\n')

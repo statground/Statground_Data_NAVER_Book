@@ -4,8 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"net"
-	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -484,30 +482,18 @@ func (s *ClickHouseStore) checkGrant(ctx context.Context, privilege, table strin
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := s.Client.Exec(fmt.Sprintf("CHECK GRANT %s ON %s", privilege, table)); err != nil {
+	allowed, err := s.Client.CheckTableGrantContext(ctx, privilege, table)
+	if err != nil {
 		return &StoreError{Category: classifyError(err)}
+	}
+	if !allowed {
+		return &StoreError{Category: "permission"}
 	}
 	return nil
 }
 
 func (s *ClickHouseStore) validateConnectionBoundary() error {
-	host := strings.TrimSpace(s.Client.Host)
-	parsedHost := host
-	protocol := strings.ToLower(strings.TrimSpace(s.Client.Protocol))
-	if parsed, err := url.Parse(host); err == nil && parsed.Host != "" {
-		parsedHost = parsed.Hostname()
-		protocol = strings.ToLower(parsed.Scheme)
-	} else if splitHost, _, err := net.SplitHostPort(host); err == nil {
-		parsedHost = splitHost
-	}
-	parsedHost = strings.Trim(parsedHost, "[]")
-	if parsedHost == "" || parsedHost == "localhost" || parsedHost == "0.0.0.0" || parsedHost == "::" {
-		return &StoreError{Category: "connection_boundary"}
-	}
-	if ip := net.ParseIP(parsedHost); ip != nil && ip.IsLoopback() {
-		return &StoreError{Category: "connection_boundary"}
-	}
-	if s.Config.RequireHTTPS && protocol != "https" {
+	if s.Client.ValidateTransportContext(context.Background(), s.Config.RequireHTTPS) != nil {
 		return &StoreError{Category: "connection_boundary"}
 	}
 	return nil

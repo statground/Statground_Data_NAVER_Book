@@ -61,7 +61,8 @@ func run(ctx context.Context, args []string) error {
 		*statePath = filepath.Join(filepath.Dir(*manifestPath), "book-catalog-publish-state.json")
 	}
 	gate := pressureGate()
-	state, err := (bookcatalogpublish.Runner{Store: &bookcatalogpublish.ClickHouse{Client: client, Endpoint: endpoint}, BeforeWrite: gate}).Run(ctx, bookcatalogpublish.Config{Manifest: manifest, SnapshotDate: snapshot, TransformVersion: strings.TrimSpace(*transform), StateFile: *statePath, Endpoint: endpoint, ChunkSize: *chunkSize})
+	allowPrivateHTTP := strings.EqualFold(strings.TrimSpace(os.Getenv("NLK_REQUIRE_CLICKHOUSE_HTTPS")), "false")
+	state, err := (bookcatalogpublish.Runner{Store: &bookcatalogpublish.ClickHouse{Client: client, Endpoint: endpoint, AllowPrivateHTTP: allowPrivateHTTP}, BeforeWrite: gate}).Run(ctx, bookcatalogpublish.Config{Manifest: manifest, SnapshotDate: snapshot, TransformVersion: strings.TrimSpace(*transform), StateFile: *statePath, Endpoint: endpoint, ChunkSize: *chunkSize})
 	if err != nil {
 		return err
 	}
