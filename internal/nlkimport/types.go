@@ -9,6 +9,8 @@ import (
 
 type Config struct {
 	InputDir        string
+	Manifest        *Manifest
+	DriveSource     *DriveSource
 	Datasets        []string
 	SnapshotDate    time.Time
 	BatchSize       int
@@ -84,6 +86,7 @@ type Checkpoint struct {
 	SourceArchive       string
 	SourceEntry         string
 	EntryCRC32          string
+	SourceRevision      string
 	EntryUncompressed   uint64
 	Status              string
 	NextRecordIndex     uint64

@@ -235,7 +235,7 @@ func TestProjectionDatasetRoutingMatchesNormalizedImporterContract(t *testing.T)
 	}{
 		{ProjectionAuthority, "person", true},
 		{ProjectionAuthority, "concept", true},
-		{ProjectionAuthority, "organization", false},
+		{ProjectionAuthority, "organization", true},
 		{ProjectionAuthority, "book", false},
 		{ProjectionLibrary, "library", true},
 		{ProjectionLibrary, "book", false},

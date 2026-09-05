@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -79,7 +80,21 @@ func run(ctx context.Context, args []string) error {
 	if err != nil {
 		return &nlkbackfill.SafeError{Category: "configuration"}
 	}
-	result, err := (nlkbackfill.Runner{Store: store}).Run(ctx, nlkbackfill.Config{
+	runner := nlkbackfill.Runner{Store: store}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("NLK_PRESSURE_GATE_ENABLED")), "true") {
+		lastGate := time.Time{}
+		runner.BeforeRange = func(ctx context.Context) error {
+			if !lastGate.IsZero() && time.Since(lastGate) < time.Minute {
+				return nil
+			}
+			if exec.CommandContext(ctx, "python3", "scripts/clickhouse_pressure_gate.py").Run() != nil {
+				return &nlkbackfill.SafeError{Category: "pressure_gate_failed"}
+			}
+			lastGate = time.Now()
+			return nil
+		}
+	}
+	result, err := runner.Run(ctx, nlkbackfill.Config{
 		SnapshotDate:     snapshot,
 		RangeSize:        *rangeSize,
 		Projections:      projections,

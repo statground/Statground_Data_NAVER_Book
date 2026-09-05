@@ -9,9 +9,10 @@ import (
 )
 
 type Runner struct {
-	Store   Store
-	Now     func() time.Time
-	NewUUID func() string
+	Store       Store
+	Now         func() time.Time
+	NewUUID     func() string
+	BeforeRange func(context.Context) error
 }
 
 func (r Runner) Run(ctx context.Context, config Config) (Result, error) {
@@ -106,6 +107,11 @@ func (r Runner) runProjection(
 	var completed uint64
 	var covered uint64
 	for _, recordRange := range ranges {
+		if r.BeforeRange != nil {
+			if err := r.BeforeRange(ctx); err != nil {
+				return true, completed, covered, safeError("pressure_gate_failed")
+			}
+		}
 		if checkpoint.Attempts == ^uint16(0) {
 			return true, completed, covered, safeError("attempt_limit")
 		}

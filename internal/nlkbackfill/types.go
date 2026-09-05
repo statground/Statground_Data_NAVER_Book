@@ -39,8 +39,9 @@ var defaultProjections = []Projection{
 
 var projectionDatasets = map[Projection]map[string]struct{}{
 	ProjectionAuthority: {
-		"person":  {},
-		"concept": {},
+		"person":       {},
+		"concept":      {},
+		"organization": {},
 	},
 	ProjectionBibliography: {
 		"book":                   {},
@@ -97,8 +98,8 @@ func DefaultProjections() []Projection {
 }
 
 // ProjectionAppliesToDataset is the closed routing contract between normalized
-// raw importer datasets and service projections. Known importer datasets with
-// no service projection, such as organization, are explicitly skipped. Unknown
+// raw importer datasets and service projections. Organizations share the
+// authority projection with people and concepts. Unknown
 // or non-canonical checkpoint values stop the run before any heavy query.
 func ProjectionAppliesToDataset(projection Projection, dataset string) (bool, error) {
 	datasets, ok := projectionDatasets[projection]

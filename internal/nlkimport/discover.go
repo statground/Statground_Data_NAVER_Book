@@ -27,6 +27,7 @@ type entryPlan struct {
 	CRC32             uint32
 	CompressedBytes   uint64
 	UncompressedBytes uint64
+	DirectFile        *ManifestFile
 }
 
 type datasetSpec struct {

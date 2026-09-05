@@ -28,8 +28,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: statground-nlk-service-projection-backfill
+  group: statground-book-writer-refresh
   cancel-in-progress: false
+  queue: max
 
 jobs:
   backfill:

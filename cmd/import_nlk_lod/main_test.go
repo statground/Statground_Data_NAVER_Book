@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -54,5 +55,30 @@ func TestInvalidEntryShardFlagsFailBeforeInputAccess(t *testing.T) {
 		if err == nil || err.Error() != "NLK LOD import failed category=invalid_flags" {
 			t.Fatalf("args=%q error=%v", args, err)
 		}
+	}
+}
+
+func TestFullDriveWorkflowRequiresCoverageBeforePublication(t *testing.T) {
+	body, err := os.ReadFile("../../.github/workflows/nlk_drive_import.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := string(body)
+	for _, required := range []string{"group: statground-book-writer-refresh", "cancel-in-progress: false", "queue: max", "--expected-files 208", "--expected-bytes 88736746306", `NLK_PRESSURE_GATE_ENABLED: "true"`, "--resume=true", "--manifest-out", "book-catalog-publish-state.json"} {
+		if !strings.Contains(workflow, required) {
+			t.Errorf("missing complete import contract %s", required)
+		}
+	}
+	steps := []string{"Verify all 208 source files", "Gate raw import capacity", "Stream all RDF files", "Gate service projection capacity", "Project every completed dataset", "Gate public catalog capacity", "Verify complete coverage and publish"}
+	previous := -1
+	for _, step := range steps {
+		index := strings.Index(workflow, step)
+		if index <= previous {
+			t.Fatalf("pipeline order violates complete publication at %s", step)
+		}
+		previous = index
+	}
+	if strings.Contains(workflow, "--max-records") || strings.Contains(workflow, "--entry-shard") {
+		t.Fatal("partial source scope must not reach full publication workflow")
 	}
 }

@@ -1,0 +1,155 @@
+name: NLK Complete Drive Import
+
+on:
+  workflow_dispatch:
+    inputs:
+      drive_folder_id:
+        description: "Complete extracted RDF snapshot folder shared with the readonly service account"
+        required: true
+        default: "1-oFLr3x2GTT9WkdySWKVHBK6raCJT27a"
+        type: string
+      snapshot_date:
+        description: "Source snapshot date"
+        required: true
+        default: "2026-05-29"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: statground-book-writer-refresh
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  import_and_publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME: clickhouse-s1-r1
+      CH_HOST: ${{ secrets.CLICKHOUSE_HOST || secrets.CH_HOST }}
+      CH_PORT: ${{ secrets.CLICKHOUSE_PORT || secrets.CH_PORT }}
+      CH_PROTOCOL: ${{ secrets.CLICKHOUSE_PROTOCOL || secrets.CH_PROTOCOL || 'https' }}
+      CH_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH || secrets.CH_HTTP_URL_PATH }}
+      CH_USER: ${{ secrets.CLICKHOUSE_USER || secrets.CH_USER }}
+      CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD || secrets.CH_PASSWORD }}
+      CH_DATABASE: Data_Book_NLK_Log
+      NLK_REQUIRE_CLICKHOUSE_HTTPS: "true"
+      NLK_CLICKHOUSE_TIMEOUT_SECONDS: "660"
+      NLK_SERVICE_BACKFILL_TIMEOUT_SECONDS: "1810"
+      NLK_PRESSURE_GATE_ENABLED: "true"
+      NLK_IMPORTER_VERSION: nlk_drive_manifest_v1
+      PRODUCER_SOURCE: github_actions
+      SNAPSHOT_DATE: ${{ inputs.snapshot_date }}
+      DRIVE_FOLDER_ID: ${{ inputs.drive_folder_id }}
+      CLICKHOUSE_PRESSURE_GATE_MIN_AVAILABLE_BYTES: "107374182400"
+      CLICKHOUSE_PRESSURE_GATE_MAX_USED_RATIO: "0.90"
+      CLICKHOUSE_PRESSURE_GATE_MIN_AVAILABLE_INODES: "1000000"
+      CLICKHOUSE_PRESSURE_GATE_MAX_USED_INODE_RATIO: "0.95"
+      CLICKHOUSE_PRESSURE_GATE_MAX_REPLICA_QUEUE: "2000"
+      CLICKHOUSE_PRESSURE_GATE_MAX_REPLICA_DELAY_SECONDS: "900"
+      CLICKHOUSE_PRESSURE_GATE_MAX_IOWAIT_NORMALIZED: "0.50"
+      CLICKHOUSE_PRESSURE_GATE_TIMEOUT_SECONDS: "15"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Validate source configuration
+        env:
+          NLK_GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.NLK_GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          set -euo pipefail
+          [[ "$DRIVE_FOLDER_ID" =~ ^[A-Za-z0-9_-]{10,200}$ ]] || { echo "Invalid Drive folder ID"; exit 1; }
+          [[ "$SNAPSHOT_DATE" == "2026-05-29" ]] || { echo "This complete manifest contract is for snapshot 2026-05-29"; exit 1; }
+          test -n "$NLK_GOOGLE_SERVICE_ACCOUNT_JSON" || { echo "NLK_GOOGLE_SERVICE_ACCOUNT_JSON secret is required"; exit 1; }
+          test -n "$CH_HOST" && test -n "$CH_PORT" && test -n "$CH_USER" && test -n "$CH_PASSWORD"
+          test "$CH_PROTOCOL" = "https"
+
+      - name: Validate source and tests
+        run: |
+          go mod download all
+          go mod verify
+          go test ./...
+          python3 -m unittest discover -s scripts -p 'test_*.py'
+
+      - name: Verify all 208 source files and immutable Drive checksums
+        env:
+          NLK_GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.NLK_GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          go run ./cmd/import_nlk_lod --drive-folder-id "$DRIVE_FOLDER_ID" --snapshot-date "$SNAPSHOT_DATE" --expected-files 208 --expected-bytes 88736746306 --plan-only --manifest-out "$RUNNER_TEMP/nlk-manifest.json"
+
+      - name: Gate raw import capacity
+        env:
+          CLICKHOUSE_PRESSURE_GATE_TARGETS: >-
+            replica:Data_Book_NLK_Raw.nlk_resource_raw_local,
+            replica:Data_Book_NLK_Log.nlk_import_run_log_local,
+            replica:Data_Book_NLK_Log.nlk_import_entry_checkpoint_local
+        run: python3 scripts/clickhouse_pressure_gate.py
+
+      - name: Stream all RDF files with durable resume and periodic capacity checks
+        env:
+          NLK_GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.NLK_GOOGLE_SERVICE_ACCOUNT_JSON }}
+          CLICKHOUSE_PRESSURE_GATE_TARGETS: >-
+            replica:Data_Book_NLK_Raw.nlk_resource_raw_local,
+            replica:Data_Book_NLK_Log.nlk_import_run_log_local,
+            replica:Data_Book_NLK_Log.nlk_import_entry_checkpoint_local
+        run: |
+          go run ./cmd/import_nlk_lod --manifest "$RUNNER_TEMP/nlk-manifest.json" --snapshot-date "$SNAPSHOT_DATE" --expected-files 208 --expected-bytes 88736746306 --batch-size 5000 --batch-bytes 16777216 --resume=true
+
+      - name: Gate service projection capacity
+        env:
+          CLICKHOUSE_PRESSURE_GATE_TARGETS: >-
+            replica:Data_Book_NLK_Log.nlk_service_projection_checkpoint_local,
+            replica:Data_Book_NLK_Service.nlk_authority_local,
+            replica:Data_Book_NLK_Service.nlk_bibliography_local,
+            replica:Data_Book_NLK_Service.nlk_library_local,
+            replica:Data_Book_Service.book_provider_latest_local,
+            replica:Data_Book_Service.book_bibliography_context_local,
+            replica:Data_Book_Service.book_kdc_summary_local,
+            replica:Data_Book_Service.book_isbn_alias_local
+        run: python3 scripts/clickhouse_pressure_gate.py
+
+      - name: Project every completed dataset into book and reference data
+        env:
+          CLICKHOUSE_PRESSURE_GATE_TARGETS: >-
+            replica:Data_Book_NLK_Log.nlk_service_projection_checkpoint_local,
+            replica:Data_Book_NLK_Service.nlk_authority_local,
+            replica:Data_Book_NLK_Service.nlk_bibliography_local,
+            replica:Data_Book_NLK_Service.nlk_library_local,
+            replica:Data_Book_Service.book_provider_latest_local,
+            replica:Data_Book_Service.book_bibliography_context_local,
+            replica:Data_Book_Service.book_kdc_summary_local,
+            replica:Data_Book_Service.book_isbn_alias_local
+        run: go run ./cmd/backfill_nlk_service --snapshot-date "$SNAPSHOT_DATE" --range-size 50000 --concurrency 1
+
+      - name: Gate public catalog capacity
+        env:
+          CLICKHOUSE_PRESSURE_GATE_TARGETS: >-
+            local:Data_Book_Service.book_public_catalog_snapshot,
+            local:Data_Book_Service.book_public_catalog_published_batch
+        run: python3 scripts/clickhouse_pressure_gate.py
+
+      - name: Verify complete coverage and publish the book catalog
+        env:
+          CLICKHOUSE_PRESSURE_GATE_TARGETS: >-
+            local:Data_Book_Service.book_public_catalog_snapshot,
+            local:Data_Book_Service.book_public_catalog_published_batch
+        run: go run ./cmd/publish_book_catalog --manifest "$RUNNER_TEMP/nlk-manifest.json" --snapshot-date "$SNAPSHOT_DATE"
+
+      - name: Retain source manifest for review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nlk-source-manifest
+          path: |
+            ${{ runner.temp }}/nlk-manifest.json
+            ${{ runner.temp }}/book-catalog-publish-state.json
+          if-no-files-found: ignore
+          retention-days: 14

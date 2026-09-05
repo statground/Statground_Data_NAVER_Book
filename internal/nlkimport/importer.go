@@ -28,6 +28,7 @@ type Importer struct {
 	Store       Store
 	IDGenerator nlklod.IDGenerator
 	Now         func() time.Time
+	BeforeBatch func(context.Context) error
 }
 
 func (i *Importer) Run(ctx context.Context, config Config) (Result, error) {
@@ -47,7 +48,16 @@ func (i *Importer) Run(ctx context.Context, config Config) (Result, error) {
 	if !config.DryRun && i.Store == nil {
 		return Result{}, safeError("store_required")
 	}
-	plans, err := discoverArchives(config.InputDir, config.Datasets, config.SnapshotDate)
+	var plans []archivePlan
+	var err error
+	if config.Manifest != nil {
+		if config.SnapshotDate.IsZero() {
+			return Result{}, safeError("snapshot_date_required")
+		}
+		plans, err = discoverManifestPlans(ctx, config)
+	} else {
+		plans, err = discoverArchives(config.InputDir, config.Datasets, config.SnapshotDate)
+	}
 	if err != nil {
 		return Result{}, err
 	}
@@ -94,13 +104,21 @@ func (i *Importer) Run(ctx context.Context, config Config) (Result, error) {
 
 	for _, plan := range plans {
 		archiveComplete := true
-		reader, err := zip.OpenReader(plan.LocalPath)
-		if err != nil {
-			return i.failRun(ctx, config, result, runState, "archive_open_failed")
+		var reader *zip.ReadCloser
+		files := make(map[string]*zip.File)
+		if config.Manifest == nil {
+			reader, err = zip.OpenReader(plan.LocalPath)
+			if err != nil {
+				return i.failRun(ctx, config, result, runState, "archive_open_failed")
+			}
+			for _, file := range reader.File {
+				files[file.Name] = file
+			}
 		}
-		files := make(map[string]*zip.File, len(reader.File))
-		for _, file := range reader.File {
-			files[file.Name] = file
+		closeArchive := func() {
+			if reader != nil {
+				_ = reader.Close()
+			}
 		}
 		for _, entry := range plan.Entries {
 			if config.MaxRecords > 0 && result.RecordsParsed >= config.MaxRecords {
@@ -109,13 +127,13 @@ func (i *Importer) Run(ctx context.Context, config Config) (Result, error) {
 				break
 			}
 			file := files[entry.Name]
-			if file == nil {
-				_ = reader.Close()
+			if file == nil && entry.DirectFile == nil {
+				closeArchive()
 				return i.failRun(ctx, config, result, runState, "archive_contract")
 			}
 			outcome, processErr := i.processEntry(ctx, config, plan, entry, file, result.RunUUID, &result)
 			if processErr != nil {
-				_ = reader.Close()
+				closeArchive()
 				return i.failRun(ctx, config, result, runState, ErrorCategory(processErr))
 			}
 			if outcome.skipped || outcome.completed {
@@ -129,12 +147,12 @@ func (i *Importer) Run(ctx context.Context, config Config) (Result, error) {
 			runState = updateRunState(runState, result, i.now())
 			if !config.DryRun {
 				if err := i.Store.SaveRun(ctx, runState); err != nil {
-					_ = reader.Close()
+					closeArchive()
 					return Result{}, safeError("run_log_insert_failed")
 				}
 			}
 		}
-		_ = reader.Close()
+		closeArchive()
 		if archiveComplete {
 			result.ArchivesCompleted++
 		}
@@ -189,13 +207,40 @@ func (i *Importer) processEntry(
 		}
 		checkpoint, found = loaded, exists
 		expectedCRC := fmt.Sprintf("%08x", entry.CRC32)
-		if found && (checkpoint.EntryCRC32 != expectedCRC ||
+		if found && ((entry.DirectFile == nil && checkpoint.EntryCRC32 != expectedCRC) ||
 			checkpoint.EntryUncompressed != entry.UncompressedBytes ||
 			(checkpoint.DatasetName != "" && checkpoint.DatasetName != archive.Dataset)) {
 			return entryOutcome{}, safeError("checkpoint_lineage_mismatch")
 		}
 		if found {
 			normalizeCommittedCheckpointProgress(&checkpoint)
+		}
+		if found && entry.DirectFile != nil {
+			if checkpoint.SourceRevision != "" && checkpoint.SourceRevision != entry.DirectFile.Revision {
+				return entryOutcome{}, safeError("checkpoint_source_revision_mismatch")
+			}
+			// Verify original ZIP content before adopting a Drive revision. Preserve
+			// the same source_archive/source_entry so the existing 34 files stay idempotent.
+			if checkpoint.SourceRevision == "" || strings.HasPrefix(entry.DirectFile.Revision, "local:") {
+				stream, err := openManifestEntry(ctx, config, *entry.DirectFile)
+				if err != nil {
+					return entryOutcome{}, err
+				}
+				hasher := sha256.New()
+				_, copyErr := io.Copy(hasher, stream)
+				verifyErr := stream.Verify()
+				_ = stream.Close()
+				if copyErr != nil || verifyErr != nil ||
+					(checkpoint.ContentHash != "" && checkpoint.ContentHash != hex.EncodeToString(hasher.Sum(nil))) ||
+					(checkpoint.EntryCRC32 != "" && checkpoint.EntryCRC32 != fmt.Sprintf("%08x", stream.crc.Sum32())) {
+					return entryOutcome{}, safeError("checkpoint_content_mismatch")
+				}
+				checkpoint.SourceRevision = entry.DirectFile.Revision
+				i.prepareCheckpoint(&checkpoint)
+				if err := i.Store.SaveCheckpoint(ctx, checkpoint); err != nil {
+					return entryOutcome{}, safeError("checkpoint_insert_failed")
+				}
+			}
 		}
 		if found && checkpoint.Status == "succeeded" {
 			return entryOutcome{completed: true, skipped: true}, nil
@@ -213,12 +258,18 @@ func (i *Importer) processEntry(
 			EntryUncompressed:   entry.UncompressedBytes,
 			Source:              config.Source,
 		}
+		if entry.DirectFile != nil {
+			checkpoint.EntryCRC32 = ""
+			checkpoint.SourceRevision = entry.DirectFile.Revision
+		}
 	}
 	checkpoint.RunUUID = runUUID
 	checkpoint.DatasetName = archive.Dataset
 	checkpoint.SourceArchive = archive.BaseName
 	checkpoint.SourceEntry = entry.Name
-	checkpoint.EntryCRC32 = fmt.Sprintf("%08x", entry.CRC32)
+	if entry.DirectFile == nil {
+		checkpoint.EntryCRC32 = fmt.Sprintf("%08x", entry.CRC32)
+	}
 	checkpoint.EntryUncompressed = entry.UncompressedBytes
 	checkpoint.Source = config.Source
 	checkpoint.Status = "running"
@@ -234,9 +285,21 @@ func (i *Importer) processEntry(
 		}
 	}
 
-	stream, err := file.Open()
+	var stream io.ReadCloser
+	var verifiedStream *verifiedEntryReader
+	var err error
+	if entry.DirectFile != nil {
+		verifiedStream, err = openManifestEntry(ctx, config, *entry.DirectFile)
+		stream = verifiedStream
+	} else {
+		stream, err = file.Open()
+	}
 	if err != nil {
-		return entryOutcome{}, i.failCheckpoint(ctx, config, checkpoint, "entry_open_failed")
+		category := ErrorCategory(err)
+		if category == "unknown" || category == "" {
+			category = "entry_open_failed"
+		}
+		return entryOutcome{}, i.failCheckpoint(ctx, config, checkpoint, category)
 	}
 	defer stream.Close()
 	entryHash := sha256.New()
@@ -260,6 +323,11 @@ func (i *Importer) processEntry(
 		checkpoint.ErrorMessage = ""
 		rowsToInsert := batchRows
 		if !config.DryRun {
+			if i.BeforeBatch != nil {
+				if err := i.BeforeBatch(ctx); err != nil {
+					return safeError("pressure_gate_failed")
+				}
+			}
 			if verifyExisting && len(batchRows) > 0 {
 				indexes := rawRecordIndexes(batchRows)
 				existing, err := i.Store.ExistingRawRecordIndexes(ctx, RawLineage{
@@ -367,6 +435,12 @@ func (i *Importer) processEntry(
 	}
 	if _, err := io.Copy(io.Discard, reader); err != nil {
 		return entryOutcome{}, i.failCheckpoint(ctx, config, checkpoint, "entry_checksum_failed")
+	}
+	if verifiedStream != nil {
+		if err := verifiedStream.Verify(); err != nil {
+			return entryOutcome{}, i.failCheckpoint(ctx, config, checkpoint, ErrorCategory(err))
+		}
+		checkpoint.EntryCRC32 = fmt.Sprintf("%08x", verifiedStream.crc.Sum32())
 	}
 	checkpoint.ContentHash = hex.EncodeToString(entryHash.Sum(nil))
 	checkpoint.Status = "succeeded"
