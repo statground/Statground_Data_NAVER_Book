@@ -705,7 +705,10 @@ func (c *Client) insertJSONEachRowContext(ctx context.Context, table string, row
 		settings += ", insert_distributed_sync = 1"
 	}
 	if durable {
-		settings += ", distributed_foreground_insert = 1, insert_quorum = 2, insert_quorum_parallel = 1, insert_quorum_timeout = 600000, parallel_view_processing = 1, receive_timeout = 660, send_timeout = 660, load_balancing = 'first_or_random', load_balancing_first_offset = 0, prefer_localhost_replica = 0"
+		// The runtime profile defaults to a 30-second query deadline. A durable
+		// quorum write has a ten-minute acknowledgement budget; align the query
+		// deadline so a committed checkpoint is not reported as failed at 30s.
+		settings += ", distributed_foreground_insert = 1, insert_quorum = 2, insert_quorum_parallel = 1, insert_quorum_timeout = 600000, max_execution_time = 600, timeout_overflow_mode = 'throw', max_threads = 1, parallel_view_processing = 1, receive_timeout = 660, send_timeout = 660, load_balancing = 'first_or_random', load_balancing_first_offset = 0, prefer_localhost_replica = 0"
 	}
 	body := fmt.Sprintf("INSERT INTO %s (%s) SETTINGS %s FORMAT JSONEachRow\n%s",
 		table, strings.Join(columns, ", "), settings, payload)
