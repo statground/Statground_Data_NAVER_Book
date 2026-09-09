@@ -1,2 +1,5 @@
 /bin/
 /dist/
+
+__pycache__/
+*.py[cod]
