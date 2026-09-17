@@ -113,11 +113,11 @@ func TestKakaoWorkflowAllowsOnlyApprovedClickHouseTransportTuples(t *testing.T) 
 	if count := strings.Count(text, `KAKAO_REQUIRE_CLICKHOUSE_HTTPS: "false"`); count != 1 {
 		t.Fatalf("Kakao HTTP override count=%d, want exactly one collector-step override", count)
 	}
-	if count := strings.Count(text, `CH_PROTOCOL: ${{ steps.clickhouse_transport.outputs.protocol }}`); count != 3 {
-		t.Fatalf("derived ClickHouse protocol consumer count=%d, want pressure gate, collect, and refresh", count)
+	if count := strings.Count(text, `CH_PROTOCOL: ${{ steps.clickhouse_transport.outputs.protocol }}`); count != 4 {
+		t.Fatalf("derived ClickHouse protocol consumer count=%d, want pressure gate, collect, schedule verification, and manual refresh", count)
 	}
-	if count := strings.Count(text, `CH_PORT: ${{ steps.clickhouse_transport.outputs.port }}`); count != 3 {
-		t.Fatalf("derived ClickHouse port consumer count=%d, want pressure gate, collect, and refresh", count)
+	if count := strings.Count(text, `CH_PORT: ${{ steps.clickhouse_transport.outputs.port }}`); count != 4 {
+		t.Fatalf("derived ClickHouse port consumer count=%d, want pressure gate, collect, schedule verification, and manual refresh", count)
 	}
 	if count := strings.Count(text, `KAKAO_CLICKHOUSE_RAW_WRITE_TIMEOUT_SECONDS: "660"`); count != 1 {
 		t.Fatalf("Kakao raw-write timeout count=%d, want exactly one bounded collector setting", count)

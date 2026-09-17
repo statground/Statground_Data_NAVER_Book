@@ -283,6 +283,21 @@ jobs:
           CH_DATABASE: Data_Book_KAKAO_Raw
         run: go run -mod=mod ./cmd/collect_kakao
 
+      - name: Verify scheduled serving catalog refresh chain
+        if: ${{ inputs.dry_run != true && inputs.run_kind == 'scheduled' }}
+        env:
+          CH_HOST: ${{ secrets.CLICKHOUSE_HOST }}
+          CH_PORT: ${{ steps.clickhouse_transport.outputs.port }}
+          CH_USER: ${{ secrets.CLICKHOUSE_USER }}
+          CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+          CH_PROTOCOL: ${{ steps.clickhouse_transport.outputs.protocol }}
+          CH_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH }}
+          CH_DATABASE: Data_Book_Service
+          BOOK_REFRESH_VERIFY_ONLY: "true"
+          BOOK_REFRESH_COORDINATOR_ATTEMPTS: "12"
+          BOOK_REFRESH_COORDINATOR_RETRY_MILLISECONDS: "500"
+        run: go run -mod=mod ./cmd/refresh_webr_book_catalog
+
       - name: Refresh provider-neutral serving catalogs for manual runs
         if: ${{ inputs.dry_run != true && inputs.run_kind != 'scheduled' }}
         env:

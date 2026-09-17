@@ -32,6 +32,17 @@ func main() {
 }
 
 func run() (runErr error) {
+	if value := strings.ToLower(envx.String("BOOK_REFRESH_VERIFY_ONLY", "")); value == "true" || value == "1" {
+		client, err := ch.NewFromEnv()
+		if err != nil {
+			return err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		attempts, retryDelay := bookRefreshCoordinatorRetrySettings()
+		return verifyBookRefreshSchedules(ctx, client, bookRefreshScheduleViews, attempts, retryDelay)
+	}
+
 	settleSeconds := envx.Int("WEBR_BOOK_REFRESH_SETTLE_SECONDS", 20)
 	if settleSeconds > 0 {
 		fmt.Printf("[book-catalog] waiting %ds for direct ClickHouse ingestion to settle\n", settleSeconds)
@@ -76,6 +87,84 @@ func run() (runErr error) {
 		}
 	}
 	return nil
+}
+
+// Scheduled collection relies on the existing serial refresh chain. Inspect
+// every predecessor together so a waiting successor cannot hide a stopped
+// schedule. This mode never changes schedules or triggers a refresh.
+func verifyBookRefreshSchedules(ctx context.Context, client *ch.Client, refreshViews []string, attempts int, retryDelay time.Duration) error {
+	if len(refreshViews) == 0 {
+		return fmt.Errorf("book refresh schedule verification requires views")
+	}
+	var predicates []string
+	for _, refreshView := range refreshViews {
+		if err := validateQualifiedIdentifier(refreshView, "BOOK_REFRESH_SCHEDULE_VIEW"); err != nil {
+			return err
+		}
+		database, view, _ := strings.Cut(refreshView, ".")
+		predicates = append(predicates, fmt.Sprintf("(database = %s AND view = %s)", util.SQLString(database), util.SQLString(view)))
+	}
+	query := fmt.Sprintf(`
+		SELECT database, view, status
+		FROM system.view_refreshes
+		WHERE %s
+		LIMIT %d
+		SETTINGS max_threads = 1, max_execution_time = 5
+	`, strings.Join(predicates, " OR "), len(refreshViews)+1)
+	if attempts < 1 {
+		attempts = 1
+	}
+	for attempt := 1; attempt <= attempts; attempt++ {
+		rows, err := client.QueryJSONEachRowContext(ctx, query)
+		if err != nil {
+			return fmt.Errorf("verify Book refresh schedules: %w", err)
+		}
+		if len(rows) > 0 {
+			states := make(map[string]string, len(rows))
+			for _, row := range rows {
+				name := util.ToString(row["database"]) + "." + util.ToString(row["view"])
+				if _, exists := states[name]; exists {
+					return fmt.Errorf("duplicate Book refresh schedule: %s", name)
+				}
+				states[name] = strings.TrimSpace(util.ToString(row["status"]))
+			}
+			var failures []error
+			for _, refreshView := range refreshViews {
+				status, exists := states[refreshView]
+				if !exists {
+					failures = append(failures, fmt.Errorf("Book refresh schedule missing: %s", refreshView))
+					continue
+				}
+				switch status {
+				case "Scheduled", "Scheduling", "Running", "RunningOnAnotherReplica", "WaitingForDependencies":
+				default:
+					failures = append(failures, fmt.Errorf("Book refresh schedule unhealthy: %s status=%s", refreshView, status))
+				}
+			}
+			if err := errors.Join(failures...); err != nil {
+				return err
+			}
+			for _, refreshView := range refreshViews {
+				fmt.Printf("[book-catalog] schedule verified view=%s status=%s\n", refreshView, states[refreshView])
+			}
+			return nil
+		}
+		// An empty result can mean this endpoint selected a non-coordinator.
+		// Retry only that bounded discovery case, never an unhealthy state.
+		if client.HTTPClient != nil {
+			client.HTTPClient.CloseIdleConnections()
+		}
+		if attempt < attempts && retryDelay > 0 {
+			timer := time.NewTimer(retryDelay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
+	}
+	return fmt.Errorf("Book refresh coordinator unavailable after %d read-only checks", attempts)
 }
 
 func refreshProviderCatalog(client *ch.Client, refreshView, countView string) error {
