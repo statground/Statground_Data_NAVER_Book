@@ -17,6 +17,11 @@ import (
 var qualifiedIdentifierRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$`)
 var errBookRefreshBusy = errors.New("another book refresh is already running")
 
+const (
+	bookRefreshMaxSuccessAgeSeconds = int64(13 * 60 * 60)
+	bookRefreshMaxRunningAgeSeconds = int64(2 * 60 * 60)
+)
+
 var bookRefreshScheduleViews = []string{
 	"Data_Book_Service.mv_book_catalog_latest_refresh",
 	"webr_book.mv_naver_r_book_catalog_refresh",
@@ -105,7 +110,11 @@ func verifyBookRefreshSchedules(ctx context.Context, client *ch.Client, refreshV
 		predicates = append(predicates, fmt.Sprintf("(database = %s AND view = %s)", util.SQLString(database), util.SQLString(view)))
 	}
 	query := fmt.Sprintf(`
-		SELECT database, view, status
+		SELECT database, view, status,
+		       toUnixTimestamp(now()) AS observed_epoch,
+		       ifNull(toUnixTimestamp(last_success_time), 0) AS last_success_epoch,
+		       ifNull(toUnixTimestamp(last_refresh_time), 0) AS last_refresh_epoch,
+		       notEmpty(exception) AS has_exception
 		FROM system.view_refreshes
 		WHERE %s
 		LIMIT %d
@@ -120,23 +129,48 @@ func verifyBookRefreshSchedules(ctx context.Context, client *ch.Client, refreshV
 			return fmt.Errorf("verify Book refresh schedules: %w", err)
 		}
 		if len(rows) > 0 {
-			states := make(map[string]string, len(rows))
+			states := make(map[string]map[string]any, len(rows))
 			for _, row := range rows {
 				name := util.ToString(row["database"]) + "." + util.ToString(row["view"])
 				if _, exists := states[name]; exists {
 					return fmt.Errorf("duplicate Book refresh schedule: %s", name)
 				}
-				states[name] = strings.TrimSpace(util.ToString(row["status"]))
+				states[name] = row
 			}
 			var failures []error
+			boundedPredecessorRunning := false
 			for _, refreshView := range refreshViews {
-				status, exists := states[refreshView]
+				row, exists := states[refreshView]
 				if !exists {
 					failures = append(failures, fmt.Errorf("Book refresh schedule missing: %s", refreshView))
 					continue
 				}
+				status := strings.TrimSpace(util.ToString(row["status"]))
+				observed := util.ToInt64(row["observed_epoch"])
+				metadataComplete := observed > 0
+				for _, key := range []string{"last_success_epoch", "last_refresh_epoch", "has_exception"} {
+					metadataComplete = metadataComplete && row[key] != nil
+				}
+				if !metadataComplete {
+					failures = append(failures, fmt.Errorf("Book refresh metadata incomplete: %s", refreshView))
+					continue
+				}
+				freshSuccess := bookRefreshEpochWithinAge(observed, util.ToInt64(row["last_success_epoch"]), bookRefreshMaxSuccessAgeSeconds) && util.ToInt64(row["has_exception"]) == 0
 				switch status {
-				case "Scheduled", "Scheduling", "Running", "RunningOnAnotherReplica", "WaitingForDependencies":
+				case "Scheduled", "Scheduling":
+					if !freshSuccess {
+						failures = append(failures, fmt.Errorf("Book refresh lacks a fresh successful generation or has a latest failure: %s status=%s", refreshView, status))
+					}
+				case "Running", "RunningOnAnotherReplica":
+					if !bookRefreshEpochWithinAge(observed, util.ToInt64(row["last_refresh_epoch"]), bookRefreshMaxRunningAgeSeconds) {
+						failures = append(failures, fmt.Errorf("Book refresh running generation has an invalid start or exceeds 2 hours: %s", refreshView))
+					} else {
+						boundedPredecessorRunning = true
+					}
+				case "WaitingForDependencies":
+					if !boundedPredecessorRunning && !freshSuccess {
+						failures = append(failures, fmt.Errorf("Book refresh dependency wait lacks a bounded running predecessor or fresh successful generation: %s", refreshView))
+					}
 				default:
 					failures = append(failures, fmt.Errorf("Book refresh schedule unhealthy: %s status=%s", refreshView, status))
 				}
@@ -145,7 +179,7 @@ func verifyBookRefreshSchedules(ctx context.Context, client *ch.Client, refreshV
 				return err
 			}
 			for _, refreshView := range refreshViews {
-				fmt.Printf("[book-catalog] schedule verified view=%s status=%s\n", refreshView, states[refreshView])
+				fmt.Printf("[book-catalog] bounded refresh progress verified view=%s status=%s publication=unverified\n", refreshView, util.ToString(states[refreshView]["status"]))
 			}
 			return nil
 		}
@@ -165,6 +199,10 @@ func verifyBookRefreshSchedules(ctx context.Context, client *ch.Client, refreshV
 		}
 	}
 	return fmt.Errorf("Book refresh coordinator unavailable after %d read-only checks", attempts)
+}
+
+func bookRefreshEpochWithinAge(observed, event, maxAge int64) bool {
+	return event > 0 && event <= observed && observed-event <= maxAge
 }
 
 func refreshProviderCatalog(client *ch.Client, refreshView, countView string) error {
