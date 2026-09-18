@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"statground_naver_book_go/internal/kakaocollector"
 )
 
 func TestSplitQueriesNormalizesAndDeduplicatesWithoutCommaSplitting(t *testing.T) {
@@ -11,6 +13,41 @@ func TestSplitQueriesNormalizesAndDeduplicatesWithoutCommaSplitting(t *testing.T
 	want := []string{"R, statistics", "language learning"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("splitQueries=%#v want=%#v", got, want)
+	}
+}
+
+func TestCollectionSummaryDistinguishesAllFrontierDueSkips(t *testing.T) {
+	summary := collectionSummary{plannedRequests: 4}
+	for range 4 {
+		summary.recordResult(kakaocollector.Result{SkippedDue: true})
+	}
+	want := "provider=kakao status=completed calls=0 fetched=0 inserted=0 new_isbn=0 changed_isbn=0 duplicates=0 planned_requests=4 processed_requests=0 skipped_due_requests=4"
+	if got := summary.String(); got != want {
+		t.Fatalf("summary=%q want=%q", got, want)
+	}
+}
+
+func TestCollectionSummaryRetainsMixedRequestAndBookTotals(t *testing.T) {
+	summary := collectionSummary{plannedRequests: 4}
+	for _, result := range []kakaocollector.Result{
+		{SkippedDue: true},
+		{Calls: 2, Fetched: 7, Inserted: 4, NewISBN: 3, ChangedISBN: 1, Duplicates: 3},
+		{SkippedDue: true},
+		{Calls: 1, Fetched: 5, Inserted: 2, NewISBN: 1, ChangedISBN: 1, Duplicates: 3},
+	} {
+		summary.recordResult(result)
+	}
+	want := "provider=kakao status=completed calls=3 fetched=12 inserted=6 new_isbn=4 changed_isbn=2 duplicates=6 planned_requests=4 processed_requests=2 skipped_due_requests=2"
+	if got := summary.String(); got != want {
+		t.Fatalf("summary=%q want=%q", got, want)
+	}
+}
+
+func TestCollectionSummaryDoesNotCountUnattemptedBudgetRemainder(t *testing.T) {
+	summary := collectionSummary{plannedRequests: 3}
+	summary.recordResult(kakaocollector.Result{Calls: 1})
+	if summary.processedRequests != 1 || summary.skippedDueRequests != 0 || summary.plannedRequests != 3 {
+		t.Fatalf("summary=%s", summary)
 	}
 }
 

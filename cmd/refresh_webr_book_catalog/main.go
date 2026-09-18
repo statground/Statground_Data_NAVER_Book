@@ -155,11 +155,12 @@ func verifyBookRefreshSchedules(ctx context.Context, client *ch.Client, refreshV
 					failures = append(failures, fmt.Errorf("Book refresh metadata incomplete: %s", refreshView))
 					continue
 				}
-				freshSuccess := bookRefreshEpochWithinAge(observed, util.ToInt64(row["last_success_epoch"]), bookRefreshMaxSuccessAgeSeconds) && util.ToInt64(row["has_exception"]) == 0
+				successFailureReason := bookRefreshSuccessFailureReason(observed, util.ToInt64(row["last_success_epoch"]), util.ToInt64(row["has_exception"]) != 0)
+				freshSuccess := successFailureReason == ""
 				switch status {
 				case "Scheduled", "Scheduling":
 					if !freshSuccess {
-						failures = append(failures, fmt.Errorf("Book refresh lacks a fresh successful generation or has a latest failure: %s status=%s", refreshView, status))
+						failures = append(failures, fmt.Errorf("Book refresh lacks a fresh successful generation or has a latest failure: %s status=%s reason=%s", refreshView, status, successFailureReason))
 					}
 				case "Running", "RunningOnAnotherReplica":
 					if !bookRefreshEpochWithinAge(observed, util.ToInt64(row["last_refresh_epoch"]), bookRefreshMaxRunningAgeSeconds) {
@@ -169,7 +170,7 @@ func verifyBookRefreshSchedules(ctx context.Context, client *ch.Client, refreshV
 					}
 				case "WaitingForDependencies":
 					if !boundedPredecessorRunning && !freshSuccess {
-						failures = append(failures, fmt.Errorf("Book refresh dependency wait lacks a bounded running predecessor or fresh successful generation: %s", refreshView))
+						failures = append(failures, fmt.Errorf("Book refresh dependency wait lacks a bounded running predecessor or fresh successful generation: %s reason=%s", refreshView, successFailureReason))
 					}
 				default:
 					failures = append(failures, fmt.Errorf("Book refresh schedule unhealthy: %s status=%s", refreshView, status))
@@ -203,6 +204,22 @@ func verifyBookRefreshSchedules(ctx context.Context, client *ch.Client, refreshV
 
 func bookRefreshEpochWithinAge(observed, event, maxAge int64) bool {
 	return event > 0 && event <= observed && observed-event <= maxAge
+}
+
+func bookRefreshSuccessFailureReason(observed, success int64, hasException bool) string {
+	if hasException {
+		return "latest_failure"
+	}
+	if success <= 0 {
+		return "success_missing"
+	}
+	if success > observed {
+		return "success_future"
+	}
+	if !bookRefreshEpochWithinAge(observed, success, bookRefreshMaxSuccessAgeSeconds) {
+		return "success_stale"
+	}
+	return ""
 }
 
 func refreshProviderCatalog(client *ch.Client, refreshView, countView string) error {

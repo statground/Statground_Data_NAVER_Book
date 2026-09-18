@@ -38,6 +38,35 @@ func (e *safeError) Error() string {
 	return message
 }
 
+type collectionSummary struct {
+	plannedRequests    int
+	processedRequests  int
+	skippedDueRequests int
+	total              kakaocollector.Result
+}
+
+func (s *collectionSummary) recordResult(result kakaocollector.Result) {
+	if result.SkippedDue {
+		s.skippedDueRequests++
+		return
+	}
+	s.processedRequests++
+	s.total.Calls += result.Calls
+	s.total.Fetched += result.Fetched
+	s.total.Inserted += result.Inserted
+	s.total.NewISBN += result.NewISBN
+	s.total.ChangedISBN += result.ChangedISBN
+	s.total.Duplicates += result.Duplicates
+}
+
+func (s collectionSummary) String() string {
+	return fmt.Sprintf(
+		"provider=kakao status=completed calls=%d fetched=%d inserted=%d new_isbn=%d changed_isbn=%d duplicates=%d planned_requests=%d processed_requests=%d skipped_due_requests=%d",
+		s.total.Calls, s.total.Fetched, s.total.Inserted, s.total.NewISBN, s.total.ChangedISBN, s.total.Duplicates,
+		s.plannedRequests, s.processedRequests, s.skippedDueRequests,
+	)
+}
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -152,7 +181,7 @@ func run() error {
 		return &safeError{category: "contract_error"}
 	}
 	respectDue := boolEnv("KAKAO_RESPECT_FRONTIER_DUE", runKind == "scheduled")
-	total := kakaocollector.Result{}
+	summary := collectionSummary{plannedRequests: len(plan.Selected)}
 	for _, planned := range plan.Selected {
 		result, collectErr := collector.Collect(ctx, kakaocollector.Config{
 			Mode:         mode,
@@ -163,15 +192,10 @@ func run() error {
 			Source:       storeConfig.Source,
 			LineageTopic: storeConfig.LineageTopic,
 		})
+		summary.recordResult(result)
 		if result.SkippedDue {
 			continue
 		}
-		total.Calls += result.Calls
-		total.Fetched += result.Fetched
-		total.Inserted += result.Inserted
-		total.NewISBN += result.NewISBN
-		total.ChangedISBN += result.ChangedISBN
-		total.Duplicates += result.Duplicates
 		if collectErr != nil {
 			return &safeError{category: result.ErrorCategory, stage: kakaocollector.ErrorStage(collectErr), reason: kakaocollector.ErrorReason(collectErr)}
 		}
@@ -179,15 +203,7 @@ func run() error {
 			break
 		}
 	}
-	fmt.Printf(
-		"provider=kakao status=completed calls=%d fetched=%d inserted=%d new_isbn=%d changed_isbn=%d duplicates=%d\n",
-		total.Calls,
-		total.Fetched,
-		total.Inserted,
-		total.NewISBN,
-		total.ChangedISBN,
-		total.Duplicates,
-	)
+	fmt.Println(summary.String())
 	return nil
 }
 

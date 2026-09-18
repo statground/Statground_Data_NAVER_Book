@@ -126,14 +126,18 @@ func TestVerifyBookSchedulesBoundedProgressAndFreshness(t *testing.T) {
 		wantErr string
 	}{
 		{"success at 13 hour boundary", func(rows []map[string]any) { rows[2]["last_success_epoch"] = now - 46800 }, ""},
-		{"stale scheduled success", func(rows []map[string]any) { rows[2]["last_success_epoch"] = now - 46801 }, "lacks a fresh successful generation"},
-		{"missing scheduled success", func(rows []map[string]any) { rows[2]["last_success_epoch"] = 0 }, "lacks a fresh successful generation"},
-		{"future scheduled success", func(rows []map[string]any) { rows[2]["last_success_epoch"] = now + 1 }, "lacks a fresh successful generation"},
-		{"latest scheduled failure", func(rows []map[string]any) { rows[2]["has_exception"] = 1 }, "has a latest failure"},
+		{"stale scheduled success", func(rows []map[string]any) { rows[2]["last_success_epoch"] = now - 46801 }, "reason=success_stale"},
+		{"missing scheduled success", func(rows []map[string]any) { rows[2]["last_success_epoch"] = 0 }, "reason=success_missing"},
+		{"future scheduled success", func(rows []map[string]any) { rows[2]["last_success_epoch"] = now + 1 }, "reason=success_future"},
+		{"latest scheduled failure", func(rows []map[string]any) { rows[2]["has_exception"] = 1 }, "reason=latest_failure"},
+		{"latest failure takes precedence over stale success", func(rows []map[string]any) {
+			rows[2]["has_exception"] = 1
+			rows[2]["last_success_epoch"] = now - 46801
+		}, "reason=latest_failure"},
 		{"stale scheduling success", func(rows []map[string]any) {
 			rows[2]["status"] = "Scheduling"
 			rows[2]["last_success_epoch"] = now - 46801
-		}, "lacks a fresh successful generation"},
+		}, "reason=success_stale"},
 		{"first running generation with prior failure and waiting successor", func(rows []map[string]any) {
 			rows[2]["status"] = "Running"
 			rows[2]["last_refresh_epoch"] = now - 7200
@@ -163,16 +167,16 @@ func TestVerifyBookSchedulesBoundedProgressAndFreshness(t *testing.T) {
 		{"waiting without active predecessor or success", func(rows []map[string]any) {
 			rows[3]["status"] = "WaitingForDependencies"
 			rows[3]["last_success_epoch"] = 0
-		}, "dependency wait lacks"},
+		}, "reason=success_missing"},
 		{"waiting with fresh own success", func(rows []map[string]any) { rows[3]["status"] = "WaitingForDependencies" }, ""},
 		{"waiting with stale own success", func(rows []map[string]any) {
 			rows[3]["status"] = "WaitingForDependencies"
 			rows[3]["last_success_epoch"] = now - 46801
-		}, "dependency wait lacks"},
+		}, "reason=success_stale"},
 		{"waiting with latest failure and no active predecessor", func(rows []map[string]any) {
 			rows[3]["status"] = "WaitingForDependencies"
 			rows[3]["has_exception"] = 1
-		}, "dependency wait lacks"},
+		}, "reason=latest_failure"},
 		{"waiting chain backed by first running predecessor", func(rows []map[string]any) {
 			rows[0]["status"] = "Running"
 			rows[0]["last_success_epoch"] = 0
