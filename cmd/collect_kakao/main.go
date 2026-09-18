@@ -39,10 +39,12 @@ func (e *safeError) Error() string {
 }
 
 type collectionSummary struct {
-	plannedRequests    int
-	processedRequests  int
-	skippedDueRequests int
-	total              kakaocollector.Result
+	candidateRequests              int
+	deferredBeforePlanningRequests int
+	plannedRequests                int
+	processedRequests              int
+	skippedDueRequests             int
+	total                          kakaocollector.Result
 }
 
 func (s *collectionSummary) recordResult(result kakaocollector.Result) {
@@ -61,9 +63,9 @@ func (s *collectionSummary) recordResult(result kakaocollector.Result) {
 
 func (s collectionSummary) String() string {
 	return fmt.Sprintf(
-		"provider=kakao status=completed calls=%d fetched=%d inserted=%d new_isbn=%d changed_isbn=%d duplicates=%d planned_requests=%d processed_requests=%d skipped_due_requests=%d",
+		"provider=kakao status=completed calls=%d fetched=%d inserted=%d new_isbn=%d changed_isbn=%d duplicates=%d planned_requests=%d processed_requests=%d skipped_due_requests=%d candidate_requests=%d deferred_before_planning_requests=%d",
 		s.total.Calls, s.total.Fetched, s.total.Inserted, s.total.NewISBN, s.total.ChangedISBN, s.total.Duplicates,
-		s.plannedRequests, s.processedRequests, s.skippedDueRequests,
+		s.plannedRequests, s.processedRequests, s.skippedDueRequests, s.candidateRequests, s.deferredBeforePlanningRequests,
 	)
 }
 
@@ -149,9 +151,15 @@ func run() error {
 			Priority:       priority,
 		})
 	}
+	candidateCount := len(candidates)
+	respectDue := boolEnv("KAKAO_RESPECT_FRONTIER_DUE", runKind == "scheduled")
+	candidates, deferred, err := frontierEligibleCandidates(ctx, candidates, store, mode, respectDue, now)
+	if err != nil {
+		return &safeError{category: kakaocollector.ErrorCategory(err), stage: kakaocollector.ErrorStage(err), reason: kakaocollector.ErrorReason(err)}
+	}
 	plan := quota.BuildPlan(candidates, planningBudget)
 	fmt.Printf(
-		"provider=kakao observed_calls_today=%d planned_requests=%d planned_calls=%d skipped_invalid=%d skipped_duplicate=%d skipped_budget=%d dry_run=%t\n",
+		"provider=kakao observed_calls_today=%d planned_requests=%d planned_calls=%d skipped_invalid=%d skipped_duplicate=%d skipped_budget=%d dry_run=%t candidate_requests=%d deferred_before_planning_requests=%d\n",
 		observedCalls,
 		len(plan.Selected),
 		plan.PlannedCalls,
@@ -159,11 +167,14 @@ func run() error {
 		plan.SkippedDuplicate,
 		plan.SkippedOverBudget,
 		boolEnv("KAKAO_DRY_RUN", false),
+		candidateCount, deferred,
 	)
 	if boolEnv("KAKAO_DRY_RUN", false) {
 		return nil
 	}
+	summary := collectionSummary{plannedRequests: len(plan.Selected), candidateRequests: candidateCount, deferredBeforePlanningRequests: deferred}
 	if len(plan.Selected) == 0 {
+		fmt.Println(summary.String())
 		return nil
 	}
 
@@ -180,8 +191,6 @@ func run() error {
 	if err != nil {
 		return &safeError{category: "contract_error"}
 	}
-	respectDue := boolEnv("KAKAO_RESPECT_FRONTIER_DUE", runKind == "scheduled")
-	summary := collectionSummary{plannedRequests: len(plan.Selected)}
 	for _, planned := range plan.Selected {
 		result, collectErr := collector.Collect(ctx, kakaocollector.Config{
 			Mode:         mode,
@@ -205,6 +214,44 @@ func run() error {
 	}
 	fmt.Println(summary.String())
 	return nil
+}
+
+type frontierReader interface {
+	LoadFrontier(context.Context, kakaostore.FrontierKey) (kakaostore.FrontierSnapshot, error)
+}
+
+// Filter before reserving planning quota. Collect still checks frontier due
+// again immediately before an external request.
+func frontierEligibleCandidates(ctx context.Context, candidates []quota.Candidate, store frontierReader, mode string, respectDue bool, now time.Time) ([]quota.Candidate, int, error) {
+	if !respectDue {
+		return candidates, 0, nil
+	}
+	mode = strings.TrimSpace(mode)
+	if mode == "" {
+		mode = "manual"
+	}
+	eligible := make([]quota.Candidate, 0, len(candidates))
+	deferred := 0
+	for _, candidate := range candidates {
+		request := candidate.Request
+		request.Query = strings.Join(strings.Fields(request.Query), " ")
+		request, err := provider.NormalizeSearchRequest(request)
+		if err != nil || candidate.EstimatedCalls <= 0 {
+			// Preserve BuildPlan's invalid-candidate accounting without extra reads.
+			eligible = append(eligible, candidate)
+			continue
+		}
+		frontier, err := store.LoadFrontier(ctx, kakaostore.FrontierKey{Provider: "kakao", Mode: mode, Query: request.Query, Target: request.Target, Sort: request.Sort})
+		if err != nil {
+			return nil, 0, err
+		}
+		if frontier.Found && (!frontier.State.Active || (!frontier.NextDueAt.IsZero() && now.Before(frontier.NextDueAt))) {
+			deferred++
+			continue
+		}
+		eligible = append(eligible, candidate)
+	}
+	return eligible, deferred, nil
 }
 
 func splitQueries(raw string) []string {
