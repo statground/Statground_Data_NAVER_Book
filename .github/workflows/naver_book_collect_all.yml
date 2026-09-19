@@ -33,6 +33,8 @@ jobs:
   collect_all:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    outputs:
+      webr_refresh_verified: ${{ steps.webr_book_refresh.outputs.verified }}
     env:
       # Port 50005 is the durable direct S1_R1 endpoint, never the 50006 gateway.
       CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME: clickhouse-s1-r1
@@ -340,6 +342,7 @@ jobs:
           go run -mod=mod ./cmd/collect_manual
 
       - name: Refresh Web-R and MirType book catalogs
+        id: webr_book_refresh
         if: ${{ (inputs.stage == 'all' || inputs.stage == 'refresh') && github.event_name == 'workflow_dispatch' }}
         env:
           CH_HOST: ${{ secrets.CLICKHOUSE_HOST || secrets.CH_HOST }}
@@ -356,13 +359,19 @@ jobs:
           MIRTYPE_BOOK_REFRESH_ENABLED: "true"
           MIRTYPE_BOOK_REFRESH_VIEW: mirtype_book.mv_naver_language_book_catalog_refresh
           MIRTYPE_BOOK_COUNT_VIEW: mirtype_book.v_naver_language_book_catalog
+          WEBR_BOOK_GENERATION_PUBLISH_ENABLED: ${{ vars.WEBR_BOOK_GENERATION_PUBLISH_ENABLED }}
         run: |
           if [ -z "$CH_HOST" ] || [ -z "$CH_USER" ] || [ -z "$CH_PASSWORD" ]; then
+            if [ "$WEBR_BOOK_GENERATION_PUBLISH_ENABLED" = "true" ]; then
+              echo "::error::Web-R Book refresh credentials are required while generation publication is enabled"
+              exit 1
+            fi
             echo "Skipping Web-R and MirType book catalog refresh because ClickHouse secrets are not configured"
             exit 0
           fi
           export CH_PORT="${CH_PORT:-8123}"
           go run -mod=mod ./cmd/refresh_webr_book_catalog
+          echo "verified=true" >> "$GITHUB_OUTPUT"
 
       - name: Refresh MirType provider practice content
         if: inputs.stage == 'all' || inputs.stage == 'refresh'
@@ -383,3 +392,15 @@ jobs:
           CH_BASE_URL="${CH_PROTOCOL}://${CH_HOST}:${CH_PORT}/${CH_HTTP_URL_PATH}"
           curl --fail --silent --show-error --max-time 300 -u "$CH_USER:$CH_PASSWORD" "$CH_BASE_URL" --data-binary "SYSTEM REFRESH VIEW mirtype_content.mv_provider_practice_content_refresh"
           curl --fail --silent --show-error --max-time 60 -u "$CH_USER:$CH_PASSWORD" "$CH_BASE_URL" --data-binary "SELECT * FROM mirtype_content.v_provider_practice_content_current FORMAT TSVWithNames"
+
+  publish_webr_generation:
+    name: Publish verified Web-R Book generation
+    needs: collect_all
+    if: ${{ success() && needs.collect_all.outputs.webr_refresh_verified == 'true' && vars.WEBR_BOOK_GENERATION_PUBLISH_ENABLED == 'true' && (inputs.stage == 'all' || inputs.stage == 'refresh') && github.event_name == 'workflow_dispatch' }}
+    uses: ./.github/workflows/webr_book_generation_publish.yml
+    secrets:
+      STATGROUND_SQL_READ_TOKEN: ${{ secrets.STATGROUND_SQL_READ_TOKEN }}
+      WEBR_BOOK_PUBLISHER_ENDPOINT: ${{ secrets.WEBR_BOOK_PUBLISHER_ENDPOINT }}
+      WEBR_BOOK_PUBLISHER_USER: ${{ secrets.WEBR_BOOK_PUBLISHER_USER }}
+      WEBR_BOOK_PUBLISHER_PASSWORD: ${{ secrets.WEBR_BOOK_PUBLISHER_PASSWORD }}
+      WEBR_BOOK_PUBLISHER_CA_PEM: ${{ secrets.WEBR_BOOK_PUBLISHER_CA_PEM }}

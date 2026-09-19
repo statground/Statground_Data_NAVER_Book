@@ -62,6 +62,16 @@ on:
         required: true
       CLICKHOUSE_HTTP_URL_PATH:
         required: false
+      STATGROUND_SQL_READ_TOKEN:
+        required: false
+      WEBR_BOOK_PUBLISHER_ENDPOINT:
+        required: false
+      WEBR_BOOK_PUBLISHER_USER:
+        required: false
+      WEBR_BOOK_PUBLISHER_PASSWORD:
+        required: false
+      WEBR_BOOK_PUBLISHER_CA_PEM:
+        required: false
   workflow_dispatch:
     inputs:
       mode:
@@ -109,6 +119,8 @@ jobs:
       queue: max
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    outputs:
+      webr_refresh_verified: ${{ steps.webr_book_refresh_verify.outputs.verified || steps.webr_book_refresh_manual.outputs.verified }}
     env:
       # Port 50005 is the durable direct S1_R1 endpoint, never the 50006 gateway.
       CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME: clickhouse-s1-r1
@@ -284,6 +296,7 @@ jobs:
         run: go run -mod=mod ./cmd/collect_kakao
 
       - name: Verify scheduled serving catalog refresh chain
+        id: webr_book_refresh_verify
         if: ${{ inputs.dry_run != true && inputs.run_kind == 'scheduled' }}
         env:
           CH_HOST: ${{ secrets.CLICKHOUSE_HOST }}
@@ -296,9 +309,12 @@ jobs:
           BOOK_REFRESH_VERIFY_ONLY: "true"
           BOOK_REFRESH_COORDINATOR_ATTEMPTS: "12"
           BOOK_REFRESH_COORDINATOR_RETRY_MILLISECONDS: "500"
-        run: go run -mod=mod ./cmd/refresh_webr_book_catalog
+        run: |
+          go run -mod=mod ./cmd/refresh_webr_book_catalog
+          echo "verified=true" >> "$GITHUB_OUTPUT"
 
       - name: Refresh provider-neutral serving catalogs for manual runs
+        id: webr_book_refresh_manual
         if: ${{ inputs.dry_run != true && inputs.run_kind != 'scheduled' }}
         env:
           CH_HOST: ${{ secrets.CLICKHOUSE_HOST }}
@@ -319,4 +335,18 @@ jobs:
           WEBR_BOOK_REFRESH_TIMEOUT_SECONDS: "900"
           BOOK_REFRESH_COORDINATOR_ATTEMPTS: "12"
           BOOK_REFRESH_COORDINATOR_RETRY_MILLISECONDS: "500"
-        run: go run -mod=mod ./cmd/refresh_webr_book_catalog
+        run: |
+          go run -mod=mod ./cmd/refresh_webr_book_catalog
+          echo "verified=true" >> "$GITHUB_OUTPUT"
+
+  publish_webr_generation:
+    name: Publish verified Web-R Book generation
+    needs: collect
+    if: ${{ success() && needs.collect.outputs.webr_refresh_verified == 'true' && vars.WEBR_BOOK_GENERATION_PUBLISH_ENABLED == 'true' && inputs.dry_run != true }}
+    uses: ./.github/workflows/webr_book_generation_publish.yml
+    secrets:
+      STATGROUND_SQL_READ_TOKEN: ${{ secrets.STATGROUND_SQL_READ_TOKEN }}
+      WEBR_BOOK_PUBLISHER_ENDPOINT: ${{ secrets.WEBR_BOOK_PUBLISHER_ENDPOINT }}
+      WEBR_BOOK_PUBLISHER_USER: ${{ secrets.WEBR_BOOK_PUBLISHER_USER }}
+      WEBR_BOOK_PUBLISHER_PASSWORD: ${{ secrets.WEBR_BOOK_PUBLISHER_PASSWORD }}
+      WEBR_BOOK_PUBLISHER_CA_PEM: ${{ secrets.WEBR_BOOK_PUBLISHER_CA_PEM }}
