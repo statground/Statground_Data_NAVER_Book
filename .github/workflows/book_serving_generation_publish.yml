@@ -39,7 +39,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: statground/Statground_SQL
-          ref: d06b7b32a1d8c6c992f3bf9e997b5cdb1a7345ae
+          ref: 6ee7206c13d6694de1d1ef6bf95b3f6b2b7a7022
           token: ${{ secrets.STATGROUND_SQL_READ_TOKEN }}
           path: .publisher/statground-sql
           persist-credentials: false
@@ -47,103 +47,249 @@ jobs:
           sparse-checkout: docker-compose/50005_Clickhouse_Statground/book_serving_generation_publisher.py
           sparse-checkout-cone-mode: false
 
-      - name: Preflight and publish all serving profiles serially
-        env:
-          COORDINATOR_ENDPOINT: ${{ secrets.BOOK_SERVING_COORDINATOR_ENDPOINT }}
-          WEBR_PUBLISHER_PASSWORD: ${{ secrets.WEBR_BOOK_SERVING_PUBLISHER_PASSWORD }}
-          MIRTYPE_PUBLISHER_PASSWORD: ${{ secrets.MIRTYPE_BOOK_SERVING_PUBLISHER_PASSWORD }}
-          STATGROUND_PROVIDER_PUBLISHER_PASSWORD: ${{ secrets.STATGROUND_PROVIDER_BOOK_SERVING_PUBLISHER_PASSWORD }}
-          NAVER_OUTBOX_ENDPOINT: ${{ secrets.BOOK_SERVING_NAVER_OUTBOX_ENDPOINT }}
-          KAKAO_OUTBOX_ENDPOINT: ${{ secrets.BOOK_SERVING_KAKAO_OUTBOX_ENDPOINT }}
-          OUTBOX_OBSERVER_PASSWORD: ${{ secrets.BOOK_SERVING_OUTBOX_OBSERVER_PASSWORD }}
-          BOOK_SERVING_CA_PEM: ${{ secrets.BOOK_SERVING_CA_PEM }}
+      - name: Prepare immutable single-profile runner
         run: |
           set -euo pipefail
           umask 077
 
-          readonly expected_sql_commit="d06b7b32a1d8c6c992f3bf9e997b5cdb1a7345ae"
+          readonly expected_sql_commit="6ee7206c13d6694de1d1ef6bf95b3f6b2b7a7022"
           readonly sql_root="$GITHUB_WORKSPACE/.publisher/statground-sql"
-          readonly publisher="$sql_root/docker-compose/50005_Clickhouse_Statground/book_serving_generation_publisher.py"
-          readonly config_prefix="$RUNNER_TEMP/book-serving-generation-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          readonly publisher_ca="$config_prefix.ca.pem"
-          trap 'rm -f -- "$config_prefix.webr.json" "$config_prefix.mirtype.json" "$config_prefix.statground-provider.json" "$publisher_ca"' EXIT
+          readonly publisher_relative="docker-compose/50005_Clickhouse_Statground/book_serving_generation_publisher.py"
+          readonly publisher="$sql_root/$publisher_relative"
+          readonly runner="$RUNNER_TEMP/book-serving-single-profile.py"
 
           test "$(git -C "$sql_root" rev-parse HEAD)" = "$expected_sql_commit" || {
             echo "::error::Pinned Statground SQL publisher commit mismatch"
             exit 1
           }
-          test -f "$publisher" || {
+          test -f "$publisher" && test ! -L "$publisher" || {
             echo "::error::Pinned three-profile Book generation publisher is missing"
             exit 1
           }
+          readonly expected_publisher_blob="$(git -C "$sql_root" rev-parse "$expected_sql_commit:$publisher_relative")"
+          test "$(git -C "$sql_root" hash-object "$publisher_relative")" = "$expected_publisher_blob" || {
+            echo "::error::Pinned Statground SQL publisher bytes do not match the reviewed commit"
+            exit 1
+          }
 
-          CONFIG_PREFIX="$config_prefix" PUBLISHER_CA="$publisher_ca" python3 - <<'PY'
+          cat >"$runner" <<'PY'
+          #!/usr/bin/env python3
+          import argparse
+          import datetime as dt
           import json
           import os
+          import re
+          import stat
+          import subprocess
+          import sys
           import uuid
+          from pathlib import Path
 
-          required = (
+          USERS = {
+              "webr": "webr_book_serving_publisher",
+              "mirtype": "mirtype_book_serving_publisher",
+              "statground-provider": "statground_provider_book_serving_publisher",
+          }
+          SECRET_ENV = (
               "COORDINATOR_ENDPOINT",
-              "WEBR_PUBLISHER_PASSWORD",
-              "MIRTYPE_PUBLISHER_PASSWORD",
-              "STATGROUND_PROVIDER_PUBLISHER_PASSWORD",
+              "PUBLISHER_PASSWORD",
               "NAVER_OUTBOX_ENDPOINT",
               "KAKAO_OUTBOX_ENDPOINT",
               "OUTBOX_OBSERVER_PASSWORD",
+              "BOOK_SERVING_CA_PEM",
           )
-          missing = [name for name in required if not os.environ.get(name, "")]
-          if missing:
-              raise SystemExit("required Book serving publication secrets are missing")
+          DIGEST = re.compile(r"[0-9a-f]{64}")
+          TIMESTAMP = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}")
 
-          flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-          flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-          ca_pem = os.environ.get("BOOK_SERVING_CA_PEM", "")
-          ca_path = os.environ["PUBLISHER_CA"]
-          if ca_pem:
-              ca_fd = os.open(ca_path, flags, 0o600)
-              with os.fdopen(ca_fd, "w", encoding="utf-8") as handle:
-                  handle.write(ca_pem)
+
+          def fail(message):
+              raise SystemExit("Book serving publication receipt rejected: " + message)
+
+
+          def exact_keys(value, keys, label):
+              if not isinstance(value, dict) or set(value) != set(keys):
+                  fail(label + " fields are not exact")
+              return value
+
+
+          def exact_uint(value, label, positive=False):
+              if isinstance(value, bool) or not isinstance(value, int):
+                  fail(label + " is not an integer")
+              if value < 0 or value >= 1 << 64 or (positive and value == 0):
+                  fail(label + " is outside the required UInt64 range")
+              return value
+
+
+          def exact_digest(value, label):
+              if not isinstance(value, str) or DIGEST.fullmatch(value) is None:
+                  fail(label + " is not a lowercase SHA-256 digest")
+              return value
+
+
+          def exact_uuid(value, label):
+              if not isinstance(value, str):
+                  fail(label + " is not a UUID")
+              try:
+                  parsed = uuid.UUID(value)
+              except ValueError:
+                  fail(label + " is not a UUID")
+              if parsed.int == 0 or str(parsed) != value:
+                  fail(label + " is not a canonical non-nil UUID")
+              return value
+
+
+          def exact_time(value, label):
+              if not isinstance(value, str) or TIMESTAMP.fullmatch(value) is None:
+                  fail(label + " is not an exact millisecond timestamp")
+              try:
+                  return dt.datetime.fromisoformat(value)
+              except ValueError:
+                  fail(label + " is not a valid timestamp")
+
+
+          def private_directory(path):
+              try:
+                  path.mkdir(mode=0o700)
+              except FileExistsError:
+                  pass
+              info = path.lstat()
+              if (not stat.S_ISDIR(info.st_mode) or path.is_symlink()
+                      or info.st_uid != os.getuid()
+                      or stat.S_IMODE(info.st_mode) != 0o700):
+                  fail("receipt directory is not an owned private directory")
+
+
+          def write_private_json(path, value):
+              flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+              flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+              descriptor = os.open(path, flags, 0o600)
+              with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                  json.dump(value, handle, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+                  handle.write("\n")
                   handle.flush()
                   os.fsync(handle.fileno())
 
-          run_identity = ":".join((
-              os.environ["GITHUB_REPOSITORY"],
-              os.environ["GITHUB_RUN_ID"],
-              os.environ["GITHUB_RUN_ATTEMPT"],
-          ))
-          holder_uuid = str(uuid.uuid5(uuid.NAMESPACE_URL, run_identity))
-          ca_file = ca_path if ca_pem else None
-          services = {
-              "webr": ("webr_book_serving_publisher", os.environ["WEBR_PUBLISHER_PASSWORD"]),
-              "mirtype": ("mirtype_book_serving_publisher", os.environ["MIRTYPE_PUBLISHER_PASSWORD"]),
-              "statground-provider": (
-                  "statground_provider_book_serving_publisher",
-                  os.environ["STATGROUND_PROVIDER_PUBLISHER_PASSWORD"],
-              ),
-          }
-          outboxes = (
-              (
-                  "naver-producer",
-                  "Data_Book_NAVER_Log.naver_direct_insert_outbox",
-                  os.environ["NAVER_OUTBOX_ENDPOINT"],
-              ),
-              (
-                  "kakao-producer",
-                  "Data_Book_KAKAO_Log.kakao_direct_insert_outbox",
-                  os.environ["KAKAO_OUTBOX_ENDPOINT"],
-              ),
+
+          def read_private_json(path):
+              flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+              descriptor = os.open(path, flags)
+              with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+                  info = os.fstat(handle.fileno())
+                  if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                          or stat.S_IMODE(info.st_mode) != 0o600):
+                      fail("preflight receipt is not an owned private regular file")
+                  payload = handle.read(16385)
+              if len(payload.encode("utf-8")) > 16384:
+                  fail("preflight receipt is too large")
+              try:
+                  return json.loads(payload)
+              except json.JSONDecodeError:
+                  fail("preflight receipt is not JSON")
+
+
+          def validate_preflight(value, service):
+              keys = {
+                  "status", "database_writes", "service",
+                  "source_refresh_started_at", "source_refresh_success_at",
+                  "source_generation", "source_rows", "raw_target_rows",
+                  "content_sha256", "policy_authority_revision",
+              }
+              receipt = exact_keys(value, keys, "preflight receipt")
+              if (receipt["status"] != "preflight_ok"
+                      or receipt["database_writes"] is not False
+                      or receipt["service"] != service):
+                  fail("preflight status, write mode, or service is invalid")
+              started = exact_time(receipt["source_refresh_started_at"], "refresh start")
+              succeeded = exact_time(receipt["source_refresh_success_at"], "refresh success")
+              generation = exact_time(receipt["source_generation"], "source generation")
+              if started > succeeded or generation < started or generation >= succeeded + dt.timedelta(seconds=1):
+                  fail("preflight refresh and generation timestamps are inconsistent")
+              exact_uint(receipt["source_rows"], "source rows", positive=True)
+              exact_uint(receipt["raw_target_rows"], "raw target rows", positive=True)
+              exact_digest(receipt["content_sha256"], "preflight content digest")
+              exact_uint(receipt["policy_authority_revision"], "policy authority revision", positive=True)
+              return receipt
+
+
+          def validate_publish(value, service, preflight):
+              if not isinstance(value, dict) or value.get("status") not in {"published", "already_active"}:
+                  fail("publication status is invalid")
+              if value["status"] == "published":
+                  receipt = exact_keys(value, {
+                      "status", "service", "snapshot_uuid", "heartbeat_uuid",
+                      "content_sha256", "source_manifest_sha256", "rows", "marker_rows",
+                  }, "publication receipt")
+                  exact_uuid(receipt["heartbeat_uuid"], "publication heartbeat UUID")
+                  if exact_digest(receipt["content_sha256"], "publication content digest") != preflight["content_sha256"]:
+                      fail("publication content digest differs from preflight")
+                  exact_uint(receipt["marker_rows"], "publication marker rows")
+              else:
+                  receipt = exact_keys(value, {
+                      "status", "service", "snapshot_uuid", "source_manifest_sha256", "rows",
+                  }, "already-active receipt")
+              if receipt["service"] != service:
+                  fail("publication service differs from the selected profile")
+              exact_uuid(receipt["snapshot_uuid"], "publication snapshot UUID")
+              exact_digest(receipt["source_manifest_sha256"], "publication source manifest digest")
+              if exact_uint(receipt["rows"], "publication rows", positive=True) != preflight["source_rows"]:
+                  fail("publication row count differs from preflight")
+              return receipt
+
+          parser = argparse.ArgumentParser()
+          parser.add_argument("--service", choices=tuple(USERS), required=True)
+          parser.add_argument("--preflight-only", action="store_true")
+          args = parser.parse_args()
+
+          missing = [name for name in SECRET_ENV[:-1] if not os.environ.get(name, "")]
+          if missing:
+              raise SystemExit("required Book serving publication secrets are missing")
+          if os.environ.get("PUBLISHER_USER") != USERS[args.service]:
+              raise SystemExit("Book serving publisher principal does not match the selected profile")
+
+          mode = "preflight" if args.preflight_only else "publish"
+          runner_temp = Path(os.environ["RUNNER_TEMP"])
+          if not runner_temp.is_absolute():
+              fail("runner temp is not absolute")
+          receipt_dir = runner_temp / (
+              f"book-serving-receipts-{os.environ['GITHUB_RUN_ID']}-"
+              f"{os.environ['GITHUB_RUN_ATTEMPT']}"
           )
-          prefix = os.environ["CONFIG_PREFIX"]
-          for service, (publisher_user, publisher_password) in services.items():
+          private_directory(receipt_dir)
+          receipt_path = receipt_dir / f"{args.service}.{mode}.json"
+          preflight_path = receipt_dir / f"{args.service}.preflight.json"
+          prefix = runner_temp / (
+              f"book-serving-{os.environ['GITHUB_RUN_ID']}-"
+              f"{os.environ['GITHUB_RUN_ATTEMPT']}-{args.service}-{mode}"
+          )
+          config_path = prefix.with_suffix(".json")
+          ca_path = prefix.with_suffix(".ca.pem")
+          flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+          flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+          ca_pem = os.environ.get("BOOK_SERVING_CA_PEM", "")
+
+          try:
+              if ca_pem:
+                  ca_fd = os.open(ca_path, flags, 0o600)
+                  with os.fdopen(ca_fd, "w", encoding="utf-8") as handle:
+                      handle.write(ca_pem)
+                      handle.flush()
+                      os.fsync(handle.fileno())
+
+              run_identity = ":".join((
+                  os.environ["GITHUB_REPOSITORY"],
+                  os.environ["GITHUB_RUN_ID"],
+                  os.environ["GITHUB_RUN_ATTEMPT"],
+              ))
+              ca_file = str(ca_path) if ca_pem else None
               config = {
                   "coordinator": {
                       "endpoint": os.environ["COORDINATOR_ENDPOINT"],
-                      "user": publisher_user,
-                      "password": publisher_password,
+                      "user": USERS[args.service],
+                      "password": os.environ["PUBLISHER_PASSWORD"],
                       "ca_file": ca_file,
                   },
                   "coordinator_host": "Clickhouse_S1_R1",
-                  "holder_uuid": holder_uuid,
+                  "holder_uuid": str(uuid.uuid5(uuid.NAMESPACE_URL, run_identity)),
                   "capacity_gate": {
                       "min_free_bytes": 21474836480,
                       "min_free_ratio": 0.15,
@@ -160,25 +306,167 @@ jobs:
                               "ca_file": ca_file,
                           },
                       }
-                      for name, object_name, endpoint in outboxes
+                      for name, object_name, endpoint in (
+                          (
+                              "naver-producer",
+                              "Data_Book_NAVER_Log.naver_direct_insert_outbox",
+                              os.environ["NAVER_OUTBOX_ENDPOINT"],
+                          ),
+                          (
+                              "kakao-producer",
+                              "Data_Book_KAKAO_Log.kakao_direct_insert_outbox",
+                              os.environ["KAKAO_OUTBOX_ENDPOINT"],
+                          ),
+                      )
                   ],
               }
-              config_path = f"{prefix}.{service}.json"
               config_fd = os.open(config_path, flags, 0o600)
               with os.fdopen(config_fd, "w", encoding="utf-8") as handle:
                   json.dump(config, handle, ensure_ascii=True, sort_keys=True)
                   handle.write("\n")
                   handle.flush()
                   os.fsync(handle.fileno())
+
+              command = [
+                  sys.executable,
+                  os.environ["BOOK_SERVING_PUBLISHER_PATH"],
+                  "--config",
+                  str(config_path),
+                  "--service",
+                  args.service,
+              ]
+              if args.preflight_only:
+                  command.append("--preflight-only")
+              completed = subprocess.run(
+                  command,
+                  check=False,
+                  capture_output=True,
+                  text=True,
+                  env={"PYTHONUNBUFFERED": "1"},
+              )
+              if completed.returncode != 0:
+                  fail("pinned publisher blocked the selected profile")
+              if completed.stderr or len(completed.stdout.encode("utf-8")) > 16384:
+                  fail("pinned publisher emitted unexpected output")
+              lines = completed.stdout.splitlines()
+              if len(lines) != 1:
+                  fail("pinned publisher did not emit one JSON receipt")
+              try:
+                  raw_receipt = json.loads(lines[0])
+              except json.JSONDecodeError:
+                  fail("pinned publisher receipt is not JSON")
+              if args.preflight_only:
+                  receipt = validate_preflight(raw_receipt, args.service)
+              else:
+                  preflight = validate_preflight(read_private_json(preflight_path), args.service)
+                  receipt = validate_publish(raw_receipt, args.service, preflight)
+              write_private_json(receipt_path, receipt)
+              print(json.dumps(receipt, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
+          finally:
+              config_path.unlink(missing_ok=True)
+              ca_path.unlink(missing_ok=True)
           PY
+          chmod 0700 "$runner"
 
-          unset COORDINATOR_ENDPOINT WEBR_PUBLISHER_PASSWORD MIRTYPE_PUBLISHER_PASSWORD
-          unset STATGROUND_PROVIDER_PUBLISHER_PASSWORD NAVER_OUTBOX_ENDPOINT KAKAO_OUTBOX_ENDPOINT
-          unset OUTBOX_OBSERVER_PASSWORD BOOK_SERVING_CA_PEM
+      - name: Preflight Web-R serving profile
+        env:
+          BOOK_SERVING_PUBLISHER_PATH: ${{ github.workspace }}/.publisher/statground-sql/docker-compose/50005_Clickhouse_Statground/book_serving_generation_publisher.py
+          COORDINATOR_ENDPOINT: ${{ secrets.BOOK_SERVING_COORDINATOR_ENDPOINT }}
+          PUBLISHER_USER: webr_book_serving_publisher
+          PUBLISHER_PASSWORD: ${{ secrets.WEBR_BOOK_SERVING_PUBLISHER_PASSWORD }}
+          NAVER_OUTBOX_ENDPOINT: ${{ secrets.BOOK_SERVING_NAVER_OUTBOX_ENDPOINT }}
+          KAKAO_OUTBOX_ENDPOINT: ${{ secrets.BOOK_SERVING_KAKAO_OUTBOX_ENDPOINT }}
+          OUTBOX_OBSERVER_PASSWORD: ${{ secrets.BOOK_SERVING_OUTBOX_OBSERVER_PASSWORD }}
+          BOOK_SERVING_CA_PEM: ${{ secrets.BOOK_SERVING_CA_PEM }}
+        run: python3 "$RUNNER_TEMP/book-serving-single-profile.py" --service webr --preflight-only
 
-          for service in webr mirtype statground-provider; do
-            python3 "$publisher" --config "$config_prefix.$service.json" --service "$service" --preflight-only
-          done
-          for service in webr mirtype statground-provider; do
-            python3 "$publisher" --config "$config_prefix.$service.json" --service "$service"
-          done
+      - name: Preflight MirType serving profile
+        env:
+          BOOK_SERVING_PUBLISHER_PATH: ${{ github.workspace }}/.publisher/statground-sql/docker-compose/50005_Clickhouse_Statground/book_serving_generation_publisher.py
+          COORDINATOR_ENDPOINT: ${{ secrets.BOOK_SERVING_COORDINATOR_ENDPOINT }}
+          PUBLISHER_USER: mirtype_book_serving_publisher
+          PUBLISHER_PASSWORD: ${{ secrets.MIRTYPE_BOOK_SERVING_PUBLISHER_PASSWORD }}
+          NAVER_OUTBOX_ENDPOINT: ${{ secrets.BOOK_SERVING_NAVER_OUTBOX_ENDPOINT }}
+          KAKAO_OUTBOX_ENDPOINT: ${{ secrets.BOOK_SERVING_KAKAO_OUTBOX_ENDPOINT }}
+          OUTBOX_OBSERVER_PASSWORD: ${{ secrets.BOOK_SERVING_OUTBOX_OBSERVER_PASSWORD }}
+          BOOK_SERVING_CA_PEM: ${{ secrets.BOOK_SERVING_CA_PEM }}
+        run: python3 "$RUNNER_TEMP/book-serving-single-profile.py" --service mirtype --preflight-only
+
+      - name: Preflight Statground serving profile
+        env:
+          BOOK_SERVING_PUBLISHER_PATH: ${{ github.workspace }}/.publisher/statground-sql/docker-compose/50005_Clickhouse_Statground/book_serving_generation_publisher.py
+          COORDINATOR_ENDPOINT: ${{ secrets.BOOK_SERVING_COORDINATOR_ENDPOINT }}
+          PUBLISHER_USER: statground_provider_book_serving_publisher
+          PUBLISHER_PASSWORD: ${{ secrets.STATGROUND_PROVIDER_BOOK_SERVING_PUBLISHER_PASSWORD }}
+          NAVER_OUTBOX_ENDPOINT: ${{ secrets.BOOK_SERVING_NAVER_OUTBOX_ENDPOINT }}
+          KAKAO_OUTBOX_ENDPOINT: ${{ secrets.BOOK_SERVING_KAKAO_OUTBOX_ENDPOINT }}
+          OUTBOX_OBSERVER_PASSWORD: ${{ secrets.BOOK_SERVING_OUTBOX_OBSERVER_PASSWORD }}
+          BOOK_SERVING_CA_PEM: ${{ secrets.BOOK_SERVING_CA_PEM }}
+        run: python3 "$RUNNER_TEMP/book-serving-single-profile.py" --service statground-provider --preflight-only
+
+      - name: Publish Web-R serving profile
+        env:
+          BOOK_SERVING_PUBLISHER_PATH: ${{ github.workspace }}/.publisher/statground-sql/docker-compose/50005_Clickhouse_Statground/book_serving_generation_publisher.py
+          COORDINATOR_ENDPOINT: ${{ secrets.BOOK_SERVING_COORDINATOR_ENDPOINT }}
+          PUBLISHER_USER: webr_book_serving_publisher
+          PUBLISHER_PASSWORD: ${{ secrets.WEBR_BOOK_SERVING_PUBLISHER_PASSWORD }}
+          NAVER_OUTBOX_ENDPOINT: ${{ secrets.BOOK_SERVING_NAVER_OUTBOX_ENDPOINT }}
+          KAKAO_OUTBOX_ENDPOINT: ${{ secrets.BOOK_SERVING_KAKAO_OUTBOX_ENDPOINT }}
+          OUTBOX_OBSERVER_PASSWORD: ${{ secrets.BOOK_SERVING_OUTBOX_OBSERVER_PASSWORD }}
+          BOOK_SERVING_CA_PEM: ${{ secrets.BOOK_SERVING_CA_PEM }}
+        run: python3 "$RUNNER_TEMP/book-serving-single-profile.py" --service webr
+
+      - name: Publish MirType serving profile
+        env:
+          BOOK_SERVING_PUBLISHER_PATH: ${{ github.workspace }}/.publisher/statground-sql/docker-compose/50005_Clickhouse_Statground/book_serving_generation_publisher.py
+          COORDINATOR_ENDPOINT: ${{ secrets.BOOK_SERVING_COORDINATOR_ENDPOINT }}
+          PUBLISHER_USER: mirtype_book_serving_publisher
+          PUBLISHER_PASSWORD: ${{ secrets.MIRTYPE_BOOK_SERVING_PUBLISHER_PASSWORD }}
+          NAVER_OUTBOX_ENDPOINT: ${{ secrets.BOOK_SERVING_NAVER_OUTBOX_ENDPOINT }}
+          KAKAO_OUTBOX_ENDPOINT: ${{ secrets.BOOK_SERVING_KAKAO_OUTBOX_ENDPOINT }}
+          OUTBOX_OBSERVER_PASSWORD: ${{ secrets.BOOK_SERVING_OUTBOX_OBSERVER_PASSWORD }}
+          BOOK_SERVING_CA_PEM: ${{ secrets.BOOK_SERVING_CA_PEM }}
+        run: python3 "$RUNNER_TEMP/book-serving-single-profile.py" --service mirtype
+
+      - name: Publish Statground serving profile
+        env:
+          BOOK_SERVING_PUBLISHER_PATH: ${{ github.workspace }}/.publisher/statground-sql/docker-compose/50005_Clickhouse_Statground/book_serving_generation_publisher.py
+          COORDINATOR_ENDPOINT: ${{ secrets.BOOK_SERVING_COORDINATOR_ENDPOINT }}
+          PUBLISHER_USER: statground_provider_book_serving_publisher
+          PUBLISHER_PASSWORD: ${{ secrets.STATGROUND_PROVIDER_BOOK_SERVING_PUBLISHER_PASSWORD }}
+          NAVER_OUTBOX_ENDPOINT: ${{ secrets.BOOK_SERVING_NAVER_OUTBOX_ENDPOINT }}
+          KAKAO_OUTBOX_ENDPOINT: ${{ secrets.BOOK_SERVING_KAKAO_OUTBOX_ENDPOINT }}
+          OUTBOX_OBSERVER_PASSWORD: ${{ secrets.BOOK_SERVING_OUTBOX_OBSERVER_PASSWORD }}
+          BOOK_SERVING_CA_PEM: ${{ secrets.BOOK_SERVING_CA_PEM }}
+        run: python3 "$RUNNER_TEMP/book-serving-single-profile.py" --service statground-provider
+
+      - name: Remove Book serving publication credentials and receipts
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          runner_temp = Path(os.environ["RUNNER_TEMP"])
+          run_id = os.environ["GITHUB_RUN_ID"]
+          attempt = os.environ["GITHUB_RUN_ATTEMPT"]
+          services = ("webr", "mirtype", "statground-provider")
+          modes = ("preflight", "publish")
+
+          for service in services:
+              for mode in modes:
+                  prefix = runner_temp / f"book-serving-{run_id}-{attempt}-{service}-{mode}"
+                  prefix.with_suffix(".json").unlink(missing_ok=True)
+                  prefix.with_suffix(".ca.pem").unlink(missing_ok=True)
+
+          receipt_dir = runner_temp / f"book-serving-receipts-{run_id}-{attempt}"
+          for service in services:
+              for mode in modes:
+                  (receipt_dir / f"{service}.{mode}.json").unlink(missing_ok=True)
+          try:
+              receipt_dir.rmdir()
+          except FileNotFoundError:
+              pass
+          (runner_temp / "book-serving-single-profile.py").unlink(missing_ok=True)
+          PY
