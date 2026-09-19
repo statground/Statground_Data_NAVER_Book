@@ -72,6 +72,22 @@ on:
         required: false
       WEBR_BOOK_PUBLISHER_CA_PEM:
         required: false
+      BOOK_SERVING_COORDINATOR_ENDPOINT:
+        required: false
+      WEBR_BOOK_SERVING_PUBLISHER_PASSWORD:
+        required: false
+      MIRTYPE_BOOK_SERVING_PUBLISHER_PASSWORD:
+        required: false
+      STATGROUND_PROVIDER_BOOK_SERVING_PUBLISHER_PASSWORD:
+        required: false
+      BOOK_SERVING_NAVER_OUTBOX_ENDPOINT:
+        required: false
+      BOOK_SERVING_KAKAO_OUTBOX_ENDPOINT:
+        required: false
+      BOOK_SERVING_OUTBOX_OBSERVER_PASSWORD:
+        required: false
+      BOOK_SERVING_CA_PEM:
+        required: false
   workflow_dispatch:
     inputs:
       mode:
@@ -121,6 +137,7 @@ jobs:
     timeout-minutes: 90
     outputs:
       webr_refresh_verified: ${{ steps.webr_book_refresh_verify.outputs.verified || steps.webr_book_refresh_manual.outputs.verified }}
+      book_serving_refresh_verified: ${{ steps.webr_book_refresh_verify.outputs.verified || steps.webr_book_refresh_manual.outputs.verified }}
     env:
       # Port 50005 is the durable direct S1_R1 endpoint, never the 50006 gateway.
       CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME: clickhouse-s1-r1
@@ -339,10 +356,26 @@ jobs:
           go run -mod=mod ./cmd/refresh_webr_book_catalog
           echo "verified=true" >> "$GITHUB_OUTPUT"
 
-  publish_webr_generation:
-    name: Publish verified Web-R Book generation
+  publish_book_serving_generations:
+    name: Publish verified Book serving generations
     needs: collect
-    if: ${{ success() && needs.collect.outputs.webr_refresh_verified == 'true' && vars.WEBR_BOOK_GENERATION_PUBLISH_ENABLED == 'true' && inputs.dry_run != true }}
+    if: ${{ success() && needs.collect.outputs.book_serving_refresh_verified == 'true' && vars.BOOK_SERVING_GENERATION_PUBLISH_ENABLED == 'true' && inputs.dry_run != true }}
+    uses: ./.github/workflows/book_serving_generation_publish.yml
+    secrets:
+      STATGROUND_SQL_READ_TOKEN: ${{ secrets.STATGROUND_SQL_READ_TOKEN }}
+      BOOK_SERVING_COORDINATOR_ENDPOINT: ${{ secrets.BOOK_SERVING_COORDINATOR_ENDPOINT }}
+      WEBR_BOOK_SERVING_PUBLISHER_PASSWORD: ${{ secrets.WEBR_BOOK_SERVING_PUBLISHER_PASSWORD }}
+      MIRTYPE_BOOK_SERVING_PUBLISHER_PASSWORD: ${{ secrets.MIRTYPE_BOOK_SERVING_PUBLISHER_PASSWORD }}
+      STATGROUND_PROVIDER_BOOK_SERVING_PUBLISHER_PASSWORD: ${{ secrets.STATGROUND_PROVIDER_BOOK_SERVING_PUBLISHER_PASSWORD }}
+      BOOK_SERVING_NAVER_OUTBOX_ENDPOINT: ${{ secrets.BOOK_SERVING_NAVER_OUTBOX_ENDPOINT }}
+      BOOK_SERVING_KAKAO_OUTBOX_ENDPOINT: ${{ secrets.BOOK_SERVING_KAKAO_OUTBOX_ENDPOINT }}
+      BOOK_SERVING_OUTBOX_OBSERVER_PASSWORD: ${{ secrets.BOOK_SERVING_OUTBOX_OBSERVER_PASSWORD }}
+      BOOK_SERVING_CA_PEM: ${{ secrets.BOOK_SERVING_CA_PEM }}
+
+  publish_legacy_webr_generation:
+    name: Publish legacy Web-R Book generation during migration
+    needs: collect
+    if: ${{ success() && needs.collect.outputs.webr_refresh_verified == 'true' && vars.BOOK_SERVING_GENERATION_PUBLISH_ENABLED != 'true' && vars.WEBR_BOOK_GENERATION_PUBLISH_ENABLED == 'true' && inputs.dry_run != true }}
     uses: ./.github/workflows/webr_book_generation_publish.yml
     secrets:
       STATGROUND_SQL_READ_TOKEN: ${{ secrets.STATGROUND_SQL_READ_TOKEN }}

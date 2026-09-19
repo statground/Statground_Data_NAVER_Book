@@ -1,0 +1,184 @@
+name: Book Serving Three-Profile Generation Publisher
+
+on:
+  workflow_call:
+    secrets:
+      STATGROUND_SQL_READ_TOKEN:
+        required: true
+      BOOK_SERVING_COORDINATOR_ENDPOINT:
+        required: true
+      WEBR_BOOK_SERVING_PUBLISHER_PASSWORD:
+        required: true
+      MIRTYPE_BOOK_SERVING_PUBLISHER_PASSWORD:
+        required: true
+      STATGROUND_PROVIDER_BOOK_SERVING_PUBLISHER_PASSWORD:
+        required: true
+      BOOK_SERVING_NAVER_OUTBOX_ENDPOINT:
+        required: true
+      BOOK_SERVING_KAKAO_OUTBOX_ENDPOINT:
+        required: true
+      BOOK_SERVING_OUTBOX_OBSERVER_PASSWORD:
+        required: true
+      BOOK_SERVING_CA_PEM:
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: statground-book-serving-generation-publisher
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout immutable Statground SQL publisher
+        uses: actions/checkout@v6
+        with:
+          repository: statground/Statground_SQL
+          ref: d06b7b32a1d8c6c992f3bf9e997b5cdb1a7345ae
+          token: ${{ secrets.STATGROUND_SQL_READ_TOKEN }}
+          path: .publisher/statground-sql
+          persist-credentials: false
+          fetch-depth: 1
+          sparse-checkout: docker-compose/50005_Clickhouse_Statground/book_serving_generation_publisher.py
+          sparse-checkout-cone-mode: false
+
+      - name: Preflight and publish all serving profiles serially
+        env:
+          COORDINATOR_ENDPOINT: ${{ secrets.BOOK_SERVING_COORDINATOR_ENDPOINT }}
+          WEBR_PUBLISHER_PASSWORD: ${{ secrets.WEBR_BOOK_SERVING_PUBLISHER_PASSWORD }}
+          MIRTYPE_PUBLISHER_PASSWORD: ${{ secrets.MIRTYPE_BOOK_SERVING_PUBLISHER_PASSWORD }}
+          STATGROUND_PROVIDER_PUBLISHER_PASSWORD: ${{ secrets.STATGROUND_PROVIDER_BOOK_SERVING_PUBLISHER_PASSWORD }}
+          NAVER_OUTBOX_ENDPOINT: ${{ secrets.BOOK_SERVING_NAVER_OUTBOX_ENDPOINT }}
+          KAKAO_OUTBOX_ENDPOINT: ${{ secrets.BOOK_SERVING_KAKAO_OUTBOX_ENDPOINT }}
+          OUTBOX_OBSERVER_PASSWORD: ${{ secrets.BOOK_SERVING_OUTBOX_OBSERVER_PASSWORD }}
+          BOOK_SERVING_CA_PEM: ${{ secrets.BOOK_SERVING_CA_PEM }}
+        run: |
+          set -euo pipefail
+          umask 077
+
+          readonly expected_sql_commit="d06b7b32a1d8c6c992f3bf9e997b5cdb1a7345ae"
+          readonly sql_root="$GITHUB_WORKSPACE/.publisher/statground-sql"
+          readonly publisher="$sql_root/docker-compose/50005_Clickhouse_Statground/book_serving_generation_publisher.py"
+          readonly config_prefix="$RUNNER_TEMP/book-serving-generation-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          readonly publisher_ca="$config_prefix.ca.pem"
+          trap 'rm -f -- "$config_prefix.webr.json" "$config_prefix.mirtype.json" "$config_prefix.statground-provider.json" "$publisher_ca"' EXIT
+
+          test "$(git -C "$sql_root" rev-parse HEAD)" = "$expected_sql_commit" || {
+            echo "::error::Pinned Statground SQL publisher commit mismatch"
+            exit 1
+          }
+          test -f "$publisher" || {
+            echo "::error::Pinned three-profile Book generation publisher is missing"
+            exit 1
+          }
+
+          CONFIG_PREFIX="$config_prefix" PUBLISHER_CA="$publisher_ca" python3 - <<'PY'
+          import json
+          import os
+          import uuid
+
+          required = (
+              "COORDINATOR_ENDPOINT",
+              "WEBR_PUBLISHER_PASSWORD",
+              "MIRTYPE_PUBLISHER_PASSWORD",
+              "STATGROUND_PROVIDER_PUBLISHER_PASSWORD",
+              "NAVER_OUTBOX_ENDPOINT",
+              "KAKAO_OUTBOX_ENDPOINT",
+              "OUTBOX_OBSERVER_PASSWORD",
+          )
+          missing = [name for name in required if not os.environ.get(name, "")]
+          if missing:
+              raise SystemExit("required Book serving publication secrets are missing")
+
+          flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+          flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+          ca_pem = os.environ.get("BOOK_SERVING_CA_PEM", "")
+          ca_path = os.environ["PUBLISHER_CA"]
+          if ca_pem:
+              ca_fd = os.open(ca_path, flags, 0o600)
+              with os.fdopen(ca_fd, "w", encoding="utf-8") as handle:
+                  handle.write(ca_pem)
+                  handle.flush()
+                  os.fsync(handle.fileno())
+
+          run_identity = ":".join((
+              os.environ["GITHUB_REPOSITORY"],
+              os.environ["GITHUB_RUN_ID"],
+              os.environ["GITHUB_RUN_ATTEMPT"],
+          ))
+          holder_uuid = str(uuid.uuid5(uuid.NAMESPACE_URL, run_identity))
+          ca_file = ca_path if ca_pem else None
+          services = {
+              "webr": ("webr_book_serving_publisher", os.environ["WEBR_PUBLISHER_PASSWORD"]),
+              "mirtype": ("mirtype_book_serving_publisher", os.environ["MIRTYPE_PUBLISHER_PASSWORD"]),
+              "statground-provider": (
+                  "statground_provider_book_serving_publisher",
+                  os.environ["STATGROUND_PROVIDER_PUBLISHER_PASSWORD"],
+              ),
+          }
+          outboxes = (
+              (
+                  "naver-producer",
+                  "Data_Book_NAVER_Log.naver_direct_insert_outbox",
+                  os.environ["NAVER_OUTBOX_ENDPOINT"],
+              ),
+              (
+                  "kakao-producer",
+                  "Data_Book_KAKAO_Log.kakao_direct_insert_outbox",
+                  os.environ["KAKAO_OUTBOX_ENDPOINT"],
+              ),
+          )
+          prefix = os.environ["CONFIG_PREFIX"]
+          for service, (publisher_user, publisher_password) in services.items():
+              config = {
+                  "coordinator": {
+                      "endpoint": os.environ["COORDINATOR_ENDPOINT"],
+                      "user": publisher_user,
+                      "password": publisher_password,
+                      "ca_file": ca_file,
+                  },
+                  "coordinator_host": "Clickhouse_S1_R1",
+                  "holder_uuid": holder_uuid,
+                  "capacity_gate": {
+                      "min_free_bytes": 21474836480,
+                      "min_free_ratio": 0.15,
+                      "copy_multiplier": 3,
+                  },
+                  "outbox_endpoints": [
+                      {
+                          "name": name,
+                          "object": object_name,
+                          "connection": {
+                              "endpoint": endpoint,
+                              "user": "book_serving_outbox_observer",
+                              "password": os.environ["OUTBOX_OBSERVER_PASSWORD"],
+                              "ca_file": ca_file,
+                          },
+                      }
+                      for name, object_name, endpoint in outboxes
+                  ],
+              }
+              config_path = f"{prefix}.{service}.json"
+              config_fd = os.open(config_path, flags, 0o600)
+              with os.fdopen(config_fd, "w", encoding="utf-8") as handle:
+                  json.dump(config, handle, ensure_ascii=True, sort_keys=True)
+                  handle.write("\n")
+                  handle.flush()
+                  os.fsync(handle.fileno())
+          PY
+
+          unset COORDINATOR_ENDPOINT WEBR_PUBLISHER_PASSWORD MIRTYPE_PUBLISHER_PASSWORD
+          unset STATGROUND_PROVIDER_PUBLISHER_PASSWORD NAVER_OUTBOX_ENDPOINT KAKAO_OUTBOX_ENDPOINT
+          unset OUTBOX_OBSERVER_PASSWORD BOOK_SERVING_CA_PEM
+
+          for service in webr mirtype statground-provider; do
+            python3 "$publisher" --config "$config_prefix.$service.json" --service "$service" --preflight-only
+          done
+          for service in webr mirtype statground-provider; do
+            python3 "$publisher" --config "$config_prefix.$service.json" --service "$service"
+          done
