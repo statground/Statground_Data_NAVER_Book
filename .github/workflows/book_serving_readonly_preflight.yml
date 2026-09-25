@@ -1,0 +1,119 @@
+name: Book Serving Read-Only Preflight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: statground-book-serving-generation-publisher
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout this run's preflight runner
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: .runner/naver-book
+          persist-credentials: false
+
+      - name: Checkout immutable read-only SQL publisher
+        uses: actions/checkout@v6
+        with:
+          repository: statground/Statground_SQL
+          ref: "0750ff8a099c29274ca24ea9ba7da4b101715645" # Reviewed read-only SQL publisher commit.
+          token: ${{ secrets.STATGROUND_SQL_READ_TOKEN }}
+          path: .publisher/statground-sql
+          persist-credentials: false
+          fetch-depth: 1
+          sparse-checkout: docker-compose/50005_Clickhouse_Statground/book_serving_generation_publisher.py
+          sparse-checkout-cone-mode: false
+
+      - name: Verify immutable read-only SQL publisher
+        run: |
+          set -euo pipefail
+          readonly expected_sql_commit="0750ff8a099c29274ca24ea9ba7da4b101715645"
+          test "$expected_sql_commit" != "0000000000000000000000000000000000000000" || {
+            echo "::error::Reviewed read-only SQL publisher commit is not pinned"
+            exit 1
+          }
+          readonly sql_root="$GITHUB_WORKSPACE/.publisher/statground-sql"
+          readonly publisher_relative="docker-compose/50005_Clickhouse_Statground/book_serving_generation_publisher.py"
+          readonly publisher="$sql_root/$publisher_relative"
+          test "$(git -C "$sql_root" rev-parse HEAD)" = "$expected_sql_commit" || {
+            echo "::error::Read-only SQL publisher commit mismatch"
+            exit 1
+          }
+          test -f "$publisher" && test ! -L "$publisher" || {
+            echo "::error::Pinned read-only SQL publisher is missing"
+            exit 1
+          }
+          readonly expected_blob="$(git -C "$sql_root" rev-parse "$expected_sql_commit:$publisher_relative")"
+          test "$(git -C "$sql_root" hash-object "$publisher_relative")" = "$expected_blob" || {
+            echo "::error::Pinned read-only SQL publisher bytes do not match"
+            exit 1
+          }
+
+      - name: Preflight Web-R serving profile
+        env:
+          COORDINATOR_ENDPOINT: ${{ secrets.BOOK_SERVING_COORDINATOR_ENDPOINT }}
+          PUBLISHER_USER: webr_book_serving_publisher
+          PUBLISHER_PASSWORD: ${{ secrets.WEBR_BOOK_SERVING_PUBLISHER_PASSWORD }}
+          NAVER_OUTBOX_ENDPOINT: ${{ secrets.BOOK_SERVING_NAVER_OUTBOX_ENDPOINT }}
+          KAKAO_OUTBOX_ENDPOINT: ${{ secrets.BOOK_SERVING_KAKAO_OUTBOX_ENDPOINT }}
+          OUTBOX_OBSERVER_PASSWORD: ${{ secrets.BOOK_SERVING_OUTBOX_OBSERVER_PASSWORD }}
+          BOOK_SERVING_CA_PEM: ${{ secrets.BOOK_SERVING_CA_PEM }}
+        run: |
+          python3 "$GITHUB_WORKSPACE/.runner/naver-book/scripts/book_serving_readonly_preflight.py" \
+            --service webr \
+            --publisher "$GITHUB_WORKSPACE/.publisher/statground-sql/docker-compose/50005_Clickhouse_Statground/book_serving_generation_publisher.py"
+
+      - name: Preflight MirType serving profile
+        env:
+          COORDINATOR_ENDPOINT: ${{ secrets.BOOK_SERVING_COORDINATOR_ENDPOINT }}
+          PUBLISHER_USER: mirtype_book_serving_publisher
+          PUBLISHER_PASSWORD: ${{ secrets.MIRTYPE_BOOK_SERVING_PUBLISHER_PASSWORD }}
+          NAVER_OUTBOX_ENDPOINT: ${{ secrets.BOOK_SERVING_NAVER_OUTBOX_ENDPOINT }}
+          KAKAO_OUTBOX_ENDPOINT: ${{ secrets.BOOK_SERVING_KAKAO_OUTBOX_ENDPOINT }}
+          OUTBOX_OBSERVER_PASSWORD: ${{ secrets.BOOK_SERVING_OUTBOX_OBSERVER_PASSWORD }}
+          BOOK_SERVING_CA_PEM: ${{ secrets.BOOK_SERVING_CA_PEM }}
+        run: |
+          python3 "$GITHUB_WORKSPACE/.runner/naver-book/scripts/book_serving_readonly_preflight.py" \
+            --service mirtype \
+            --publisher "$GITHUB_WORKSPACE/.publisher/statground-sql/docker-compose/50005_Clickhouse_Statground/book_serving_generation_publisher.py"
+
+      - name: Preflight Statground serving profile
+        env:
+          COORDINATOR_ENDPOINT: ${{ secrets.BOOK_SERVING_COORDINATOR_ENDPOINT }}
+          PUBLISHER_USER: statground_provider_book_serving_publisher
+          PUBLISHER_PASSWORD: ${{ secrets.STATGROUND_PROVIDER_BOOK_SERVING_PUBLISHER_PASSWORD }}
+          NAVER_OUTBOX_ENDPOINT: ${{ secrets.BOOK_SERVING_NAVER_OUTBOX_ENDPOINT }}
+          KAKAO_OUTBOX_ENDPOINT: ${{ secrets.BOOK_SERVING_KAKAO_OUTBOX_ENDPOINT }}
+          OUTBOX_OBSERVER_PASSWORD: ${{ secrets.BOOK_SERVING_OUTBOX_OBSERVER_PASSWORD }}
+          BOOK_SERVING_CA_PEM: ${{ secrets.BOOK_SERVING_CA_PEM }}
+        run: |
+          python3 "$GITHUB_WORKSPACE/.runner/naver-book/scripts/book_serving_readonly_preflight.py" \
+            --service statground-provider \
+            --publisher "$GITHUB_WORKSPACE/.publisher/statground-sql/docker-compose/50005_Clickhouse_Statground/book_serving_generation_publisher.py"
+
+      - name: Remove private Book preflight files
+        if: ${{ always() }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          runner_temp = Path(os.environ["RUNNER_TEMP"])
+          run_id = os.environ["GITHUB_RUN_ID"]
+          attempt = os.environ["GITHUB_RUN_ATTEMPT"]
+          for service in ("webr", "mirtype", "statground-provider"):
+              prefix = runner_temp / f"book-read-only-{run_id}-{attempt}-{service}"
+              prefix.with_suffix(".json").unlink(missing_ok=True)
+              prefix.with_suffix(".ca.pem").unlink(missing_ok=True)
+          PY
