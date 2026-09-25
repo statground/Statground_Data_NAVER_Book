@@ -1,6 +1,13 @@
 name: Book Serving Three-Profile Generation Publisher
 
 on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish all three profiles after every preflight passes"
+        required: true
+        type: boolean
+        default: false
   workflow_call:
     secrets:
       STATGROUND_SQL_READ_TOKEN:
@@ -288,7 +295,7 @@ jobs:
                       "password": os.environ["PUBLISHER_PASSWORD"],
                       "ca_file": ca_file,
                   },
-                  "coordinator_host": "Clickhouse_S1_R1",
+                  "coordinator_host": "clickhouse-s1-r1",
                   "holder_uuid": str(uuid.uuid5(uuid.NAMESPACE_URL, run_identity)),
                   "capacity_gate": {
                       "min_free_bytes": 21474836480,
@@ -405,6 +412,7 @@ jobs:
         run: python3 "$RUNNER_TEMP/book-serving-single-profile.py" --service statground-provider --preflight-only
 
       - name: Publish Web-R serving profile
+        if: ${{ github.event_name == 'workflow_call' || inputs.publish == true }}
         env:
           BOOK_SERVING_PUBLISHER_PATH: ${{ github.workspace }}/.publisher/statground-sql/docker-compose/50005_Clickhouse_Statground/book_serving_generation_publisher.py
           COORDINATOR_ENDPOINT: ${{ secrets.BOOK_SERVING_COORDINATOR_ENDPOINT }}
@@ -417,6 +425,7 @@ jobs:
         run: python3 "$RUNNER_TEMP/book-serving-single-profile.py" --service webr
 
       - name: Publish MirType serving profile
+        if: ${{ github.event_name == 'workflow_call' || inputs.publish == true }}
         env:
           BOOK_SERVING_PUBLISHER_PATH: ${{ github.workspace }}/.publisher/statground-sql/docker-compose/50005_Clickhouse_Statground/book_serving_generation_publisher.py
           COORDINATOR_ENDPOINT: ${{ secrets.BOOK_SERVING_COORDINATOR_ENDPOINT }}
@@ -429,6 +438,7 @@ jobs:
         run: python3 "$RUNNER_TEMP/book-serving-single-profile.py" --service mirtype
 
       - name: Publish Statground serving profile
+        if: ${{ github.event_name == 'workflow_call' || inputs.publish == true }}
         env:
           BOOK_SERVING_PUBLISHER_PATH: ${{ github.workspace }}/.publisher/statground-sql/docker-compose/50005_Clickhouse_Statground/book_serving_generation_publisher.py
           COORDINATOR_ENDPOINT: ${{ secrets.BOOK_SERVING_COORDINATOR_ENDPOINT }}
