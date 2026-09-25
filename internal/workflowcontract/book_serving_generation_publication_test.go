@@ -53,7 +53,7 @@ func TestBookServingPublisherUsesPinnedThreeProfileSQLSource(t *testing.T) {
 		`"user": "book_serving_outbox_observer"`,
 		`"Data_Book_NAVER_Log.naver_direct_insert_outbox"`,
 		`"Data_Book_KAKAO_Log.kakao_direct_insert_outbox"`,
-		`"coordinator_host": "Clickhouse_S1_R1"`,
+		`"coordinator_host": "clickhouse-s1-r1"`,
 		"--preflight-only",
 		"config_path.unlink(missing_ok=True)",
 		"ca_path.unlink(missing_ok=True)",
