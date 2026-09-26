@@ -203,7 +203,17 @@ class ClickHousePressureGateTest(unittest.TestCase):
         self.assertIn("replica:Data_Book_NLK_Raw.nlk_resource_raw_local", nlk)
         self.assertNotIn("polymarket_market_latest_v2_local", naver + kakao)
         kakao_main = (root / "cmd/collect_kakao/main.go").read_text()
-        self.assertLess(kakao_main.index("store.Validate(ctx)"), kakao_main.index('boolEnv("KAKAO_DRY_RUN", false)'))
+        self.assertRegex(
+            kakao_main,
+            r"if dryRun \{\s*err = store\.ValidateReadOnly\(ctx\)\s*\} else \{\s*err = store\.Validate\(ctx\)\s*\}",
+        )
+        dry_run_gate = kakao_main.index("if dryRun {\n\t\treturn nil")
+        self.assertLess(kakao_main.index("err = store.Validate(ctx)"), dry_run_gate)
+        self.assertLess(dry_run_gate, kakao_main.index("kakao.NewClientFromEnv()"))
+        self.assertIn("if: ${{ inputs.dry_run != true && inputs.run_kind == 'scheduled' }}", kakao)
+        self.assertIn("if: ${{ inputs.dry_run != true && inputs.run_kind != 'scheduled' }}", kakao)
+        self.assertIn("vars.BOOK_SERVING_GENERATION_PUBLISH_ENABLED == 'true' && inputs.dry_run != true", kakao)
+        self.assertIn("vars.WEBR_BOOK_GENERATION_PUBLISH_ENABLED == 'true' && inputs.dry_run != true", kakao)
 
     def test_contract_workflow_is_secret_free_and_read_only(self):
         workflow = (Path(__file__).parents[1] / ".github/workflows/book_contract_tests.yml").read_text()
