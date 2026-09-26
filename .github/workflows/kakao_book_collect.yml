@@ -114,7 +114,7 @@ on:
         default: 50
       dry_run:
         type: boolean
-        default: false
+        default: true
       respect_frontier_due:
         type: boolean
         default: false
