@@ -215,6 +215,13 @@ class ClickHousePressureGateTest(unittest.TestCase):
         self.assertIn("vars.BOOK_SERVING_GENERATION_PUBLISH_ENABLED == 'true' && inputs.dry_run != true", kakao)
         self.assertIn("vars.WEBR_BOOK_GENERATION_PUBLISH_ENABLED == 'true' && inputs.dry_run != true", kakao)
 
+    def test_kakao_manual_run_defaults_to_read_only(self):
+        workflow = (Path(__file__).parents[1] / ".github/workflows/kakao_book_collect.yml").read_text()
+        reusable = workflow[workflow.index("  workflow_call:") : workflow.index("  workflow_dispatch:")]
+        manual = workflow[workflow.index("  workflow_dispatch:") : workflow.index("\npermissions:")]
+        self.assertIn("      dry_run:\n        required: false\n        type: boolean\n        default: false", reusable)
+        self.assertIn("      dry_run:\n        type: boolean\n        default: true", manual)
+
     def test_contract_workflow_is_secret_free_and_read_only(self):
         workflow = (Path(__file__).parents[1] / ".github/workflows/book_contract_tests.yml").read_text()
         self.assertIn("push:\n    branches: [main]", workflow)
