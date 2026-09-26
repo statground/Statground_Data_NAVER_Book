@@ -154,6 +154,16 @@ func (e *StoreError) Error() string {
 }
 
 func (s *ClickHouseStore) Validate(ctx context.Context) error {
+	return s.validate(ctx, true)
+}
+
+// ValidateReadOnly performs the same preflight without replaying pending writes.
+// Dry runs must not repair the outbox before the collection dry-run gate.
+func (s *ClickHouseStore) ValidateReadOnly(ctx context.Context) error {
+	return s.validate(ctx, false)
+}
+
+func (s *ClickHouseStore) validate(ctx context.Context, replayPending bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -226,11 +236,13 @@ func (s *ClickHouseStore) Validate(ctx context.Context) error {
 		}
 		return err
 	}
-	if err := s.replayOutbox(retryCtx); err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
+	if replayPending {
+		if err := s.replayOutbox(retryCtx); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return err
 		}
-		return err
 	}
 	return nil
 }
