@@ -12,7 +12,7 @@ from scripts import book_serving_readonly_preflight as readonly
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/book_serving_readonly_preflight.yml"
 RUNNER = ROOT / "scripts/book_serving_readonly_preflight.py"
-SQL_PUBLISHER_COMMIT = "0750ff8a099c29274ca24ea9ba7da4b101715645"
+SQL_PUBLISHER_COMMIT = "32c5f22737ce04776082f2ed909c792d6e153c71"
 
 
 def receipt(**changes):

@@ -27,7 +27,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: statground/Statground_SQL
-          ref: "0750ff8a099c29274ca24ea9ba7da4b101715645" # Reviewed read-only SQL publisher commit.
+          ref: "32c5f22737ce04776082f2ed909c792d6e153c71" # Reviewed read-only SQL publisher commit.
           token: ${{ secrets.STATGROUND_SQL_READ_TOKEN }}
           path: .publisher/statground-sql
           persist-credentials: false
@@ -38,7 +38,7 @@ jobs:
       - name: Verify immutable read-only SQL publisher
         run: |
           set -euo pipefail
-          readonly expected_sql_commit="0750ff8a099c29274ca24ea9ba7da4b101715645"
+          readonly expected_sql_commit="32c5f22737ce04776082f2ed909c792d6e153c71"
           test "$expected_sql_commit" != "0000000000000000000000000000000000000000" || {
             echo "::error::Reviewed read-only SQL publisher commit is not pinned"
             exit 1

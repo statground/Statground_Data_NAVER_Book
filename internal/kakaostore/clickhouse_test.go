@@ -355,6 +355,51 @@ func TestValidatePreflightsDistributedLocalTablesAndGrants(t *testing.T) {
 	}
 }
 
+func TestValidateReadOnlyNeverReplaysPendingOutbox(t *testing.T) {
+	t.Setenv("CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME", "Clickhouse_S1_R1")
+	client := testClient()
+	client.Host = "clickhouse.example.invalid"
+	client.Protocol = "https"
+	requests := 0
+	client.HTTPClient = &http.Client{Transport: storeRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests++
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Error(err)
+			return nil, err
+		}
+		query := string(body)
+		if strings.Contains(query, "FROM Data_Book_KAKAO_Log.kakao_direct_insert_outbox") ||
+			strings.HasPrefix(strings.TrimSpace(query), "INSERT INTO ") ||
+			strings.HasPrefix(strings.TrimSpace(query), "ALTER TABLE ") {
+			t.Errorf("read-only preflight attempted outbox replay or write: %s", query)
+			return &http.Response{StatusCode: http.StatusInternalServerError, Body: io.NopCloser(strings.NewReader(""))}, nil
+		}
+		responseBody := ""
+		if strings.Contains(query, "SELECT hostName() AS value") {
+			responseBody = "{\"value\":\"Clickhouse_S1_R1\"}\n"
+		}
+		if strings.Contains(query, "EXISTS TABLE") {
+			responseBody = "{\"result\":1}\n"
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(responseBody)),
+		}, nil
+	})}
+	store, err := NewClickHouse(client, ConfigFromEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ValidateReadOnly(context.Background()); err != nil {
+		t.Fatalf("ValidateReadOnly returned error: %v", err)
+	}
+	if requests == 0 {
+		t.Fatal("read-only preflight did not inspect the ClickHouse endpoint")
+	}
+}
+
 func TestValidateRejectsMissingOrMismatchedEndpointIdentityBeforeObjectQueries(t *testing.T) {
 	for _, test := range []struct {
 		name     string

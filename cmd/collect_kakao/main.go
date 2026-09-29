@@ -99,7 +99,13 @@ func run() error {
 	if err != nil {
 		return &safeError{category: "clickhouse_contract"}
 	}
-	if err := store.Validate(ctx); err != nil {
+	dryRun := boolEnv("KAKAO_DRY_RUN", false)
+	if dryRun {
+		err = store.ValidateReadOnly(ctx)
+	} else {
+		err = store.Validate(ctx)
+	}
+	if err != nil {
 		return &safeError{category: kakaocollector.ErrorCategory(err), stage: kakaocollector.ErrorStage(err), reason: kakaocollector.ErrorReason(err)}
 	}
 
@@ -166,10 +172,10 @@ func run() error {
 		plan.SkippedInvalid,
 		plan.SkippedDuplicate,
 		plan.SkippedOverBudget,
-		boolEnv("KAKAO_DRY_RUN", false),
+		dryRun,
 		candidateCount, deferred,
 	)
-	if boolEnv("KAKAO_DRY_RUN", false) {
+	if dryRun {
 		return nil
 	}
 	summary := collectionSummary{plannedRequests: len(plan.Selected), candidateRequests: candidateCount, deferredBeforePlanningRequests: deferred}
