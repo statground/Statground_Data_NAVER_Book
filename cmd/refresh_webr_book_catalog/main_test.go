@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -15,6 +16,10 @@ import (
 )
 
 type refreshRoundTripFunc func(*http.Request) (*http.Response, error)
+
+type testBookMVWriterGuard struct{}
+
+func (testBookMVWriterGuard) Check() error { return nil }
 
 func (function refreshRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return function(request)
@@ -77,7 +82,7 @@ func TestTriggerRefreshWithRetryFindsSingleCoordinator(t *testing.T) {
 		})},
 	}
 
-	if err := triggerRefreshWithRetry(client, "Data_Book_Service.mv_book_catalog_latest_refresh", 3, 0); err != nil {
+	if err := triggerRefreshWithRetry(client, "Data_Book_Service.mv_book_catalog_latest_refresh", 3, 0, testBookMVWriterGuard{}); err != nil {
 		t.Fatalf("triggerRefreshWithRetry() error=%v", err)
 	}
 	if len(bodies) != 5 {
@@ -107,7 +112,7 @@ func TestTriggerRefreshWithRetryFailsWhenCoordinatorIsUnavailable(t *testing.T) 
 		})},
 	}
 
-	err := triggerRefreshWithRetry(client, "webr_book.mv_naver_r_book_catalog_refresh", 2, 0)
+	err := triggerRefreshWithRetry(client, "webr_book.mv_naver_r_book_catalog_refresh", 2, 0, testBookMVWriterGuard{})
 	if err == nil || err.Error() != "refresh coordinator unavailable" {
 		t.Fatalf("unexpected error=%v", err)
 	}
@@ -149,7 +154,7 @@ func TestTriggerRefreshWithRetrySkipsWhenBookRefreshIsRunning(t *testing.T) {
 		})},
 	}
 
-	err := triggerRefreshWithRetry(client, "Data_Book_Service.mv_book_catalog_latest_refresh", 1, 0)
+	err := triggerRefreshWithRetry(client, "Data_Book_Service.mv_book_catalog_latest_refresh", 1, 0, testBookMVWriterGuard{})
 	if !errors.Is(err, errBookRefreshBusy) {
 		t.Fatalf("triggerRefreshWithRetry() error=%v, want errBookRefreshBusy", err)
 	}
@@ -192,7 +197,7 @@ func TestRestoreBookRefreshSchedulesStartsEveryExactViewInDependencyOrder(t *tes
 		})},
 	}
 
-	if err := restoreBookRefreshSchedulesWithRetry(client, bookRefreshScheduleViews, 1, 0); err != nil {
+	if err := restoreBookRefreshSchedulesWithRetry(client, bookRefreshScheduleViews, 1, 0, testBookMVWriterGuard{}); err != nil {
 		t.Fatalf("restoreBookRefreshSchedulesWithRetry() error=%v", err)
 	}
 	if len(bodies) != len(bookRefreshScheduleViews)*3 {
@@ -250,7 +255,7 @@ func TestRestoreBookRefreshSchedulesContinuesAfterOneCoordinatorFailure(t *testi
 		})},
 	}
 
-	err := restoreBookRefreshSchedulesWithRetry(client, bookRefreshScheduleViews, 1, 0)
+	err := restoreBookRefreshSchedulesWithRetry(client, bookRefreshScheduleViews, 1, 0, testBookMVWriterGuard{})
 	if err == nil || !strings.Contains(err.Error(), "webr_book.mv_naver_r_book_catalog_refresh") {
 		t.Fatalf("unexpected restore error=%v", err)
 	}
@@ -294,7 +299,7 @@ func TestRestoreBookRefreshSchedulesRejectsHTTPStartWithoutActiveState(t *testin
 		})},
 	}
 
-	err := restoreBookRefreshSchedulesWithRetry(client, bookRefreshScheduleViews[:1], 1, 0)
+	err := restoreBookRefreshSchedulesWithRetry(client, bookRefreshScheduleViews[:1], 1, 0, testBookMVWriterGuard{})
 	if err == nil || !strings.Contains(err.Error(), "did not reach an active state") {
 		t.Fatalf("unexpected restore error=%v", err)
 	}
@@ -330,7 +335,7 @@ func TestRestoreBookRefreshSchedulesAcceptsKnownActiveStates(t *testing.T) {
 				})},
 			}
 
-			if err := restoreBookRefreshSchedulesWithRetry(client, bookRefreshScheduleViews[:1], 1, 0); err != nil {
+			if err := restoreBookRefreshSchedulesWithRetry(client, bookRefreshScheduleViews[:1], 1, 0, testBookMVWriterGuard{}); err != nil {
 				t.Fatalf("restoreBookRefreshSchedulesWithRetry() status=%s error=%v", status, err)
 			}
 		})
@@ -372,7 +377,7 @@ func TestRestoreBookRefreshSchedulesUsesIndependentPerViewTimeouts(t *testing.T)
 		})},
 	}
 
-	err := restoreBookRefreshSchedulesWithRetryTimeout(client, bookRefreshScheduleViews, 1, 0, 100*time.Millisecond)
+	err := restoreBookRefreshSchedulesWithRetryTimeout(client, bookRefreshScheduleViews, 1, 0, 100*time.Millisecond, testBookMVWriterGuard{})
 	if err == nil || !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), firstView) {
 		t.Fatalf("unexpected restore error=%v", err)
 	}
@@ -434,6 +439,21 @@ func TestRunBusyPathRestoresAllSchedules(t *testing.T) {
 	t.Setenv("BOOK_REFRESH_COORDINATOR_ATTEMPTS", "1")
 	t.Setenv("BOOK_REFRESH_COORDINATOR_RETRY_MILLISECONDS", "0")
 	t.Setenv("BOOK_REFRESH_SCHEDULE_RESTORE_VIEW_TIMEOUT_SECONDS", "1")
+	t.Setenv("BOOK_MV_LEASE_HELPER", "/usr/bin/true")
+	t.Setenv("BOOK_MV_LEASE_CONFIG", "/test-only/protected-config")
+	previousInvoke := bookMVLeaseInvoke
+	t.Cleanup(func() { bookMVLeaseInvoke = previousInvoke })
+	bookMVLeaseInvoke = func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		reply := bookMVLeaseReply{
+			Resource:      bookMVLeaseResource,
+			Holder:        args[4],
+			Fence:         "17",
+			ExpiresEpoch:  time.Now().Add(3 * time.Minute).Unix(),
+			FencedWriters: []string{"manual-refresh", "mv-maintenance"},
+			Released:      args[0] == "release",
+		}
+		return json.Marshal(reply)
+	}
 
 	if err := run(); err != nil {
 		t.Fatalf("run() busy path error=%v", err)
@@ -485,7 +505,7 @@ func TestTriggerRefreshWithRetryDoesNotRefreshWhenAdmissionQueryFails(t *testing
 		})},
 	}
 
-	if err := triggerRefreshWithRetry(client, bookRefreshScheduleViews[0], 1, 0); err == nil {
+	if err := triggerRefreshWithRetry(client, bookRefreshScheduleViews[0], 1, 0, testBookMVWriterGuard{}); err == nil {
 		t.Fatal("admission query failure must fail closed")
 	}
 	for _, body := range bodies {

@@ -63,11 +63,20 @@ func run() (runErr error) {
 		timeoutSeconds = 900
 	}
 	client.HTTPClient.Timeout = time.Duration(timeoutSeconds) * time.Second
+	lease, err := acquireBookMVLease()
+	if err != nil {
+		return fmt.Errorf("acquire shared Book MV writer lease: %w", err)
+	}
+	defer func() {
+		if err := lease.Close(); err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("release shared Book MV writer lease: %w", err))
+		}
+	}()
 	// Manual refreshes must never leave one coordinator-local schedule disabled.
 	// Exact START is idempotent and preserves every external TO target. Run the
 	// restoration even when a refresh or WAIT below fails.
 	defer func() {
-		if err := restoreBookRefreshSchedules(client); err != nil {
+		if err := restoreBookRefreshSchedules(client, lease); err != nil {
 			runErr = errors.Join(runErr, fmt.Errorf("restore Book refresh schedules: %w", err))
 		}
 	}()
@@ -76,6 +85,7 @@ func run() (runErr error) {
 		client,
 		envx.String("BOOK_PROVIDER_REFRESH_VIEW", "Data_Book_Service.mv_book_catalog_latest_refresh"),
 		envx.String("BOOK_PROVIDER_COUNT_VIEW", "Data_Book_Service.v_book_catalog_latest_current"),
+		lease,
 	); err != nil {
 		if errors.Is(err, errBookRefreshBusy) {
 			fmt.Println("[book-catalog] refresh skipped because the serial Book refresh chain is already running")
@@ -83,11 +93,11 @@ func run() (runErr error) {
 		}
 		return err
 	}
-	if err := refreshCatalog(client, "webr-book", envx.String("WEBR_BOOK_REFRESH_VIEW", "webr_book.mv_naver_r_book_catalog_refresh"), envx.String("WEBR_BOOK_COUNT_VIEW", "webr_book.v_naver_r_book_catalog")); err != nil {
+	if err := refreshCatalog(client, "webr-book", envx.String("WEBR_BOOK_REFRESH_VIEW", "webr_book.mv_naver_r_book_catalog_refresh"), envx.String("WEBR_BOOK_COUNT_VIEW", "webr_book.v_naver_r_book_catalog"), lease); err != nil {
 		return err
 	}
 	if mirtypeRefreshEnabled() {
-		if err := refreshCatalog(client, "mirtype-book", envx.String("MIRTYPE_BOOK_REFRESH_VIEW", "mirtype_book.mv_naver_language_book_catalog_refresh"), envx.String("MIRTYPE_BOOK_COUNT_VIEW", "mirtype_book.v_naver_language_book_catalog")); err != nil {
+		if err := refreshCatalog(client, "mirtype-book", envx.String("MIRTYPE_BOOK_REFRESH_VIEW", "mirtype_book.mv_naver_language_book_catalog_refresh"), envx.String("MIRTYPE_BOOK_COUNT_VIEW", "mirtype_book.v_naver_language_book_catalog"), lease); err != nil {
 			return err
 		}
 	}
@@ -222,7 +232,7 @@ func bookRefreshSuccessFailureReason(observed, success int64, hasException bool)
 	return ""
 }
 
-func refreshProviderCatalog(client *ch.Client, refreshView, countView string) error {
+func refreshProviderCatalog(client *ch.Client, refreshView, countView string, guard bookMVWriterGuard) error {
 	if err := validateQualifiedIdentifier(refreshView, "BOOK_PROVIDER_REFRESH_VIEW"); err != nil {
 		return err
 	}
@@ -230,7 +240,7 @@ func refreshProviderCatalog(client *ch.Client, refreshView, countView string) er
 		return err
 	}
 	fmt.Printf("[book-provider] refreshing view=%s\n", refreshView)
-	if err := triggerRefreshOnCoordinator(client, refreshView); err != nil {
+	if err := triggerRefreshOnCoordinator(client, refreshView, guard); err != nil {
 		return fmt.Errorf("refresh provider-neutral book catalog: %w", err)
 	}
 	rows, err := client.QueryJSONEachRow(fmt.Sprintf(`
@@ -260,7 +270,7 @@ func refreshProviderCatalog(client *ch.Client, refreshView, countView string) er
 	return nil
 }
 
-func refreshCatalog(client *ch.Client, label, refreshView, countView string) error {
+func refreshCatalog(client *ch.Client, label, refreshView, countView string, guard bookMVWriterGuard) error {
 	if err := validateQualifiedIdentifier(refreshView, strings.ToUpper(strings.ReplaceAll(label, "-", "_"))+"_REFRESH_VIEW"); err != nil {
 		return err
 	}
@@ -268,7 +278,7 @@ func refreshCatalog(client *ch.Client, label, refreshView, countView string) err
 		return err
 	}
 	fmt.Printf("[%s] refreshing view=%s\n", label, refreshView)
-	if err := triggerRefreshOnCoordinator(client, refreshView); err != nil {
+	if err := triggerRefreshOnCoordinator(client, refreshView, guard); err != nil {
 		return fmt.Errorf("refresh %s catalog: %w", label, err)
 	}
 
@@ -288,9 +298,9 @@ func refreshCatalog(client *ch.Client, label, refreshView, countView string) err
 	return nil
 }
 
-func triggerRefreshOnCoordinator(client *ch.Client, refreshView string) error {
+func triggerRefreshOnCoordinator(client *ch.Client, refreshView string, guard bookMVWriterGuard) error {
 	attempts, retryDelay := bookRefreshCoordinatorRetrySettings()
-	return triggerRefreshWithRetry(client, refreshView, attempts, retryDelay)
+	return triggerRefreshWithRetry(client, refreshView, attempts, retryDelay, guard)
 }
 
 func bookRefreshCoordinatorRetrySettings() (int, time.Duration) {
@@ -305,7 +315,7 @@ func bookRefreshCoordinatorRetrySettings() (int, time.Duration) {
 	return attempts, time.Duration(retryMilliseconds) * time.Millisecond
 }
 
-func restoreBookRefreshSchedules(client *ch.Client) error {
+func restoreBookRefreshSchedules(client *ch.Client, guard bookMVWriterGuard) error {
 	attempts, retryDelay := bookRefreshCoordinatorRetrySettings()
 	// Give every view its own short recovery window. With four views, the
 	// default bounds the full best-effort restoration to roughly 120 seconds
@@ -320,14 +330,15 @@ func restoreBookRefreshSchedules(client *ch.Client) error {
 		attempts,
 		retryDelay,
 		time.Duration(viewTimeoutSeconds)*time.Second,
+		guard,
 	)
 }
 
-func restoreBookRefreshSchedulesWithRetry(client *ch.Client, refreshViews []string, attempts int, retryDelay time.Duration) error {
-	return restoreBookRefreshSchedulesWithRetryTimeout(client, refreshViews, attempts, retryDelay, 0)
+func restoreBookRefreshSchedulesWithRetry(client *ch.Client, refreshViews []string, attempts int, retryDelay time.Duration, guard bookMVWriterGuard) error {
+	return restoreBookRefreshSchedulesWithRetryTimeout(client, refreshViews, attempts, retryDelay, 0, guard)
 }
 
-func restoreBookRefreshSchedulesWithRetryTimeout(client *ch.Client, refreshViews []string, attempts int, retryDelay, perViewTimeout time.Duration) error {
+func restoreBookRefreshSchedulesWithRetryTimeout(client *ch.Client, refreshViews []string, attempts int, retryDelay, perViewTimeout time.Duration, guard bookMVWriterGuard) error {
 	var restoreErrors []error
 	for _, refreshView := range refreshViews {
 		if err := validateQualifiedIdentifier(refreshView, "BOOK_REFRESH_SCHEDULE_VIEW"); err != nil {
@@ -339,7 +350,7 @@ func restoreBookRefreshSchedulesWithRetryTimeout(client *ch.Client, refreshViews
 		if perViewTimeout > 0 {
 			ctx, cancel = context.WithTimeout(ctx, perViewTimeout)
 		}
-		err := startRefreshScheduleWithRetryContext(ctx, client, refreshView, attempts, retryDelay)
+		err := startRefreshScheduleWithRetryContext(ctx, client, refreshView, attempts, retryDelay, guard)
 		cancel()
 		if err != nil {
 			restoreErrors = append(restoreErrors, fmt.Errorf("start %s: %w", refreshView, err))
@@ -350,7 +361,7 @@ func restoreBookRefreshSchedulesWithRetryTimeout(client *ch.Client, refreshViews
 	return errors.Join(restoreErrors...)
 }
 
-func startRefreshScheduleWithRetryContext(ctx context.Context, client *ch.Client, refreshView string, attempts int, retryDelay time.Duration) error {
+func startRefreshScheduleWithRetryContext(ctx context.Context, client *ch.Client, refreshView string, attempts int, retryDelay time.Duration, guard bookMVWriterGuard) error {
 	if attempts < 1 {
 		attempts = 1
 	}
@@ -364,6 +375,8 @@ func startRefreshScheduleWithRetryContext(ctx context.Context, client *ch.Client
 			lastErr = err
 		} else if !exists {
 			lastErr = fmt.Errorf("refresh coordinator unavailable")
+		} else if err := checkBookMVWriterLease(guard); err != nil {
+			lastErr = err
 		} else if err := client.ExecContext(ctx, "SYSTEM START VIEW "+refreshView); err != nil {
 			lastErr = err
 		} else if active, err := refreshScheduleIsActive(ctx, client, refreshView); err != nil {
@@ -416,7 +429,7 @@ func refreshScheduleIsActive(ctx context.Context, client *ch.Client, refreshView
 // scheduled full refresh is not duplicated by every replica. The public
 // ClickHouse endpoint can select any replica, so locate the coordinator through
 // bounded connection retries before issuing SYSTEM REFRESH VIEW.
-func triggerRefreshWithRetry(client *ch.Client, refreshView string, attempts int, retryDelay time.Duration) error {
+func triggerRefreshWithRetry(client *ch.Client, refreshView string, attempts int, retryDelay time.Duration, guard bookMVWriterGuard) error {
 	var lastErr error
 	for attempt := 1; attempt <= attempts; attempt++ {
 		// Resolve only the requested coordinator. A system.tables scan can wait
@@ -431,6 +444,8 @@ func triggerRefreshWithRetry(client *ch.Client, refreshView string, attempts int
 				lastErr = err
 			} else if busy {
 				return errBookRefreshBusy
+			} else if err := checkBookMVWriterLease(guard); err != nil {
+				lastErr = err
 			} else if err := client.Exec("SYSTEM REFRESH VIEW " + refreshView); err == nil {
 				if err := client.Exec("SYSTEM WAIT VIEW " + refreshView); err == nil {
 					return nil
