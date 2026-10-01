@@ -1,0 +1,226 @@
+name: Resume Kakao Book schedule once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/book_kakao_schedule_resume_once.yml
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: statground-book-writer-refresh
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  resume_exact_kakao_schedule:
+    if: ${{ github.repository == 'statground/Statground_Data_NAVER_Book' && github.ref == 'refs/heads/main' && github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME: clickhouse-s1-r1
+      KAKAO_BOOK_SCHEDULE_ENABLED: ${{ vars.KAKAO_BOOK_SCHEDULE_ENABLED }}
+    steps:
+      - name: Checkout exact run source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Validate explicit Kakao schedule policy and API key
+        env:
+          KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${KAKAO_BOOK_SCHEDULE_ENABLED,,}" in
+            false) echo "::error::KAKAO_BOOK_SCHEDULE_ENABLED explicitly disables collection"; exit 1 ;;
+          esac
+          test -n "$KAKAO_REST_API_KEY" || { echo "::error::KAKAO_REST_API_KEY is unavailable"; exit 1; }
+
+      - name: Resolve approved ClickHouse transport
+        id: clickhouse_transport
+        env:
+          CH_HOST: ${{ secrets.CLICKHOUSE_HOST || secrets.CH_HOST }}
+          CH_PORT: ${{ secrets.CLICKHOUSE_PORT || secrets.CH_PORT || '443' }}
+          CH_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH || secrets.CH_HTTP_URL_PATH }}
+          CH_USER: ${{ secrets.CLICKHOUSE_USER || secrets.CH_USER }}
+          CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD || secrets.CH_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CH_HOST" && test -n "$CH_USER" && test -n "$CH_PASSWORD" || {
+            echo "::error::ClickHouse endpoint or read credential is unavailable"
+            exit 1
+          }
+          case "$CH_HOST" in
+            *://*|127.0.0.1|localhost|0.0.0.0|::1|[::1])
+              echo "::error::ClickHouse host must be one externally reachable hostname or IP"
+              exit 1 ;;
+          esac
+          case "$CH_PORT" in
+            ''|*[!0-9]*) echo "::error::ClickHouse port must be an integer"; exit 1 ;;
+          esac
+          test "$CH_PORT" -ge 1 && test "$CH_PORT" -le 65535 || {
+            echo "::error::ClickHouse port is outside the valid range"; exit 1;
+          }
+          test -z "$CH_HTTP_URL_PATH" || {
+            echo "::error::ClickHouse endpoint path must be empty"; exit 1;
+          }
+          host_kind="$(python3 - <<'PY'
+          import ipaddress
+          import os
+
+          host = os.environ["CH_HOST"].strip()
+          candidate = host[1:-1] if host.startswith("[") and host.endswith("]") else host
+          try:
+              ipaddress.ip_address(candidate)
+          except ValueError:
+              print("hostname")
+          else:
+              print("ip")
+          PY
+          )"
+          if [ "$host_kind" = "ip" ]; then
+            test "$CH_PORT" != "443" || {
+              echo "::error::Approved ClickHouse IP/HTTP endpoint requires an explicit non-TLS port"
+              exit 1
+            }
+            echo "protocol=http" >> "$GITHUB_OUTPUT"
+          else
+            test "$CH_PORT" = "443" || {
+              echo "::error::ClickHouse hostname/HTTPS endpoint requires port 443"
+              exit 1
+            }
+            echo "protocol=https" >> "$GITHUB_OUTPUT"
+          fi
+          echo "port=$CH_PORT" >> "$GITHUB_OUTPUT"
+
+      - name: Read-only pressure gate for exact Book targets
+        env:
+          CLICKHOUSE_PRESSURE_GATE_TARGETS: >-
+            replica:Data_Book_KAKAO_Raw.kakao_book_raw_local,
+            replica:Data_Book_KAKAO_Log.kakao_collect_log_local,
+            replica:Data_Book_KAKAO_Log.kakao_api_call_log_local,
+            replica:Data_Book_KAKAO_Log.kakao_query_frontier_local,
+            replica:Data_Book_Service.book_provider_latest_local,
+            replica:Data_Book_Service.book_recent_local,
+            replica:Data_Book_Service.book_isbn_alias_local,
+            replica:Data_Book_Service.book_catalog_latest_local,
+            replica:webr_book.naver_r_book_catalog_local,
+            replica:mirtype_book.naver_language_book_catalog_local,
+            local:Data_Book_KAKAO_Log.kakao_direct_insert_outbox
+          CH_HOST: ${{ secrets.CLICKHOUSE_HOST || secrets.CH_HOST }}
+          CH_PORT: ${{ steps.clickhouse_transport.outputs.port }}
+          CH_USER: ${{ secrets.CLICKHOUSE_USER || secrets.CH_USER }}
+          CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD || secrets.CH_PASSWORD }}
+          CH_PROTOCOL: ${{ steps.clickhouse_transport.outputs.protocol }}
+          CH_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH || secrets.CH_HTTP_URL_PATH }}
+        run: python3 scripts/clickhouse_pressure_gate.py
+
+      - name: Read-only four-stage Book refresh verification
+        env:
+          CH_HOST: ${{ secrets.CLICKHOUSE_HOST || secrets.CH_HOST }}
+          CH_PORT: ${{ steps.clickhouse_transport.outputs.port }}
+          CH_USER: ${{ secrets.CLICKHOUSE_USER || secrets.CH_USER }}
+          CH_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD || secrets.CH_PASSWORD }}
+          CH_PROTOCOL: ${{ steps.clickhouse_transport.outputs.protocol }}
+          CH_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH || secrets.CH_HTTP_URL_PATH }}
+          CH_DATABASE: Data_Book_Service
+          BOOK_REFRESH_VERIFY_ONLY: "true"
+          BOOK_REFRESH_COORDINATOR_ATTEMPTS: "12"
+          BOOK_REFRESH_COORDINATOR_RETRY_MILLISECONDS: "500"
+        run: go run -mod=mod ./cmd/refresh_webr_book_catalog
+
+      - name: Enable only the paused Kakao schedule and verify NAVER remains disabled
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+
+          repo = "statground/Statground_Data_NAVER_Book"
+          if (os.environ.get("GITHUB_REPOSITORY") != repo
+                  or os.environ.get("GITHUB_REF") != "refs/heads/main"
+                  or os.environ.get("GITHUB_EVENT_NAME") != "push"):
+              raise SystemExit("Unexpected repository, branch, or event")
+          token = os.environ.get("GH_TOKEN", "")
+          if not token:
+              raise SystemExit("Actions write token is unavailable")
+          workflows = {
+              271467207: ("naver_book_collect_all.yml", "disabled_manually"),
+              311277246: ("naver_book_schedule.yml", "disabled_manually"),
+              320611761: ("kakao_book_collect.yml", "active"),
+              320611762: ("kakao_book_schedule.yml", "disabled_manually"),
+          }
+          target_id = 320611762
+          paused_at = "2026-09-25T10:16:59.000Z"
+          base = "https://api.github.com/repos/" + repo + "/actions/workflows/"
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": "Bearer " + token,
+              "User-Agent": "statground-kakao-schedule-resume-once",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, request, fp, code, message, response_headers, new_url):
+                  raise SystemExit("Unexpected workflow API redirect")
+
+          opener = urllib.request.build_opener(NoRedirect())
+
+          def request(path, method="GET"):
+              req = urllib.request.Request(base + path, headers=headers, method=method,
+                                           data=b"" if method == "PUT" else None)
+              try:
+                  with opener.open(req, timeout=15) as response:
+                      body = response.read(65537)
+                      if len(body) > 65536:
+                          raise SystemExit("Workflow API response exceeds bound")
+                      return response.status, json.loads(body) if body else None
+              except urllib.error.HTTPError as error:
+                  raise SystemExit(f"GitHub workflow API returned HTTP {error.code} for {path}") from None
+
+          def inspect(workflow_id, filename, expected_state):
+              status, current = request(str(workflow_id))
+              if (status != 200 or not isinstance(current, dict)
+                      or current.get("id") != workflow_id
+                      or current.get("path") != ".github/workflows/" + filename
+                      or current.get("state") != expected_state):
+                  raise SystemExit(f"Workflow identity or state mismatch: {workflow_id}")
+              return current
+
+          current = {}
+          for workflow_id, (filename, state) in workflows.items():
+              current[workflow_id] = inspect(workflow_id, filename, state)
+          if current[target_id].get("updated_at") != paused_at:
+              raise SystemExit("Kakao schedule pause revision changed; review before resuming")
+          status, _ = request(str(target_id) + "/enable", "PUT")
+          if status != 204:
+              raise SystemExit("Kakao schedule enable did not return HTTP 204")
+          for attempt in range(5):
+              try:
+                  inspect(target_id, workflows[target_id][0], "active")
+                  break
+              except SystemExit:
+                  if attempt == 4:
+                      raise
+                  time.sleep(1)
+          for workflow_id in (271467207, 311277246, 320611761):
+              filename, state = workflows[workflow_id]
+              inspect(workflow_id, filename, state)
+          print("kakao_schedule_resumed workflow_id=320611762 state=active naver_state=disabled_manually")
+          PY
