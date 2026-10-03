@@ -15,7 +15,7 @@ import (
 
 func TestValidateBackfillRejectsSafeButUnallowlistedTableBeforeRequest(t *testing.T) {
 	requests := 0
-	client := &ch.Client{
+	client := &ch.Client{WriterAdmission: fixtureAdmission{},
 		Host:     "https://clickhouse.test",
 		Protocol: "https",
 		HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -40,7 +40,7 @@ func TestValidateBackfillRejectsSafeButUnallowlistedTableBeforeRequest(t *testin
 func TestExecuteProjectionRangeUsesOneBoundedRequest(t *testing.T) {
 	requests := 0
 	var body string
-	client := &ch.Client{
+	client := &ch.Client{WriterAdmission: fixtureAdmission{},
 		Host: "http://clickhouse.test",
 		HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 			requests++
@@ -94,5 +94,43 @@ func TestExecuteProjectionRangeUsesOneBoundedRequest(t *testing.T) {
 		if !strings.Contains(body, fragment) {
 			t.Fatalf("request missing %q:\n%s", fragment, body)
 		}
+	}
+}
+
+func TestProjectionRangeCancellationStopsAdmittedRequestWithoutRetry(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	requests := 0
+	started := make(chan struct{})
+	client := &ch.Client{WriterAdmission: fixtureAdmission{}, Host: "http://database.test", HTTPClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		close(started)
+		<-req.Context().Done()
+		return nil, req.Context().Err()
+	})}}
+	store, err := NewClickHouse(client, ConfigFromEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed := make(chan error, 1)
+	go func() {
+		completed <- store.ExecuteProjectionRange(ctx, nlkbackfill.ProjectionAuthority, nlkbackfill.DefaultTransformVersion, nlkbackfill.RawEntry{SnapshotDate: time.Date(2026, 5, 29, 0, 0, 0, 0, util.KST()), DatasetName: "person", SourceArchive: "person.zip", SourceEntry: "person.rdf", NextRecordIndex: 100}, nlkbackfill.RecordRange{Start: 0, End: 100})
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("request not admitted")
+	}
+	cancel()
+	select {
+	case err := <-completed:
+		if err == nil {
+			t.Fatal("canceled projection reported success")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("projection ignored runner cancellation")
+	}
+	if requests != 1 {
+		t.Fatalf("requests=%d, want one attempt", requests)
 	}
 }

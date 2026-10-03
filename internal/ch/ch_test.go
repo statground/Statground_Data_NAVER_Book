@@ -87,7 +87,7 @@ func TestCanonicalDigestKeepsTestAndProductionSourceLineage(t *testing.T) {
 
 func TestTableExistsContextHonorsCancellationBeforeTransport(t *testing.T) {
 	calls := 0
-	client := &Client{
+	client := &Client{WriterAdmission: fixtureAdmission{},
 		Host:     "clickhouse.example.invalid",
 		Port:     8123,
 		Database: "Data_Book_KAKAO_Raw",
@@ -123,7 +123,7 @@ func TestValidateDirectEndpointHostnameIsExactAndFailClosed(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			requests := 0
-			client := &Client{
+			client := &Client{WriterAdmission: fixtureAdmission{},
 				Host: "http://clickhouse.test",
 				HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 					requests++
@@ -165,7 +165,7 @@ func TestValidateDirectEndpointHostnameIsExactAndFailClosed(t *testing.T) {
 }
 
 func TestClientHTTPErrorKeepsOnlyStatusAndClickHouseCode(t *testing.T) {
-	client := &Client{
+	client := &Client{WriterAdmission: fixtureAdmission{},
 		Host:     "clickhouse.example.invalid",
 		Port:     8123,
 		Database: "Data_Book_KAKAO_Raw",
@@ -186,7 +186,7 @@ func TestClientHTTPErrorKeepsOnlyStatusAndClickHouseCode(t *testing.T) {
 
 func TestClientHTTPErrorBodyIsBoundedAndNeverExposed(t *testing.T) {
 	secret := strings.Repeat("secret-row-value", 10000)
-	client := &Client{
+	client := &Client{WriterAdmission: fixtureAdmission{},
 		Host: "http://clickhouse.test",
 		HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 			return &http.Response{
@@ -209,7 +209,7 @@ func TestClientHTTPErrorBodyIsBoundedAndNeverExposed(t *testing.T) {
 
 func TestSynchronousInsertDoesNotRetryUnknownInsertStatus(t *testing.T) {
 	requests := 0
-	client := &Client{
+	client := &Client{WriterAdmission: fixtureAdmission{},
 		Host: "http://clickhouse.test",
 		HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 			requests++
@@ -247,7 +247,7 @@ func TestSynchronousInsertDoesNotFollowHTTPRedirect(t *testing.T) {
 		http.Redirect(writer, request, "/redirected", http.StatusTemporaryRedirect)
 	}))
 	defer server.Close()
-	client := &Client{Host: server.URL, HTTPClient: server.Client()}
+	client := &Client{WriterAdmission: fixtureAdmission{}, Host: server.URL, HTTPClient: server.Client()}
 	err := client.InsertJSONEachRowSynchronous(
 		"db.target",
 		[]map[string]any{{"id": "one"}},
@@ -264,7 +264,7 @@ func TestSynchronousInsertDoesNotFollowHTTPRedirect(t *testing.T) {
 
 func TestSynchronousInsertTreatsPostStartCancellationAsAmbiguous(t *testing.T) {
 	requests := 0
-	client := &Client{
+	client := &Client{WriterAdmission: fixtureAdmission{},
 		Host: "http://clickhouse.test",
 		HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 			requests++
@@ -340,7 +340,7 @@ func TestReconcileJSONEachRowConvergesAllNonePartialAndSuperseded(t *testing.T) 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			requests := 0
-			client := &Client{
+			client := &Client{WriterAdmission: fixtureAdmission{},
 				Host:     "http://clickhouse.test",
 				Database: "db",
 				HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -402,7 +402,7 @@ func TestReconcileJSONEachRowConvergesAllNonePartialAndSuperseded(t *testing.T) 
 
 func TestReconcileJSONEachRowRejectsDuplicateExpectedIdentityBeforeQuery(t *testing.T) {
 	requests := 0
-	client := &Client{
+	client := &Client{WriterAdmission: fixtureAdmission{},
 		Host:     "http://clickhouse.test",
 		Database: "db",
 		HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -430,7 +430,7 @@ func TestReconcileJSONEachRowPreservesUInt64VersionPrecision(t *testing.T) {
 		"event_uuid": "01900000-0000-7000-8000-000000000001",
 		"version":    version,
 	}
-	client := &Client{
+	client := &Client{WriterAdmission: fixtureAdmission{},
 		Host:     "http://clickhouse.test",
 		Database: "db",
 		HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -455,7 +455,7 @@ func TestReconcileJSONEachRowPreservesUInt64VersionPrecision(t *testing.T) {
 }
 
 func TestClientBaseURLUsesProtocolAndPath(t *testing.T) {
-	c := &Client{
+	c := &Client{WriterAdmission: fixtureAdmission{},
 		Host:     "clickhouse.example.com",
 		Port:     9440,
 		Protocol: "https",
@@ -470,7 +470,7 @@ func TestClientBaseURLUsesProtocolAndPath(t *testing.T) {
 }
 
 func TestClientBaseURLAcceptsFullURLHost(t *testing.T) {
-	c := &Client{
+	c := &Client{WriterAdmission: fixtureAdmission{},
 		Host: "https://clickhouse.example.com/proxy",
 		Port: 8123,
 	}
@@ -565,7 +565,7 @@ func TestQualifiedTableIdentifierValidatesAndQuotes(t *testing.T) {
 func TestTableExistsUsesExactExistsQuery(t *testing.T) {
 	var requests int
 	var body string
-	client := &Client{
+	client := &Client{WriterAdmission: fixtureAdmission{},
 		Host:     "http://clickhouse.test",
 		Database: "Data_Book_NAVER_Raw",
 		HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -604,7 +604,7 @@ func TestTableExistsUsesExactExistsQuery(t *testing.T) {
 
 func TestTableExistsRejectsUnsafeIdentifierBeforeRequest(t *testing.T) {
 	requests := 0
-	client := &Client{
+	client := &Client{WriterAdmission: fixtureAdmission{},
 		Database: "Data_Book_NAVER_Raw",
 		HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 			requests++
@@ -621,7 +621,7 @@ func TestTableExistsRejectsUnsafeIdentifierBeforeRequest(t *testing.T) {
 
 func TestExecSingleAttemptDoesNotRetryAmbiguousFailure(t *testing.T) {
 	requests := 0
-	client := &Client{
+	client := &Client{WriterAdmission: fixtureAdmission{},
 		Host: "http://clickhouse.test",
 		HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 			requests++
@@ -643,7 +643,7 @@ func TestExecSingleAttemptDoesNotRetryAmbiguousFailure(t *testing.T) {
 
 func TestInsertJSONEachRowDurableUsesFixedForegroundQuorumSettings(t *testing.T) {
 	var body string
-	client := &Client{
+	client := &Client{WriterAdmission: fixtureAdmission{},
 		Host: "http://clickhouse.test",
 		HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 			payload, err := io.ReadAll(request.Body)
@@ -693,7 +693,7 @@ func TestInsertJSONEachRowDurableUsesFixedForegroundQuorumSettings(t *testing.T)
 func TestInsertJSONEachRowSynchronousUsesDeterministicForegroundDelivery(t *testing.T) {
 	requests := 0
 	body := ""
-	client := &Client{
+	client := &Client{WriterAdmission: fixtureAdmission{},
 		Host: "http://clickhouse.test",
 		HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 			requests++
@@ -732,7 +732,7 @@ func TestInsertJSONEachRowSynchronousUsesDeterministicForegroundDelivery(t *test
 }
 
 func TestInsertJSONEachRowSynchronousRejectsNonSHA256Token(t *testing.T) {
-	client := &Client{}
+	client := &Client{WriterAdmission: fixtureAdmission{}}
 	if err := client.InsertJSONEachRowSynchronous("db.target", []map[string]any{{"value": 1}}, "volatile"); err == nil {
 		t.Fatal("expected invalid synchronous token error")
 	}
@@ -745,7 +745,7 @@ func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, 
 }
 
 func TestInsertJSONEachRowDurableRejectsNonSHA256Token(t *testing.T) {
-	client := &Client{}
+	client := &Client{WriterAdmission: fixtureAdmission{}}
 	err := client.InsertJSONEachRowDurable("db.table", []map[string]any{{"value": 1}}, "volatile")
 	if err == nil || err.Error() != "invalid durable insert deduplication token" {
 		t.Fatalf("unexpected error=%v", err)

@@ -232,7 +232,7 @@ func (s *ClickHouseStore) ExecuteProjectionRange(
 	// Projection INSERT SELECT is intentionally attempted exactly once. A
 	// timeout, UNKNOWN_STATUS, replica, or Keeper result is ambiguous and must
 	// leave the durable next_record_index unchanged for operator-led recovery.
-	if err := s.Client.ExecSingleAttempt(query); err != nil {
+	if err := s.Client.ExecSingleAttemptContext(ctx, query); err != nil {
 		return &StoreError{Category: classifyProjectionError(err)}
 	}
 	return nil

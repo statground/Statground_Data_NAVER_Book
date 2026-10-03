@@ -1,0 +1,52 @@
+name: Prepare immutable Book writer lease
+description: Install the reviewed SQL helper and protected configuration without database activation.
+inputs:
+  sql-read-token:
+    description: Token authorized to read the pinned Statground SQL repository.
+    required: true
+  config-json:
+    description: Complete reviewed lease config; credential reference must be BOOK_WRITER_LEASE_TIDB_PASSWORD.
+    required: true
+  ca-pem:
+    description: Optional verified CA; config path must be RUNNER_TEMP/book-writer-lease/ca.pem.
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Checkout immutable lease helper
+      uses: actions/checkout@v6
+      with:
+        repository: statground/Statground_SQL
+        ref: 66e604d1fc2befcc7753191219c98940dc548790
+        token: ${{ inputs.sql-read-token }}
+        path: .writer-lease/statground-sql
+        persist-credentials: false
+        fetch-depth: 1
+        sparse-checkout: docker-compose/50005_Clickhouse_Statground/book_shared_writer_lease.py
+        sparse-checkout-cone-mode: false
+    - name: Verify helper and prepare isolated Python environment
+      shell: bash
+      run: |
+        set -euo pipefail
+        umask 077
+        sql_root="$GITHUB_WORKSPACE/.writer-lease/statground-sql"
+        test "$(git -C "$sql_root" rev-parse HEAD)" = "66e604d1fc2befcc7753191219c98940dc548790"
+        python3 -m venv "$RUNNER_TEMP/book-writer-lease-python"
+        cat >"$RUNNER_TEMP/book-writer-lease-requirements.txt" <<'EOF'
+        PyMySQL==1.1.2 --hash=sha256:e6b1d89711dd51f8f74b1631fe08f039e7d76cf67a42a323d3178f0f25762ed9
+        EOF
+        "$RUNNER_TEMP/book-writer-lease-python/bin/python" -m pip install --disable-pip-version-check --no-deps --only-binary=:all: --require-hashes -r "$RUNNER_TEMP/book-writer-lease-requirements.txt"
+    - name: Prepare protected configuration and pinned executable
+      shell: bash
+      env:
+        BOOK_WRITER_LEASE_CONFIG_JSON: ${{ inputs.config-json }}
+        BOOK_WRITER_LEASE_CA_PEM: ${{ inputs.ca-pem }}
+      run: |
+        set -euo pipefail
+        python3 scripts/prepare_book_writer_lease.py --sql-root "$GITHUB_WORKSPACE/.writer-lease/statground-sql" --runtime "$RUNNER_TEMP/book-writer-lease" --python "$RUNNER_TEMP/book-writer-lease-python/bin/python"
+    - name: Validate protected configuration without database access
+      shell: bash
+      run: |
+        set -euo pipefail
+        "$BOOK_WRITER_LEASE_HELPER" check-config --no-connect --config "$BOOK_WRITER_LEASE_CONFIG"

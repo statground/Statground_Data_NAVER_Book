@@ -89,10 +89,18 @@ func pickKey(keys []APIKey, r *rand.Rand) APIKey {
 }
 
 func FetchItems(keyword, sort string, start, display int, keys []APIKey, r *rand.Rand) (int, []BookItem, error) {
-	return fetchItemsWithClient(bookSearchClient, bookSearchEndpoint, keyword, sort, start, display, keys, r)
+	return FetchItemsContext(context.Background(), keyword, sort, start, display, keys, r)
+}
+
+func FetchItemsContext(ctx context.Context, keyword, sort string, start, display int, keys []APIKey, r *rand.Rand) (int, []BookItem, error) {
+	return fetchItemsWithClientContext(ctx, bookSearchClient, bookSearchEndpoint, keyword, sort, start, display, keys, r)
 }
 
 func fetchItemsWithClient(client *http.Client, endpoint, keyword, sort string, start, display int, keys []APIKey, r *rand.Rand) (int, []BookItem, error) {
+	return fetchItemsWithClientContext(context.Background(), client, endpoint, keyword, sort, start, display, keys, r)
+}
+
+func fetchItemsWithClientContext(ctx context.Context, client *http.Client, endpoint, keyword, sort string, start, display int, keys []APIKey, r *rand.Rand) (int, []BookItem, error) {
 	if len(keys) == 0 {
 		return 0, nil, fmt.Errorf("NAVER_API_KEYS does not contain usable client_id/client_secret pairs")
 	}
@@ -117,7 +125,10 @@ func fetchItemsWithClient(client *http.Client, endpoint, keyword, sort string, s
 
 	var lastErr error
 	for attempt := 1; attempt <= attempts; attempt++ {
-		total, items, retryable, err := fetchItemsOnce(client, endpoint+"?"+q.Encode(), keys, r)
+		if err := ctx.Err(); err != nil {
+			return 0, nil, err
+		}
+		total, items, retryable, err := fetchItemsOnce(ctx, client, endpoint+"?"+q.Encode(), keys, r)
 		if err == nil {
 			return total, items, nil
 		}
@@ -127,13 +138,19 @@ func fetchItemsWithClient(client *http.Client, endpoint, keyword, sort string, s
 		}
 		delay := retryDelay(attempt, backoffMin, backoffMax, r)
 		fmt.Printf("[warn] naver api retry attempt=%d/%d reason=%s delay=%s\n", attempt+1, attempts, retryReason(err), delay)
-		time.Sleep(delay)
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return 0, nil, ctx.Err()
+		case <-timer.C:
+		}
 	}
 	return 0, nil, lastErr
 }
 
-func fetchItemsOnce(client *http.Client, requestURL string, keys []APIKey, r *rand.Rand) (int, []BookItem, bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), secondsEnv("NAVER_API_TIMEOUT", 20*time.Second))
+func fetchItemsOnce(parent context.Context, client *http.Client, requestURL string, keys []APIKey, r *rand.Rand) (int, []BookItem, bool, error) {
+	ctx, cancel := context.WithTimeout(parent, secondsEnv("NAVER_API_TIMEOUT", 20*time.Second))
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)

@@ -60,6 +60,12 @@ on:
         type: number
         default: 2000
     secrets:
+      BOOK_WRITER_LEASE_TIDB_PASSWORD:
+        required: false
+      BOOK_WRITER_LEASE_CONFIG_JSON:
+        required: false
+      BOOK_WRITER_LEASE_CA_PEM:
+        required: false
       KAKAO_REST_API_KEY:
         required: true
       CLICKHOUSE_HOST:
@@ -157,6 +163,7 @@ jobs:
       webr_refresh_verified: ${{ steps.native_book_refresh.outputs.verified || steps.webr_book_refresh_manual.outputs.verified }}
       book_serving_refresh_verified: ${{ steps.native_book_refresh.outputs.verified || steps.webr_book_refresh_manual.outputs.verified }}
     env:
+      BOOK_WRITER_LEASE_TIDB_PASSWORD: ${{ secrets.BOOK_WRITER_LEASE_TIDB_PASSWORD }}
       # Port 50005 is the durable direct S1_R1 endpoint, never the 50006 gateway.
       CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME: clickhouse-s1-r1
       KAKAO_RUN_KIND: ${{ inputs.run_kind || 'manual' }}
@@ -225,6 +232,14 @@ jobs:
           go mod verify
           go test -mod=mod ./...
           go build -mod=mod ./cmd/collect_kakao
+
+      - name: Prepare reviewed shared writer lease
+        if: inputs.dry_run != true
+        uses: ./.github/actions/book-writer-lease
+        with:
+          sql-read-token: ${{ secrets.STATGROUND_SQL_READ_TOKEN }}
+          config-json: ${{ secrets.BOOK_WRITER_LEASE_CONFIG_JSON }}
+          ca-pem: ${{ secrets.BOOK_WRITER_LEASE_CA_PEM }}
 
       - name: Validate Kakao API key
         env:

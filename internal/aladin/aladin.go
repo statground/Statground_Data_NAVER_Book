@@ -121,11 +121,15 @@ func parseInt(s string, def int) int {
 }
 
 func FetchPage(page int, cnt string, baseURL string, sleepMin, sleepMax float64, r *rand.Rand) (int, []string, error) {
+	return FetchPageContext(context.Background(), page, cnt, baseURL, sleepMin, sleepMax, r)
+}
+
+func FetchPageContext(ctx context.Context, page int, cnt string, baseURL string, sleepMin, sleepMax float64, r *rand.Rand) (int, []string, error) {
 	sleepRandom(sleepMin, sleepMax, r)
 	form := url.Values{}
 	form.Set("page", fmt.Sprintf("%d", page))
 	form.Set("cnt", cnt)
-	payload, err := fetchHTMLWithClient(aladinHTTPClient, http.MethodPost, baseURL, form.Encode(), "application/x-www-form-urlencoded", r)
+	payload, err := fetchHTMLWithClientContext(ctx, aladinHTTPClient, http.MethodPost, baseURL, form.Encode(), "application/x-www-form-urlencoded", r)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -133,7 +137,11 @@ func FetchPage(page int, cnt string, baseURL string, sleepMin, sleepMax float64,
 }
 
 func DetectCntAndLastPage(baseURL string) (string, int, error) {
-	payload, err := fetchHTMLWithClient(aladinHTTPClient, http.MethodGet, baseURL, "", "", nil)
+	return DetectCntAndLastPageContext(context.Background(), baseURL)
+}
+
+func DetectCntAndLastPageContext(ctx context.Context, baseURL string) (string, int, error) {
+	payload, err := fetchHTMLWithClientContext(ctx, aladinHTTPClient, http.MethodGet, baseURL, "", "", nil)
 	if err != nil {
 		return "", 0, err
 	}
@@ -150,6 +158,10 @@ func DetectCntAndLastPage(baseURL string) (string, int, error) {
 }
 
 func fetchHTMLWithClient(client *http.Client, method, baseURL, body, contentType string, r *rand.Rand) ([]byte, error) {
+	return fetchHTMLWithClientContext(context.Background(), client, method, baseURL, body, contentType, r)
+}
+
+func fetchHTMLWithClientContext(ctx context.Context, client *http.Client, method, baseURL, body, contentType string, r *rand.Rand) ([]byte, error) {
 	if client == nil {
 		client = aladinHTTPClient
 	}
@@ -162,7 +174,10 @@ func fetchHTMLWithClient(client *http.Client, method, baseURL, body, contentType
 
 	var lastErr error
 	for attempt := 1; attempt <= attempts; attempt++ {
-		payload, retryable, err := fetchHTMLOnce(client, method, baseURL, body, contentType)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		payload, retryable, err := fetchHTMLOnce(ctx, client, method, baseURL, body, contentType)
 		if err == nil {
 			return payload, nil
 		}
@@ -172,13 +187,19 @@ func fetchHTMLWithClient(client *http.Client, method, baseURL, body, contentType
 		}
 		delay := retryDelay(attempt, backoffMin, backoffMax, r)
 		fmt.Printf("[warn] aladin retry attempt=%d/%d reason=%s delay=%s\n", attempt+1, attempts, aladinRetryReason(err), delay)
-		time.Sleep(delay)
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
 	}
 	return nil, lastErr
 }
 
-func fetchHTMLOnce(client *http.Client, method, baseURL, body, contentType string) ([]byte, bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), durationSecondsEnv("ALADIN_HTTP_TIMEOUT", 30*time.Second))
+func fetchHTMLOnce(parent context.Context, client *http.Client, method, baseURL, body, contentType string) ([]byte, bool, error) {
+	ctx, cancel := context.WithTimeout(parent, durationSecondsEnv("ALADIN_HTTP_TIMEOUT", 30*time.Second))
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, method, baseURL, strings.NewReader(body))
@@ -314,7 +335,13 @@ func aladinRetryReason(err error) string {
 }
 
 func CrawlPublishersDynamic(baseURL string, maxWorkers int, sleepMin, sleepMax float64, r *rand.Rand) ([]string, int, error) {
-	cnt, lastPage, err := DetectCntAndLastPage(baseURL)
+	return CrawlPublishersDynamicContext(context.Background(), baseURL, maxWorkers, sleepMin, sleepMax, r)
+}
+
+func CrawlPublishersDynamicContext(parent context.Context, baseURL string, maxWorkers int, sleepMin, sleepMax float64, r *rand.Rand) ([]string, int, error) {
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	cnt, lastPage, err := DetectCntAndLastPageContext(ctx, baseURL)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -337,19 +364,25 @@ func CrawlPublishersDynamic(baseURL string, maxWorkers int, sleepMin, sleepMax f
 		go func(rr *rand.Rand) {
 			defer wg.Done()
 			for page := range jobs {
-				p, pubs, err := FetchPage(page, cnt, baseURL, sleepMin, sleepMax, rr)
+				p, pubs, err := FetchPageContext(ctx, page, cnt, baseURL, sleepMin, sleepMax, rr)
 				results <- result{page: p, pubs: pubs, err: err}
 			}
 		}(workerRand)
 	}
 
 	go func() {
+		defer func() {
+			close(jobs)
+			wg.Wait()
+			close(results)
+		}()
 		for page := 1; page <= lastPage; page++ {
-			jobs <- page
+			select {
+			case jobs <- page:
+			case <-ctx.Done():
+				return
+			}
 		}
-		close(jobs)
-		wg.Wait()
-		close(results)
 	}()
 
 	byPage := make(map[int][]string, lastPage)
@@ -358,6 +391,9 @@ func CrawlPublishersDynamic(baseURL string, maxWorkers int, sleepMin, sleepMax f
 			return nil, 0, res.err
 		}
 		byPage[res.page] = res.pubs
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, 0, err
 	}
 
 	all := make([]string, 0)

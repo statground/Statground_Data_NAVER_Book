@@ -24,7 +24,7 @@ const defaultDatasets = "book,concept,person,library"
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := run(ctx, os.Args[1:]); err != nil {
+	if err := ch.RunWriterCommand(func() error { return run(ctx, os.Args[1:]) }); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

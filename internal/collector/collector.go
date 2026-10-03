@@ -102,6 +102,15 @@ func (c *Collector) ValidateIngest(ctx context.Context) error {
 	return c.Ingest.Validate(ctx)
 }
 
+func (c *Collector) fetchItems(keyword, sort string, start, display int) (int, []naver.BookItem, error) {
+	ctx, cancel, err := c.Client.WriterContext(context.Background())
+	if err != nil {
+		return 0, nil, err
+	}
+	defer cancel()
+	return naver.FetchItemsContext(ctx, keyword, sort, start, display, c.Keys, c.Rand)
+}
+
 func (c *Collector) SampleRows(limit int) ([]map[string]any, error) {
 	if c.Client == nil {
 		return []map[string]any{}, nil
@@ -232,7 +241,7 @@ func (c *Collector) CollectTerm(term, mode string, reqsPerTerm, display int) err
 		sorts = []string{sorts[c.Rand.Intn(len(sorts))]}
 	}
 	for _, sort := range sorts {
-		total, items, err := naver.FetchItems(term, sort, 1, display, c.Keys, c.Rand)
+		total, items, err := c.fetchItems(term, sort, 1, display)
 		meta := SearchMeta{Mode: mode, Query: term, Sort: sort, Start: 1, Display: display, Total: total}
 		if err != nil {
 			if logErr := c.publishSearchLogBestEffort(meta, "ERROR", 0, err.Error(), fmt.Sprintf("auto_search_error|mode=%s|term=%s|sort=%s", mode, term, sort)); logErr != nil {
@@ -299,7 +308,7 @@ func (c *Collector) CollectManual(keyword string) error {
 	}
 	for _, sort := range []string{"sim", "date"} {
 		for start := 1; start <= 1000; start += 100 {
-			total, items, err := naver.FetchItems(keyword, sort, start, 100, c.Keys, c.Rand)
+			total, items, err := c.fetchItems(keyword, sort, start, 100)
 			meta := SearchMeta{Mode: "manual", Query: keyword, Sort: sort, Start: start, Display: 100, Total: total}
 			if err != nil {
 				if logErr := c.publishSearchLogBestEffort(meta, "ERROR", 0, err.Error(), fmt.Sprintf("manual_search_error|keyword=%s|sort=%s|start=%d", keyword, sort, start)); logErr != nil {
@@ -348,7 +357,7 @@ func (c *Collector) CollectPublisherAllPages(publisher string, reqsPerTerm, disp
 			if start > 1000 {
 				break
 			}
-			t, items, err := naver.FetchItems(publisher, sort, start, display, c.Keys, c.Rand)
+			t, items, err := c.fetchItems(publisher, sort, start, display)
 			if total == 0 {
 				total = t
 			}

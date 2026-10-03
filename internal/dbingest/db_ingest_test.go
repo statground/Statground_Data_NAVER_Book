@@ -19,7 +19,7 @@ import (
 func TestValidateUsesExactExistsTablePreflight(t *testing.T) {
 	t.Setenv("CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME", "Clickhouse_S1_R1")
 	var queries []string
-	client := &ch.Client{
+	client := &ch.Client{WriterAdmission: fixtureAdmission{},
 		Host:     "http://clickhouse.test",
 		Database: "Data_Book_NAVER_Raw",
 		HTTPClient: &http.Client{Transport: dbRoundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -95,7 +95,7 @@ func TestValidateRejectsMissingOrMismatchedEndpointIdentityBeforeObjectQueries(t
 	t.Run("missing", func(t *testing.T) {
 		t.Setenv("CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME", "")
 		requests := 0
-		client := &ch.Client{
+		client := &ch.Client{WriterAdmission: fixtureAdmission{},
 			Host:     "http://clickhouse.test",
 			Database: "Data_Book_NAVER_Raw",
 			HTTPClient: &http.Client{Transport: dbRoundTripFunc(func(*http.Request) (*http.Response, error) {
@@ -116,7 +116,7 @@ func TestValidateRejectsMissingOrMismatchedEndpointIdentityBeforeObjectQueries(t
 	t.Run("mismatch", func(t *testing.T) {
 		t.Setenv("CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME", "Clickhouse_S1_R1")
 		requests := 0
-		client := &ch.Client{
+		client := &ch.Client{WriterAdmission: fixtureAdmission{},
 			Host:     "http://clickhouse.test",
 			Database: "Data_Book_NAVER_Raw",
 			HTTPClient: &http.Client{Transport: dbRoundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -144,7 +144,7 @@ func TestValidateRejectsMissingOrMismatchedEndpointIdentityBeforeObjectQueries(t
 
 func TestNewFromEnvUsesBoundedEndpointLocalOutboxDefaults(t *testing.T) {
 	t.Setenv("CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME", "Clickhouse_S1_R1")
-	writer, err := NewFromEnv(&ch.Client{Database: "Data_Book_NAVER_Raw"}, "naver_book_raw")
+	writer, err := NewFromEnv(&ch.Client{WriterAdmission: fixtureAdmission{}, Database: "Data_Book_NAVER_Raw"}, "naver_book_raw")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestNewEventBuildsDirectPayload(t *testing.T) {
 	t.Setenv("PRODUCER_HOST", "test_host")
 	t.Setenv("PRODUCER_IP", "::")
 
-	writer, err := NewFromEnv(&ch.Client{Database: "Data_Book_NAVER_Raw"}, "naver_book_raw")
+	writer, err := NewFromEnv(&ch.Client{WriterAdmission: fixtureAdmission{}, Database: "Data_Book_NAVER_Raw"}, "naver_book_raw")
 	if err != nil {
 		t.Fatalf("NewFromEnv() error = %v", err)
 	}
@@ -214,7 +214,7 @@ func TestWithTimeoutClonesHTTPClient(t *testing.T) {
 	}
 }
 
-func TestTransientDistributedInsertIsPreservedInLocalOutbox(t *testing.T) {
+func TestTransientTargetFailureKeepsPrewrittenOutboxWithoutSecondWrite(t *testing.T) {
 	var bodies []string
 	client := testWriterClient(func(request *http.Request) (*http.Response, error) {
 		body, err := io.ReadAll(request.Body)
@@ -235,31 +235,31 @@ func TestTransientDistributedInsertIsPreservedInLocalOutbox(t *testing.T) {
 		"collected_at": time.Date(2026, 9, 1, 0, 1, 2, 345000000, time.UTC),
 	}}
 
-	if err := writer.InsertRawRows(rows); err != nil {
-		t.Fatalf("InsertRawRows() error=%v", err)
+	if err := writer.InsertRawRows(rows); err == nil || !IsDurabilityError(err) {
+		t.Fatalf("target failure must stop ingestion, got %v", err)
 	}
 	if len(bodies) != 2 {
-		t.Fatalf("request count=%d, want one target attempt and one outbox insert", len(bodies))
+		t.Fatalf("request count=%d, want prior outbox and one target attempt", len(bodies))
 	}
 	tokenPattern := regexp.MustCompile(`insert_deduplication_token = '([0-9a-f]{64})'`)
-	firstToken := tokenPattern.FindStringSubmatch(bodies[0])
+	firstToken := tokenPattern.FindStringSubmatch(bodies[1])
 	if len(firstToken) != 2 {
 		t.Fatalf("target request did not use one deterministic token")
 	}
-	if !strings.Contains(bodies[0], "insert_distributed_sync = 1") {
-		t.Fatalf("target insert is not synchronous: %s", bodies[0])
+	if !strings.Contains(bodies[1], "insert_distributed_sync = 1") {
+		t.Fatalf("target insert is not synchronous: %s", bodies[1])
 	}
-	if !strings.HasPrefix(bodies[1], "INSERT INTO Data_Book_NAVER_Log.naver_direct_insert_outbox ") {
-		t.Fatalf("fallback did not target local outbox: %s", bodies[1])
+	if !strings.HasPrefix(bodies[0], "INSERT INTO Data_Book_NAVER_Log.naver_direct_insert_outbox ") {
+		t.Fatalf("target was attempted before durable outbox: %s", bodies[0])
 	}
-	if !strings.Contains(bodies[1], `"source_error":"server_unavailable"`) || strings.Contains(bodies[1], "clickhouse.test") {
-		t.Fatalf("outbox error is not safely categorized: %s", bodies[1])
+	if !strings.Contains(bodies[0], `"source_error":"prewrite_durable"`) || strings.Contains(bodies[0], "clickhouse.test") {
+		t.Fatalf("outbox intent is not safely recorded: %s", bodies[0])
 	}
-	if !strings.Contains(bodies[1], firstToken[1]) {
+	if !strings.Contains(bodies[0], firstToken[1]) {
 		t.Fatalf("outbox did not preserve target token")
 	}
-	targetPayload := strings.SplitN(bodies[0], "FORMAT JSONEachRow\n", 2)
-	outboxPayload := strings.SplitN(bodies[1], "FORMAT JSONEachRow\n", 2)
+	targetPayload := strings.SplitN(bodies[1], "FORMAT JSONEachRow\n", 2)
+	outboxPayload := strings.SplitN(bodies[0], "FORMAT JSONEachRow\n", 2)
 	if len(targetPayload) != 2 || len(outboxPayload) != 2 {
 		t.Fatalf("missing JSONEachRow payload target=%q outbox=%q", bodies[0], bodies[1])
 	}
@@ -286,7 +286,7 @@ func TestTransientDistributedInsertIsPreservedInLocalOutbox(t *testing.T) {
 	}
 }
 
-func TestNonTransientDistributedInsertDoesNotEnterOutbox(t *testing.T) {
+func TestOutboxContractFailureBlocksTargetInsert(t *testing.T) {
 	requests := 0
 	client := testWriterClient(func(request *http.Request) (*http.Response, error) {
 		requests++
@@ -297,11 +297,11 @@ func TestNonTransientDistributedInsertDoesNotEnterOutbox(t *testing.T) {
 		t.Fatalf("expected contract failure, got %v", err)
 	}
 	if requests != 1 {
-		t.Fatalf("requests=%d, want one target attempt and no outbox insert", requests)
+		t.Fatalf("requests=%d, want failed outbox only", requests)
 	}
 }
 
-func TestCanceledTargetContextStillUsesIndependentBoundedOutboxContext(t *testing.T) {
+func TestCanceledTargetKeepsPriorOutboxAndStopsFurtherWrites(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	requests := 0
 	client := testWriterClient(func(request *http.Request) (*http.Response, error) {
@@ -315,10 +315,10 @@ func TestCanceledTargetContextStillUsesIndependentBoundedOutboxContext(t *testin
 			return nil, context.Canceled
 		}
 		if request.Context().Err() != nil {
-			t.Fatalf("outbox inherited canceled target context: %v", request.Context().Err())
+			t.Fatalf("prior outbox context was canceled: %v", request.Context().Err())
 		}
 		if !strings.HasPrefix(string(body), "INSERT INTO Data_Book_NAVER_Log.naver_direct_insert_outbox ") {
-			t.Fatalf("unexpected second request: %s", body)
+			t.Fatalf("unexpected request after target cancellation: %s", body)
 		}
 		return dbResponse(request, http.StatusOK, ""), nil
 	})
@@ -326,11 +326,54 @@ func TestCanceledTargetContextStillUsesIndependentBoundedOutboxContext(t *testin
 		"created_at": "2026-09-01 09:00:00.000", "provider": "naver",
 		"isbn": "9780000000001", "version": 1,
 	}})
-	if err != nil {
-		t.Fatalf("independent outbox persistence error=%v", err)
+	if err == nil || !IsDurabilityError(err) {
+		t.Fatalf("canceled target must report failure, got %v", err)
 	}
 	if requests != 2 {
-		t.Fatalf("requests=%d, want target plus independent outbox", requests)
+		t.Fatalf("requests=%d, want prior outbox then canceled target", requests)
+	}
+}
+
+func TestDurableOutboxAdmissionControlsTargetAndAcknowledgement(t *testing.T) {
+	for _, rejectOutbox := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reject_outbox_%t", rejectOutbox), func(t *testing.T) {
+			var bodies []string
+			client := testWriterClient(func(request *http.Request) (*http.Response, error) {
+				payload, err := io.ReadAll(request.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				bodies = append(bodies, string(payload))
+				if rejectOutbox && len(bodies) == 1 {
+					return dbResponse(request, http.StatusServiceUnavailable, ""), nil
+				}
+				return dbResponse(request, http.StatusOK, ""), nil
+			})
+			err := testWriter(client).InsertRawRows([]map[string]any{{
+				"isbn": "9780000000001", "title": "paid result", "version": 1,
+			}})
+			if !strings.HasPrefix(bodies[0], "INSERT INTO Data_Book_NAVER_Log.naver_direct_insert_outbox ") {
+				t.Fatal("target request preceded durable admission")
+			}
+			if rejectOutbox {
+				if err == nil || len(bodies) != 1 {
+					t.Fatalf("failed admission must block target and mark: err=%v requests=%d", err, len(bodies))
+				}
+				return
+			}
+			if err != nil || len(bodies) != 3 || !strings.HasPrefix(bodies[1], "INSERT INTO naver_book_raw ") {
+				t.Fatalf("expected durable outbox, source ACK and mark: err=%v requests=%v", err, bodies)
+			}
+			var record map[string]any
+			if err := json.Unmarshal([]byte(strings.SplitN(bodies[0], "FORMAT JSONEachRow\n", 2)[1]), &record); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(bodies[1], record["deduplication_token"].(string)) ||
+				!strings.Contains(bodies[2], record["outbox_uuid"].(string)) ||
+				!strings.Contains(bodies[2], "mutations_sync = 2") {
+				t.Fatal("positive ACK must mark the exact durable operation synchronously")
+			}
+		})
 	}
 }
 
@@ -388,7 +431,7 @@ func TestReplayOutboxUsesReplicaGateSameTokenAndMarksSuccess(t *testing.T) {
 		t.Fatalf("replay did not preserve synchronous token: %s", bodies[3])
 	}
 	if !strings.Contains(bodies[5], "ALTER TABLE `Data_Book_NAVER_Log`.`naver_direct_insert_outbox`") ||
-		!strings.Contains(bodies[5], outboxUUID) || !strings.Contains(bodies[5], "mutations_sync = 1") {
+		!strings.Contains(bodies[5], outboxUUID) || !strings.Contains(bodies[5], "mutations_sync = 2") {
 		t.Fatalf("successful replay was not durably marked: %s", bodies[5])
 	}
 }
@@ -652,7 +695,7 @@ func TestMarkOutboxReplayedUsesOneMutationForBoundedBatch(t *testing.T) {
 	if len(bodies) != 1 {
 		t.Fatalf("mark requests=%d, want one mutation", len(bodies))
 	}
-	if strings.Count(bodies[0], "toUUID(") != len(uuids) || !strings.Contains(bodies[0], "mutations_sync = 1") {
+	if strings.Count(bodies[0], "toUUID(") != len(uuids) || !strings.Contains(bodies[0], "mutations_sync = 2") {
 		t.Fatalf("bounded UUIDs were not marked by one synchronous mutation: %s", bodies[0])
 	}
 }
@@ -667,7 +710,7 @@ func testWriter(client *ch.Client) *Writer {
 }
 
 func testWriterClient(roundTrip func(*http.Request) (*http.Response, error)) *ch.Client {
-	return &ch.Client{
+	return &ch.Client{WriterAdmission: fixtureAdmission{},
 		Host: "http://clickhouse.test", Database: "Data_Book_NAVER_Raw",
 		HTTPClient: &http.Client{Transport: dbRoundTripFunc(roundTrip), Timeout: time.Second},
 	}

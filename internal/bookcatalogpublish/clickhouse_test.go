@@ -18,7 +18,7 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 func testClickHouse(t *testing.T, handler func(string) []map[string]any) *ClickHouse {
 	t.Helper()
-	client := &ch.Client{Host: "database.test", Port: 443, Protocol: "https", HTTPClient: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+	client := &ch.Client{WriterAdmission: fixtureAdmission{}, Host: "database.test", Port: 443, Protocol: "https", HTTPClient: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		b, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Fatal(err)
@@ -224,7 +224,7 @@ func TestPublisherRejectsEndpointSwitchAfterSuccessfulPreflight(t *testing.T) {
 			actualHost := "Clickhouse_1"
 			acceptedWrites := 0
 			switchOnWrite := false
-			client := &ch.Client{Host: "database.test", Port: 443, Protocol: "https"}
+			client := &ch.Client{WriterAdmission: fixtureAdmission{}, Host: "database.test", Port: 443, Protocol: "https"}
 			client.HTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 				body, _ := io.ReadAll(r.Body)
 				statement := string(body)

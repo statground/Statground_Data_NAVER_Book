@@ -1,6 +1,8 @@
 package aladin
 
 import (
+	"context"
+	"errors"
 	"io"
 	"math/rand"
 	"net/http"
@@ -82,5 +84,32 @@ func aladinTestResponse(status int, body string) *http.Response {
 		StatusCode: status,
 		Header:     make(http.Header),
 		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
+
+func TestCanceledLeaseContextStopsAladinRequestsAndRetries(t *testing.T) {
+	for _, when := range []string{"before", "after_first"} {
+		t.Run(when, func(t *testing.T) {
+			t.Setenv("ALADIN_HTTP_ATTEMPTS", "3")
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			calls := 0
+			client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				calls++
+				cancel()
+				return aladinTestResponse(http.StatusServiceUnavailable, "temporary"), nil
+			})}
+			if when == "before" {
+				cancel()
+			}
+			_, err := fetchHTMLWithClientContext(ctx, client, http.MethodGet, "http://aladin.test", "", "", nil)
+			want := 1
+			if when == "before" {
+				want = 0
+			}
+			if !errors.Is(err, context.Canceled) || calls != want {
+				t.Fatalf("err=%v calls=%d want=%d", err, calls, want)
+			}
+		})
 	}
 }

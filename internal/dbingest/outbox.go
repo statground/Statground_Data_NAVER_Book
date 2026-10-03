@@ -61,16 +61,18 @@ func (w *Writer) insertRowsWithOutbox(ctx context.Context, operation, targetTabl
 	if err != nil {
 		return &operationError{operation: operation, category: "clickhouse_contract", reason: "payload_rejected"}
 	}
-	if err := w.Client.InsertJSONEachRowSynchronousContext(ctx, targetTable, canonicalRows, token); err == nil {
-		return nil
-	} else if !retryableWriterError(err) && !ch.IsAmbiguousInsertError(err) {
+	// Persist the paid provider result before admitting its raw-table write.
+	// A failed or uncertain raw write keeps this stable payload for explicit
+	// reconciliation; no second write is attempted after ownership is lost.
+	outboxUUID := util.UUIDv7()
+	if err := w.enqueueOutbox(ctx, outboxUUID, targetTable, targetLocalTable, rowsJSON, len(rows), token); err != nil {
+		return writerOperationError("enqueue_outbox", err)
+	}
+	if err := w.Client.InsertJSONEachRowSynchronousContext(ctx, targetTable, canonicalRows, token); err != nil {
 		return writerOperationError(operation, err)
-	} else {
-		outboxCtx, cancel := context.WithTimeout(context.Background(), outboxPersistenceTimeout)
-		defer cancel()
-		if outboxErr := w.enqueueOutbox(outboxCtx, targetTable, targetLocalTable, rowsJSON, len(rows), token, err); outboxErr != nil {
-			return writerOperationError("enqueue_outbox", outboxErr)
-		}
+	}
+	if err := w.markOutboxReplayed(ctx, []string{outboxUUID}); err != nil {
+		return writerOperationError("mark_outbox", err)
 	}
 	return nil
 }
@@ -114,16 +116,16 @@ func decodeOutboxRows(rowsJSON string, expectedCount int) ([]map[string]any, err
 	return rows, nil
 }
 
-func (w *Writer) enqueueOutbox(ctx context.Context, targetTable, targetLocalTable, rowsJSON string, rowCount int, token string, sourceErr error) error {
+func (w *Writer) enqueueOutbox(ctx context.Context, outboxUUID, targetTable, targetLocalTable, rowsJSON string, rowCount int, token string) error {
 	row := map[string]any{
-		"outbox_uuid":         util.UUIDv7(),
+		"outbox_uuid":         outboxUUID,
 		"created_at":          util.FormatCHDateTime64Millis(util.NowKST()),
 		"target_table":        targetTable,
 		"target_local_table":  targetLocalTable,
 		"rows_json":           rowsJSON,
 		"row_count":           rowCount,
 		"deduplication_token": token,
-		"source_error":        safeWriterErrorReason(sourceErr),
+		"source_error":        "prewrite_durable",
 	}
 	// This target is an endpoint-local MergeTree, never a Distributed table.
 	return w.Client.InsertJSONEachRowContext(ctx, w.Cfg.OutboxTable, []map[string]any{row})
@@ -308,14 +310,13 @@ func (w *Writer) markOutboxReplayed(ctx context.Context, outboxUUIDs []string) e
 		}
 		values = append(values, "toUUID("+util.SQLString(outboxUUID)+")")
 	}
-	// This recovery-only path is not used by healthy first inserts. One
-	// synchronous mutation marks the whole bounded replay run (at most 100 rows,
-	// 25 by default); replay never creates one mutation per outbox row.
+	// Complete only positively acknowledged inserts; failed writes leave the
+	// durable payload pending for explicit reconciliation.
 	query := fmt.Sprintf(`
         ALTER TABLE %s
         UPDATE replayed_at = now64(3, 'Asia/Seoul')
         WHERE outbox_uuid IN (%s)
-        SETTINGS mutations_sync = 1
+        SETTINGS mutations_sync = 2
     `, outboxTable, strings.Join(values, ", "))
 	return w.Client.ExecContext(ctx, query)
 }

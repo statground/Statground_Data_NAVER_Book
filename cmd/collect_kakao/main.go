@@ -75,7 +75,7 @@ func (s collectionSummary) String() string {
 }
 
 func main() {
-	if err := run(); err != nil {
+	if err := ch.RunWriterCommand(run); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -126,6 +126,14 @@ func run() error {
 	}
 	if err != nil {
 		return &safeError{category: kakaocollector.ErrorCategory(err), stage: kakaocollector.ErrorStage(err), reason: kakaocollector.ErrorReason(err)}
+	}
+	if !dryRun {
+		writerCtx, writerCancel, leaseErr := clickhouseClient.WriterContext(ctx)
+		if leaseErr != nil {
+			return leaseErr
+		}
+		defer writerCancel()
+		ctx = writerCtx
 	}
 
 	now := util.NowKST()

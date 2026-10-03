@@ -33,6 +33,9 @@ jobs:
       schedule_enabled: ${{ vars.KAKAO_BOOK_SCHEDULE_ENABLED != 'false' }}
       auto_daily_budget: 2000
     secrets:
+      BOOK_WRITER_LEASE_TIDB_PASSWORD: ${{ secrets.BOOK_WRITER_LEASE_TIDB_PASSWORD }}
+      BOOK_WRITER_LEASE_CONFIG_JSON: ${{ secrets.BOOK_WRITER_LEASE_CONFIG_JSON }}
+      BOOK_WRITER_LEASE_CA_PEM: ${{ secrets.BOOK_WRITER_LEASE_CA_PEM }}
       KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
       CLICKHOUSE_HOST: ${{ secrets.CLICKHOUSE_HOST || secrets.CH_HOST }}
       CLICKHOUSE_PORT: ${{ secrets.CLICKHOUSE_PORT || secrets.CH_PORT }}

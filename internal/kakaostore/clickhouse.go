@@ -154,7 +154,13 @@ func (e *StoreError) Error() string {
 }
 
 func (s *ClickHouseStore) Validate(ctx context.Context) error {
-	return s.validate(ctx, true)
+	if err := s.Client.RequireWriterLease(ctx); err != nil {
+		return err
+	}
+	if err := s.validate(ctx, true); err != nil {
+		return err
+	}
+	return nil
 }
 
 // ValidateReadOnly performs the same preflight without replaying pending writes.
@@ -584,16 +590,15 @@ func (s *ClickHouseStore) insertRowsWithOutbox(
 	if targetTable == s.Config.RawTable {
 		client = s.RawInsertClient
 	}
-	if err := client.InsertJSONEachRowSynchronousContext(ctx, targetTable, canonicalRows, token); err == nil {
-		return nil
-	} else if !retryableStoreError(err) && !ch.IsAmbiguousInsertError(err) {
+	outboxUUID := util.UUIDv7()
+	if err := s.enqueueOutbox(ctx, outboxUUID, targetTable, targetLocalTable, rowsJSON, len(rows), token); err != nil {
+		return sanitizeStoreError("enqueue_outbox", err)
+	}
+	if err := client.InsertJSONEachRowSynchronousContext(ctx, targetTable, canonicalRows, token); err != nil {
 		return sanitizeStoreError(operation, err)
-	} else {
-		outboxCtx, cancel := context.WithTimeout(context.Background(), outboxPersistenceTimeout)
-		defer cancel()
-		if outboxErr := s.enqueueOutbox(outboxCtx, targetTable, targetLocalTable, rowsJSON, len(rows), token, err); outboxErr != nil {
-			return sanitizeStoreError("enqueue_outbox", outboxErr)
-		}
+	}
+	if err := s.markOutboxReplayed(ctx, []string{outboxUUID}); err != nil {
+		return sanitizeStoreError("mark_outbox", err)
 	}
 	return nil
 }
@@ -639,25 +644,25 @@ func decodeOutboxRows(rowsJSON string, expectedCount int) ([]map[string]any, err
 
 func (s *ClickHouseStore) enqueueOutbox(
 	ctx context.Context,
+	outboxUUID string,
 	targetTable string,
 	targetLocalTable string,
 	rowsJSON string,
 	rowCount int,
 	token string,
-	sourceErr error,
 ) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	row := map[string]any{
-		"outbox_uuid":         util.UUIDv7(),
+		"outbox_uuid":         outboxUUID,
 		"created_at":          util.FormatCHDateTime64Millis(util.NowKST()),
 		"target_table":        targetTable,
 		"target_local_table":  targetLocalTable,
 		"rows_json":           rowsJSON,
 		"row_count":           rowCount,
 		"deduplication_token": token,
-		"source_error":        safeStoreErrorReason(sourceErr),
+		"source_error":        "prewrite_durable",
 	}
 	return s.Client.InsertJSONEachRowContext(ctx, s.Config.OutboxTable, []map[string]any{row})
 }
@@ -854,7 +859,7 @@ func (s *ClickHouseStore) markOutboxReplayed(ctx context.Context, outboxUUIDs []
         ALTER TABLE %s
         UPDATE replayed_at = now64(3, 'Asia/Seoul')
         WHERE outbox_uuid IN (%s)
-        SETTINGS mutations_sync = 1
+        SETTINGS mutations_sync = 2
     `, s.Config.OutboxTable, strings.Join(values, ", "))
 	return s.Client.ExecContext(ctx, query)
 }

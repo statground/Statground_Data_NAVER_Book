@@ -37,6 +37,7 @@ jobs:
       webr_refresh_verified: ${{ steps.webr_book_refresh.outputs.verified }}
       book_serving_refresh_verified: ${{ steps.webr_book_refresh.outputs.verified }}
     env:
+      BOOK_WRITER_LEASE_TIDB_PASSWORD: ${{ secrets.BOOK_WRITER_LEASE_TIDB_PASSWORD }}
       # Port 50005 is the durable direct S1_R1 endpoint, never the 50006 gateway.
       CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME: clickhouse-s1-r1
       DB_PREFLIGHT_REQUIRED: "true"
@@ -72,6 +73,14 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Prepare reviewed shared writer lease
+        if: inputs.stage != 'refresh'
+        uses: ./.github/actions/book-writer-lease
+        with:
+          sql-read-token: ${{ secrets.STATGROUND_SQL_READ_TOKEN }}
+          config-json: ${{ secrets.BOOK_WRITER_LEASE_CONFIG_JSON }}
+          ca-pem: ${{ secrets.BOOK_WRITER_LEASE_CA_PEM }}
 
       - name: Validate required repository secrets
         env:

@@ -19,6 +19,7 @@ import (
 
 	"statground_naver_book_go/internal/envx"
 	"statground_naver_book_go/internal/util"
+	"statground_naver_book_go/internal/writerlease"
 )
 
 var (
@@ -81,14 +82,15 @@ func IsAmbiguousInsertError(err error) bool {
 }
 
 type Client struct {
-	Host       string
-	Port       int
-	Protocol   string
-	HTTPPath   string
-	User       string
-	Password   string
-	Database   string
-	HTTPClient *http.Client
+	Host            string
+	Port            int
+	Protocol        string
+	HTTPPath        string
+	User            string
+	Password        string
+	Database        string
+	HTTPClient      *http.Client
+	WriterAdmission writerlease.Admission
 }
 
 func New(host string, port int, user, password, database string) *Client {
@@ -282,6 +284,24 @@ func (c *Client) postContext(ctx context.Context, body string, extra url.Values)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	target, err := mutationTarget(body, c.Database)
+	if err != nil {
+		return nil, err
+	}
+	var operation writerlease.Operation
+	if target != "" {
+		intent, err := newWriteIntent(target, body)
+		if err != nil {
+			return nil, err
+		}
+		extra = mutationSettings(extra)
+		extra.Set("query_id", intent.QueryID)
+		ctx, operation, err = c.writerAdmission().Begin(ctx, intent)
+		if err != nil {
+			return nil, err
+		}
+		defer operation.Abandon()
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint(extra), strings.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -303,6 +323,10 @@ func (c *Client) postContext(ctx context.Context, body string, extra url.Values)
 		return nil, &deliveryUnknownError{err: err}
 	}
 	defer resp.Body.Close()
+	if code := strings.TrimSpace(resp.Header.Get("X-ClickHouse-Exception-Code")); code != "" && code != "0" {
+		value, _ := strconv.Atoi(code)
+		return nil, &HTTPError{StatusCode: resp.StatusCode, Code: value}
+	}
 	if resp.StatusCode != http.StatusOK {
 		payload, readErr := io.ReadAll(io.LimitReader(resp.Body, maxClickHouseErrorBodyBytes+1))
 		if readErr != nil {
@@ -318,9 +342,21 @@ func (c *Client) postContext(ctx context.Context, body string, extra url.Values)
 		}
 		return nil, &HTTPError{StatusCode: resp.StatusCode, Truncated: truncated}
 	}
-	payload, err := io.ReadAll(resp.Body)
+	reader := io.Reader(resp.Body)
+	if operation != nil {
+		reader = io.LimitReader(resp.Body, maxClickHouseErrorBodyBytes+1)
+	}
+	payload, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, &deliveryUnknownError{err: err}
+	}
+	if operation != nil {
+		if len(payload) != 0 || ctx.Err() != nil {
+			return nil, &deliveryUnknownError{err: errors.New("Book write acknowledgement unresolved")}
+		}
+		if err := operation.Confirm(context.Background()); err != nil {
+			return nil, &deliveryUnknownError{err: err}
+		}
 	}
 	return payload, nil
 }
@@ -346,7 +382,11 @@ func (c *Client) ExecContext(ctx context.Context, sql string) error {
 // operations. Callers must treat any transport or server failure as ambiguous
 // and must not advance a durable checkpoint automatically.
 func (c *Client) ExecSingleAttempt(sql string) error {
-	_, err := c.post(strings.TrimSpace(sql), nil)
+	return c.ExecSingleAttemptContext(context.Background(), sql)
+}
+
+func (c *Client) ExecSingleAttemptContext(ctx context.Context, sql string) error {
+	_, err := c.postContext(ctx, strings.TrimSpace(sql), nil)
 	return err
 }
 

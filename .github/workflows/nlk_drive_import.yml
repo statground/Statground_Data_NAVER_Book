@@ -27,6 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
+      BOOK_WRITER_LEASE_TIDB_PASSWORD: ${{ secrets.BOOK_WRITER_LEASE_TIDB_PASSWORD }}
       CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME: clickhouse-s1-r1
       CH_HOST: ${{ secrets.CLICKHOUSE_HOST || secrets.CH_HOST }}
       CH_PORT: ${{ secrets.CLICKHOUSE_PORT || secrets.CH_PORT }}
@@ -84,6 +85,13 @@ jobs:
           NLK_GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.NLK_GOOGLE_SERVICE_ACCOUNT_JSON }}
         run: |
           go run ./cmd/import_nlk_lod --drive-folder-id "$DRIVE_FOLDER_ID" --snapshot-date "$SNAPSHOT_DATE" --expected-files 208 --expected-bytes 88736746306 --plan-only --manifest-out "$RUNNER_TEMP/nlk-manifest.json"
+
+      - name: Prepare reviewed shared writer lease
+        uses: ./.github/actions/book-writer-lease
+        with:
+          sql-read-token: ${{ secrets.STATGROUND_SQL_READ_TOKEN }}
+          config-json: ${{ secrets.BOOK_WRITER_LEASE_CONFIG_JSON }}
+          ca-pem: ${{ secrets.BOOK_WRITER_LEASE_CA_PEM }}
 
       - name: Gate raw import capacity
         env:

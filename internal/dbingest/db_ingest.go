@@ -156,6 +156,9 @@ func (w *Writer) Validate(ctx context.Context) error {
 	if err := w.validateRemoteGrant(ctx); err != nil {
 		return err
 	}
+	if err := w.Client.RequireWriterLease(ctx); err != nil {
+		return err
+	}
 	if err := w.replayOutbox(ctx); err != nil {
 		return err
 	}

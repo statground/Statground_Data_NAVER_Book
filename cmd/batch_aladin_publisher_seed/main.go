@@ -26,7 +26,7 @@ type publisherCacheSnapshot struct {
 }
 
 func main() {
-	if err := run(); err != nil {
+	if err := ch.RunWriterCommand(run); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -330,7 +330,12 @@ func run() error {
 	}
 
 	runUUID := util.UUIDv7()
-	_, currentLastPage, err := aladin.DetectCntAndLastPage(aladinURL)
+	writerCtx, writerCancel, err := client.WriterContext(context.Background())
+	if err != nil {
+		return err
+	}
+	defer writerCancel()
+	_, currentLastPage, err := aladin.DetectCntAndLastPageContext(writerCtx, aladinURL)
 	if err != nil {
 		if !shouldSkipAladinPublisherSeed(err) {
 			return err
@@ -357,7 +362,7 @@ func run() error {
 		fmt.Printf("[CACHE] use cached publishers table=%s last_page=%d publishers=%d\n", cacheTable, currentLastPage, len(publishers))
 	} else {
 		rr := rand.New(rand.NewSource(time.Now().UnixNano()))
-		publishers, _, err = aladin.CrawlPublishersDynamic(aladinURL, aladinMaxWorkers, aladinSleepMin, aladinSleepMax, rr)
+		publishers, _, err = aladin.CrawlPublishersDynamicContext(writerCtx, aladinURL, aladinMaxWorkers, aladinSleepMin, aladinSleepMax, rr)
 		if err != nil {
 			if !shouldSkipAladinPublisherSeed(err) {
 				return err

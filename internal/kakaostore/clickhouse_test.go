@@ -446,9 +446,10 @@ func TestValidateRejectsMissingOrMismatchedEndpointIdentityBeforeObjectQueries(t
 	}
 }
 
-func TestInsertCallLogUsesSyncDeliveryAndFallsBackToLocalOutbox(t *testing.T) {
+func TestCallLogFailurePreservesPriorOutboxAndStopsFurtherWrites(t *testing.T) {
 	var targetBodies []string
 	var outboxBody string
+	var sequence []string
 	client := testClient()
 	client.HTTPClient = &http.Client{Transport: storeRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		payload, err := io.ReadAll(request.Body)
@@ -456,6 +457,7 @@ func TestInsertCallLogUsesSyncDeliveryAndFallsBackToLocalOutbox(t *testing.T) {
 			t.Fatal(err)
 		}
 		body := string(payload)
+		sequence = append(sequence, body)
 		status := http.StatusOK
 		responseBody := ""
 		if strings.Contains(body, "INSERT INTO Data_Book_KAKAO_Log.kakao_api_call_log ") {
@@ -488,8 +490,11 @@ func TestInsertCallLogUsesSyncDeliveryAndFallsBackToLocalOutbox(t *testing.T) {
 		Size:        50,
 		Status:      "reserved",
 	})
-	if err != nil {
-		t.Fatalf("InsertCallLog() error=%v", err)
+	if err == nil {
+		t.Fatal("target failure was incorrectly reported as successful ingestion")
+	}
+	if len(sequence) != 2 || !strings.Contains(sequence[0], "kakao_direct_insert_outbox") || !strings.Contains(sequence[1], "kakao_api_call_log") {
+		t.Fatalf("expected prior outbox then one failed target, requests=%v", sequence)
 	}
 	if len(targetBodies) != 1 {
 		t.Fatalf("target attempts=%d, want one non-retried attempt", len(targetBodies))
@@ -501,7 +506,7 @@ func TestInsertCallLogUsesSyncDeliveryAndFallsBackToLocalOutbox(t *testing.T) {
 		"INSERT INTO Data_Book_KAKAO_Log.kakao_direct_insert_outbox",
 		`"target_table":"Data_Book_KAKAO_Log.kakao_api_call_log"`,
 		`"target_local_table":"Data_Book_KAKAO_Log.kakao_api_call_log_local"`,
-		`"source_error":"server_unavailable"`,
+		`"source_error":"prewrite_durable"`,
 	} {
 		if !strings.Contains(outboxBody, required) {
 			t.Fatalf("outbox insert is missing %q: %s", required, outboxBody)
@@ -509,7 +514,7 @@ func TestInsertCallLogUsesSyncDeliveryAndFallsBackToLocalOutbox(t *testing.T) {
 	}
 }
 
-func TestCanceledKakaoTargetContextStillUsesIndependentBoundedOutboxContext(t *testing.T) {
+func TestCanceledKakaoTargetKeepsPriorOutboxAndStopsFurtherWrites(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	requests := 0
 	client := testClient()
@@ -525,10 +530,10 @@ func TestCanceledKakaoTargetContextStillUsesIndependentBoundedOutboxContext(t *t
 			return nil, context.Canceled
 		}
 		if request.Context().Err() != nil {
-			t.Fatalf("outbox inherited canceled target context: %v", request.Context().Err())
+			t.Fatalf("prior outbox context was canceled: %v", request.Context().Err())
 		}
 		if !strings.Contains(body, "INSERT INTO Data_Book_KAKAO_Log.kakao_direct_insert_outbox ") {
-			t.Fatalf("unexpected second request: %s", body)
+			t.Fatalf("unexpected request after target cancellation: %s", body)
 		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
@@ -552,11 +557,64 @@ func TestCanceledKakaoTargetContextStillUsesIndependentBoundedOutboxContext(t *t
 		Size:        50,
 		Status:      "reserved",
 	})
-	if err != nil {
-		t.Fatalf("independent Kakao outbox persistence error=%v", err)
+	if err == nil {
+		t.Fatal("canceled target was incorrectly reported as successful ingestion")
 	}
 	if requests != 2 {
-		t.Fatalf("requests=%d, want target plus independent outbox", requests)
+		t.Fatalf("requests=%d, want prior outbox then canceled target", requests)
+	}
+}
+
+func TestKakaoDurableOutboxAdmissionControlsTargetAndAcknowledgement(t *testing.T) {
+	for _, rejectOutbox := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reject_outbox_%t", rejectOutbox), func(t *testing.T) {
+			var bodies []string
+			client := testClient()
+			client.HTTPClient = &http.Client{Transport: storeRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+				payload, err := io.ReadAll(request.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				bodies = append(bodies, string(payload))
+				status := http.StatusOK
+				if rejectOutbox && len(bodies) == 1 {
+					status = http.StatusServiceUnavailable
+				}
+				return &http.Response{StatusCode: status, Header: make(http.Header),
+					Body: io.NopCloser(strings.NewReader("")), Request: request}, nil
+			})}
+			store, err := NewClickHouse(client, ConfigFromEnv())
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = store.InsertCallLog(context.Background(), CallLog{
+				RequestUUID: "01900000-0000-7000-8000-000000000001",
+				RunUUID:     "01900000-0000-7000-8000-000000000002", Version: 1,
+				RequestedAt: time.Date(2026, 9, 1, 0, 1, 2, 0, time.UTC),
+				Mode:        "manual", QueryHash: "query-hash", Page: 1, Size: 50, Status: "reserved",
+			})
+			if !strings.HasPrefix(bodies[0], "INSERT INTO Data_Book_KAKAO_Log.kakao_direct_insert_outbox ") {
+				t.Fatal("target request preceded durable admission")
+			}
+			if rejectOutbox {
+				if err == nil || len(bodies) != 1 {
+					t.Fatalf("failed admission must block target and mark: err=%v requests=%d", err, len(bodies))
+				}
+				return
+			}
+			if err != nil || len(bodies) != 3 || !strings.HasPrefix(bodies[1], "INSERT INTO Data_Book_KAKAO_Log.kakao_api_call_log ") {
+				t.Fatalf("expected durable outbox, source ACK and mark: err=%v requests=%v", err, bodies)
+			}
+			var record map[string]any
+			if err := json.Unmarshal([]byte(strings.SplitN(bodies[0], "FORMAT JSONEachRow\n", 2)[1]), &record); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(bodies[1], record["deduplication_token"].(string)) ||
+				!strings.Contains(bodies[2], record["outbox_uuid"].(string)) ||
+				!strings.Contains(bodies[2], "mutations_sync = 2") {
+				t.Fatal("positive ACK must mark the exact durable operation synchronously")
+			}
+		})
 	}
 }
 
@@ -919,7 +977,7 @@ func TestMarkOutboxReplayedUsesOneMutationForBoundedBatch(t *testing.T) {
 	if len(bodies) != 1 {
 		t.Fatalf("mark requests=%d, want one mutation", len(bodies))
 	}
-	if strings.Count(bodies[0], "toUUID(") != len(uuids) || !strings.Contains(bodies[0], "mutations_sync = 1") {
+	if strings.Count(bodies[0], "toUUID(") != len(uuids) || !strings.Contains(bodies[0], "mutations_sync = 2") {
 		t.Fatalf("bounded UUIDs were not marked by one synchronous mutation: %s", bodies[0])
 	}
 }
@@ -1075,7 +1133,7 @@ func (fn storeRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, e
 }
 
 func testClient() *ch.Client {
-	return &ch.Client{
+	return &ch.Client{WriterAdmission: fixtureAdmission{},
 		Host:     "127.0.0.1",
 		Port:     8123,
 		Protocol: "http",

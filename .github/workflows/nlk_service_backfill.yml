@@ -37,6 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
+      BOOK_WRITER_LEASE_TIDB_PASSWORD: ${{ secrets.BOOK_WRITER_LEASE_TIDB_PASSWORD }}
       GOTOOLCHAIN: local
       # Port 50005 is the durable direct S1_R1 endpoint, never the 50006 gateway.
       CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME: clickhouse-s1-r1
@@ -118,6 +119,13 @@ jobs:
           go mod verify
           go test -mod=mod ./...
           go build -mod=mod ./cmd/backfill_nlk_service
+
+      - name: Prepare reviewed shared writer lease
+        uses: ./.github/actions/book-writer-lease
+        with:
+          sql-read-token: ${{ secrets.STATGROUND_SQL_READ_TOKEN }}
+          config-json: ${{ secrets.BOOK_WRITER_LEASE_CONFIG_JSON }}
+          ca-pem: ${{ secrets.BOOK_WRITER_LEASE_CA_PEM }}
 
       - name: Gate ClickHouse writes on storage pressure
         env:

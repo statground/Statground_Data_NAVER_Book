@@ -67,7 +67,7 @@ func TestConfigDefaultsMatchNLKSQLContract(t *testing.T) {
 
 func TestExistingRawRecordIndexesUsesFullSortedLineagePrefix(t *testing.T) {
 	var query string
-	client := &ch.Client{
+	client := &ch.Client{WriterAdmission: fixtureAdmission{},
 		Host: "http://clickhouse.test",
 		HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 			payload, err := io.ReadAll(request.Body)
@@ -117,7 +117,7 @@ func TestExistingRawRecordIndexesChunksLargeResumeRangeAndUnionsResults(t *testi
 
 	var querySizes []int
 	expected := make(map[uint64]struct{})
-	client := &ch.Client{
+	client := &ch.Client{WriterAdmission: fixtureAdmission{},
 		Host: "http://clickhouse.test",
 		HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 			payload, err := io.ReadAll(request.Body)
@@ -252,14 +252,14 @@ func TestUniqueSortedIndexes(t *testing.T) {
 func TestNewClickHouseRejectsUnqualifiedTable(t *testing.T) {
 	config := ConfigFromEnv()
 	config.RawTable = "nlk_resource_raw"
-	if _, err := NewClickHouse(&ch.Client{}, config); err == nil {
+	if _, err := NewClickHouse(&ch.Client{WriterAdmission: fixtureAdmission{}}, config); err == nil {
 		t.Fatal("expected unqualified table rejection")
 	}
 }
 
 func TestValidateUsesExactExistsTablePreflight(t *testing.T) {
 	var existsQueries int
-	client := &ch.Client{
+	client := &ch.Client{WriterAdmission: fixtureAdmission{},
 		Host:     "clickhouse.example.invalid",
 		Protocol: "https",
 		Database: "Data_Book_NLK_Raw",

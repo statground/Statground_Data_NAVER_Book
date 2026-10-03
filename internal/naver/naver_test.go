@@ -1,6 +1,8 @@
 package naver
 
 import (
+	"context"
+	"errors"
 	"io"
 	"math/rand"
 	"net/http"
@@ -75,5 +77,32 @@ func testResponse(status int, body string) *http.Response {
 		StatusCode: status,
 		Header:     make(http.Header),
 		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
+
+func TestFetchItemsContextCancellationPreventsPaidRetries(t *testing.T) {
+	for _, when := range []string{"before", "after_first"} {
+		t.Run(when, func(t *testing.T) {
+			t.Setenv("NAVER_API_ATTEMPTS", "3")
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			calls := 0
+			client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				calls++
+				cancel()
+				return testResponse(http.StatusServiceUnavailable, "temporary"), nil
+			})}
+			if when == "before" {
+				cancel()
+			}
+			_, _, err := fetchItemsWithClientContext(ctx, client, "http://naver.test/search", "R", "sim", 1, 10, []APIKey{{ClientID: "id", ClientSecret: "fixture"}}, nil)
+			want := 1
+			if when == "before" {
+				want = 0
+			}
+			if !errors.Is(err, context.Canceled) || calls != want {
+				t.Fatalf("err=%v calls=%d want=%d", err, calls, want)
+			}
+		})
 	}
 }
