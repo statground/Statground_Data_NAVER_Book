@@ -70,7 +70,7 @@ func TestMutationRequiresPositiveSynchronousAcknowledgement(t *testing.T) {
 			client := &Client{Host: "http://database.test", WriterAdmission: admission, HTTPClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 				requests++
 				q := req.URL.Query()
-				for name, want := range map[string]string{"async_insert": "0", "insert_distributed_sync": "1", "mutations_sync": "2", "wait_end_of_query": "1", "materialized_views_ignore_errors": "0"} {
+				for name, want := range map[string]string{"async_insert": "0", "insert_distributed_sync": "1", "distributed_foreground_insert": "1", "mutations_sync": "2", "wait_end_of_query": "1", "materialized_views_ignore_errors": "0"} {
 					if q.Get(name) != want {
 						t.Fatalf("%s=%q", name, q.Get(name))
 					}
@@ -111,6 +111,41 @@ func TestMutationRequiresPositiveSynchronousAcknowledgement(t *testing.T) {
 			}
 			if requests != 1 || admission.begun != 1 {
 				t.Fatalf("requests=%d begin=%d", requests, admission.begun)
+			}
+		})
+	}
+}
+
+func TestDistributedForegroundSettingCannotDisableSynchronousAdmission(t *testing.T) {
+	for _, test := range []struct {
+		settings string
+		reject   bool
+	}{
+		{"distributed_foreground_insert=0", true},
+		{"distributed_foreground_insert=1", false},
+		{"distributed_foreground_insert=0, insert_distributed_sync=1", true},
+		{"distributed_foreground_insert=1, insert_distributed_sync=0", true},
+		{"distributed_foreground_insert=1, insert_distributed_sync=1", false},
+	} {
+		t.Run(test.settings, func(t *testing.T) {
+			admission := &recordingAdmission{}
+			requests := 0
+			client := &Client{Host: "http://database.test", WriterAdmission: admission, HTTPClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				requests++
+				for _, key := range []string{"distributed_foreground_insert", "insert_distributed_sync"} {
+					if req.URL.Query().Get(key) != "1" {
+						t.Fatalf("%s was not forced synchronously", key)
+					}
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
+			})}}
+			err := client.Exec("INSERT INTO db.target SELECT 1 SETTINGS " + test.settings)
+			if test.reject {
+				if err == nil || admission.begun != 0 || requests != 0 {
+					t.Fatalf("conflicting setting reached admission/HTTP: error=%v begin=%d requests=%d", err, admission.begun, requests)
+				}
+			} else if err != nil || admission.begun != 1 || requests != 1 || admission.confirmed != 1 {
+				t.Fatalf("synchronous setting not accepted: error=%v begin=%d requests=%d confirmed=%d", err, admission.begun, requests, admission.confirmed)
 			}
 		})
 	}

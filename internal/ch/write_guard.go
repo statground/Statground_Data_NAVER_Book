@@ -212,7 +212,7 @@ func mutationTarget(body, database string) (string, error) {
 			if tokens[i+1] != "=" {
 				continue
 			}
-			expected, forced := map[string]string{"async_insert": "0", "insert_distributed_sync": "1", "wait_end_of_query": "1", "mutations_sync": "2", "materialized_views_ignore_errors": "0"}[strings.TrimPrefix(key, "\x00")]
+			expected, forced := map[string]string{"async_insert": "0", "insert_distributed_sync": "1", "distributed_foreground_insert": "1", "wait_end_of_query": "1", "mutations_sync": "2", "materialized_views_ignore_errors": "0"}[strings.TrimPrefix(key, "\x00")]
 			if forced {
 				if tokens[i+2] != expected || i+3 < len(tokens) && tokens[i+3] != "," && tokens[i+3] != ";" && !strings.EqualFold(tokens[i+3], "FORMAT") {
 					return "", errors.New("Book write synchronous settings conflict")
@@ -231,6 +231,7 @@ func mutationSettings(extra url.Values) url.Values {
 	}
 	result.Set("async_insert", "0")
 	result.Set("insert_distributed_sync", "1")
+	result.Set("distributed_foreground_insert", "1")
 	result.Set("mutations_sync", "2")
 	result.Set("wait_end_of_query", "1")
 	result.Set("materialized_views_ignore_errors", "0")
