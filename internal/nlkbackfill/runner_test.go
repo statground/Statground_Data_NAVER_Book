@@ -205,6 +205,68 @@ func TestRunnerDoesNotAdvanceCheckpointOnAmbiguousError(t *testing.T) {
 	if final := store.saves[len(store.saves)-1]; final.Status != "failed" {
 		t.Fatalf("final checkpoint status = %q, want failed", final.Status)
 	}
+	resumed := &fakeStore{
+		entries:       store.entries,
+		checkpoint:    store.saves[len(store.saves)-1],
+		hasCheckpoint: true,
+	}
+	_, err = (Runner{Store: resumed}).Run(context.Background(), Config{
+		SnapshotDate: snapshot,
+		Projections:  []Projection{ProjectionAuthority},
+	})
+	if ErrorCategory(err) != "reconciliation_required" {
+		t.Fatalf("restart error = %v, want reconciliation_required", err)
+	}
+	if len(resumed.executions) != 0 || len(resumed.saves) != 0 {
+		t.Fatalf("restart replayed an ambiguous range: executions=%d saves=%d", len(resumed.executions), len(resumed.saves))
+	}
+}
+
+func TestRunnerRequiresReconciliationOnlyForUnconfirmedAttemptedSpan(t *testing.T) {
+	snapshot := time.Date(2026, 5, 29, 0, 0, 0, 0, util.KST())
+	entry := RawEntry{
+		SnapshotDate: snapshot, DatasetName: "person", SourceArchive: "person.zip",
+		SourceEntry: "person.rdf", NextRecordIndex: 100_000,
+	}
+	key := CheckpointKey{
+		SnapshotDate: snapshot, DatasetName: entry.DatasetName,
+		SourceArchive: entry.SourceArchive, SourceEntry: entry.SourceEntry,
+		Projection: ProjectionAuthority, TransformVersion: DefaultTransformVersion,
+	}
+	for _, tc := range []struct {
+		name, status, category string
+		end                    uint64
+		blocked                bool
+	}{
+		{"interrupted request", "running", "", 100_000, true},
+		{"timeout", "failed", "timeout", 100_000, true},
+		{"unknown result", "failed", "unknown_status", 100_000, true},
+		{"unclassified delivery failure", "failed", "execution_failed", 100_000, true},
+		{"confirmed range before final checkpoint", "running", "", 50_000, false},
+		{"confirmed progress", "failed", "", 50_000, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &fakeStore{
+				entries: []RawEntry{entry}, hasCheckpoint: true,
+				checkpoint: Checkpoint{
+					CheckpointKey: key, Status: tc.status, ErrorCategory: tc.category,
+					NextRecordIndex: 50_000, RangeStartIndex: 0, RangeEndIndex: tc.end,
+				},
+			}
+			result, err := (Runner{Store: store}).Run(context.Background(), Config{
+				SnapshotDate: snapshot, Projections: []Projection{ProjectionAuthority},
+			})
+			if tc.blocked {
+				if ErrorCategory(err) != "reconciliation_required" || len(store.executions) != 0 || len(store.saves) != 0 {
+					t.Fatalf("unconfirmed span changed: err=%v executions=%d saves=%d", err, len(store.executions), len(store.saves))
+				}
+				return
+			}
+			if err != nil || result.RangesCompleted != 1 || len(store.executions) != 1 || store.executions[0].recordRange.Start != 50_000 {
+				t.Fatalf("confirmed range did not resume correctly: result=%+v err=%v executions=%+v", result, err, store.executions)
+			}
+		})
+	}
 }
 
 func TestDefaultProjectionOrdering(t *testing.T) {

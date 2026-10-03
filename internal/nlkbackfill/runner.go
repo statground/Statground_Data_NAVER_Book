@@ -85,6 +85,13 @@ func (r Runner) runProjection(
 			checkpoint.NextRecordIndex > entry.NextRecordIndex {
 			return false, 0, 0, safeError("checkpoint_lineage_mismatch")
 		}
+		// A failed request or interrupted process may have committed the saved
+		// attempted range. Restarting must not replay it until independent
+		// reconciliation resolves the span beyond the durable progress marker.
+		if checkpoint.RangeEndIndex > checkpoint.NextRecordIndex &&
+			(checkpoint.Status == "running" || checkpoint.Status == "failed") {
+			return false, 0, 0, safeError("reconciliation_required")
+		}
 		if checkpoint.Status == "succeeded" && checkpoint.NextRecordIndex == entry.NextRecordIndex {
 			return false, 0, 0, nil
 		}
