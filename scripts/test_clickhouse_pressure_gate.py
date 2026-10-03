@@ -1,4 +1,8 @@
 import importlib.util
+import os
+import subprocess
+import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -210,10 +214,32 @@ class ClickHousePressureGateTest(unittest.TestCase):
         dry_run_gate = kakao_main.index("if dryRun {\n\t\treturn nil")
         self.assertLess(kakao_main.index("err = store.Validate(ctx)"), dry_run_gate)
         self.assertLess(dry_run_gate, kakao_main.index("kakao.NewClientFromEnv()"))
-        self.assertIn("if: ${{ inputs.dry_run != true && inputs.run_kind == 'scheduled' }}", kakao)
-        self.assertIn("if: ${{ inputs.dry_run != true && inputs.run_kind != 'scheduled' }}", kakao)
+        native_block = kakao[kakao.index("- name: Request native serving refresh after discovery collection") : kakao.index("- name: Refresh provider-neutral serving catalogs for manual runs")]
+        self.assertIn("if: ${{ inputs.dry_run != true && (inputs.run_kind == 'scheduled' || inputs.lexicon_enabled == true) }}", native_block)
+        self.assertIn("go run -mod=mod ./cmd/request_book_refresh", native_block)
+        self.assertLess(native_block.index("go run -mod=mod ./cmd/request_book_refresh"), native_block.index('echo "verified=true"'))
+        self.assertNotIn("BOOK_REFRESH_VERIFY_ONLY", native_block)
+        manual_block = kakao[kakao.index("- name: Refresh provider-neutral serving catalogs for manual runs") : kakao.index("\n  publish_book_serving_generations:")]
+        self.assertIn("if: ${{ inputs.dry_run != true && inputs.run_kind != 'scheduled' && inputs.lexicon_enabled != true }}", manual_block)
+        self.assertIn("go run -mod=mod ./cmd/refresh_webr_book_catalog", manual_block)
+        self.assertIn("replica:Data_Content_Lexicon.keyword_selection_log_local", kakao_gate_block)
+        self.assertIn("replica:Data_Book_Service.book_bibliography_discovery_local", kakao_gate_block)
         self.assertIn("vars.BOOK_SERVING_GENERATION_PUBLISH_ENABLED == 'true' && inputs.dry_run != true", kakao)
         self.assertIn("vars.WEBR_BOOK_GENERATION_PUBLISH_ENABLED == 'true' && inputs.dry_run != true", kakao)
+
+    def test_kakao_initializes_shared_private_paths_using_runner_environment(self):
+        workflow = (Path(__file__).parents[1] / ".github/workflows/kakao_book_collect.yml").read_text()
+        job_environment = workflow[workflow.index("    env:") : workflow.index("    steps:")]
+        self.assertNotIn("runner.temp", job_environment)
+        block = workflow[workflow.index("      - name: Initialize private discovery paths") : workflow.index("      - name: Setup Go")]
+        command = textwrap.dedent(block.split("        run: |\n", 1)[1])
+        with tempfile.TemporaryDirectory() as directory:
+            env_file = Path(directory) / "github-env"
+            result = subprocess.run(["bash", "-e", "-c", command], env={"PATH": os.environ["PATH"], "RUNNER_TEMP": directory, "GITHUB_ENV": str(env_file)}, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            values = dict(line.split("=", 1) for line in env_file.read_text().splitlines())
+            self.assertEqual(values, {"LEXICON_STATE_DIR": str(Path(directory) / "kakao-lexicon"), "KAKAO_COLLECTION_RECEIPT_FILE": str(Path(directory) / "kakao-collection-receipt.json")})
+            self.assertLess(workflow.index("- name: Initialize private discovery paths"), workflow.index("go run -mod=mod ./cmd/collect_kakao"))
 
     def test_kakao_manual_run_defaults_to_read_only(self):
         workflow = (Path(__file__).parents[1] / ".github/workflows/kakao_book_collect.yml").read_text()

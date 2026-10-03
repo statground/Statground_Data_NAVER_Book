@@ -165,8 +165,6 @@ jobs:
       KAKAO_LEXICON_ENABLED: ${{ inputs.lexicon_enabled || false }}
       KAKAO_DISCOVERY_KEYWORD_LIMIT: ${{ inputs.discovery_keyword_limit || '' }}
       LEXICON_SCOPE: kakao-book
-      LEXICON_STATE_DIR: ${{ runner.temp }}/kakao-lexicon
-      KAKAO_COLLECTION_RECEIPT_FILE: ${{ runner.temp }}/kakao-collection-receipt.json
       KAKAO_SEARCH_SORT: ${{ inputs.sort || 'accuracy' }}
       KAKAO_SEARCH_TARGET: ${{ inputs.target || '' }}
       KAKAO_PAGE_CAP: ${{ inputs.page_cap || 1 }}
@@ -206,6 +204,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Initialize private discovery paths
+        run: |
+          test -n "${RUNNER_TEMP:-}" || { echo "Runner temporary directory is required"; exit 1; }
+          echo "LEXICON_STATE_DIR=$RUNNER_TEMP/kakao-lexicon" >> "$GITHUB_ENV"
+          echo "KAKAO_COLLECTION_RECEIPT_FILE=$RUNNER_TEMP/kakao-collection-receipt.json" >> "$GITHUB_ENV"
 
       - name: Setup Go
         uses: actions/setup-go@v6
