@@ -48,7 +48,11 @@ func (f *nativeFake) QueryJSONEachRowContext(_ context.Context, query string) ([
 			f.clock += 1000
 			s.Observed = f.clock
 			f.states[view] = s
-			return []map[string]any{{"status": s.Status, "observed_epoch": s.Observed, "started_epoch": s.Started, "success_epoch": s.Success, "failed": map[bool]int{false: 0, true: 1}[s.Failed]}}, nil
+			lastRefresh, lastSuccess := s.Success, s.Started
+			if running(s) {
+				lastRefresh, lastSuccess = s.Started, s.Success
+			}
+			return []map[string]any{{"status": s.Status, "observed_epoch": s.Observed, "last_refresh_epoch": lastRefresh, "last_success_epoch": lastSuccess, "failed": map[bool]int{false: 0, true: 1}[s.Failed]}}, nil
 		}
 	}
 	return nil, errors.New("unknown view")
@@ -62,6 +66,7 @@ func (f *nativeFake) ExecContext(_ context.Context, query string) error {
 		view := strings.TrimPrefix(query, "SYSTEM REFRESH VIEW ")
 		s := f.states[view]
 		s.Started = f.clock
+		f.clock += 2000
 		s.Success = f.clock
 		f.states[view] = s
 	}
@@ -99,6 +104,9 @@ func TestNativeRefreshRequestsFourStagesWithPressureAndTargetReadback(t *testing
 		}
 		if !found {
 			t.Fatalf("target %s not read back", stage.Target)
+		}
+		if index > 0 && fake.states[stage.View].Started <= fake.states[stages[index-1].View].Success {
+			t.Fatalf("stage %s started before its predecessor completed", stage.View)
 		}
 	}
 }
@@ -192,5 +200,71 @@ func TestNativeRefreshPendingOutboxAndMissingSourceRowsFailBeforeRequest(t *test
 		if err == nil || len(fake.commands) != 0 {
 			t.Fatalf("unconfirmed raw/outbox source refreshed: pending=%t commands=%v err=%v", pending, fake.commands, err)
 		}
+	}
+}
+
+type clickHouseStateFake struct {
+	row map[string]any
+}
+
+func (f clickHouseStateFake) QueryJSONEachRowContext(context.Context, string) ([]map[string]any, error) {
+	return []map[string]any{f.row}, nil
+}
+
+func (clickHouseStateFake) ExecContext(context.Context, string) error {
+	return errors.New("unexpected native refresh command")
+}
+
+func TestReadStateUsesClickHouseAttemptTimesByStatus(t *testing.T) {
+	const observed int64 = 2000000100000
+	minute := int64(time.Minute / time.Millisecond)
+	hour := int64(time.Hour / time.Millisecond)
+	for _, test := range []struct {
+		name, status             string
+		lastRefresh, lastSuccess int64
+		wantStarted, wantSuccess int64
+		failed, wantHealthy      bool
+	}{
+		{"completed", "Scheduled", observed - minute, observed - 5*minute, observed - 5*minute, observed - minute, false, true},
+		{"running with older success", "Running", observed - minute, observed - 14*hour, observed - minute, observed - 14*hour, false, true},
+		{"running on another replica", "RunningOnAnotherReplica", observed - minute, observed - 14*hour, observed - minute, observed - 14*hour, false, true},
+		{"overdue attempt", "Running", observed - 2*hour - 1, observed - 14*hour, observed - 2*hour - 1, observed - 14*hour, false, false},
+		{"expired completion", "Scheduled", observed - 13*hour - 1, observed - 14*hour, observed - 14*hour, observed - 13*hour - 1, false, false},
+		{"expired successful start with recent completion", "Scheduled", observed - minute, observed - 13*hour - 1, observed - 13*hour - 1, observed - minute, false, false},
+		{"completion before successful start", "Scheduled", observed - 5*minute, observed - minute, observed - minute, observed - 5*minute, false, false},
+		{"failed attempt", "Scheduled", observed - minute, observed - 5*minute, observed - 5*minute, observed - minute, true, false},
+		{"future attempt", "Running", observed + 1, observed - minute, observed + 1, observed - minute, false, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fake := clickHouseStateFake{row: map[string]any{
+				"status": test.status, "observed_epoch": observed,
+				"last_refresh_epoch": test.lastRefresh, "last_success_epoch": test.lastSuccess,
+				"failed": map[bool]int{false: 0, true: 1}[test.failed],
+			}}
+			state, err := readState(context.Background(), fake, stages[0].View)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state.Started != test.wantStarted || state.Success != test.wantSuccess {
+				t.Fatalf("state=%+v want started=%d success=%d", state, test.wantStarted, test.wantSuccess)
+			}
+			if err := healthyState(state); (err == nil) != test.wantHealthy {
+				t.Fatalf("healthyState=%v want healthy=%t", err, test.wantHealthy)
+			}
+		})
+	}
+}
+
+func TestWaitStateAdmitsCompletedClickHouseRefreshAfterWatermark(t *testing.T) {
+	const started, completed, observed int64 = 2000000100000, 2000000400000, 2000000401000
+	fake := clickHouseStateFake{row: map[string]any{
+		"status": "Scheduled", "observed_epoch": observed, "last_refresh_epoch": completed,
+		"last_success_epoch": started, "failed": 0,
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	state, err := waitState(ctx, fake, stages[0].View, started, time.Millisecond)
+	if err != nil || state.Started != started || state.Success != completed {
+		t.Fatalf("completed native generation was not admitted: state=%+v err=%v", state, err)
 	}
 }

@@ -162,25 +162,33 @@ type refreshState struct {
 
 func readState(ctx context.Context, client refreshClient, view string) (refreshState, error) {
 	database, name, _ := strings.Cut(view, ".")
-	query := "SELECT status,toUnixTimestamp64Milli(now64(3)) AS observed_epoch,toUnixTimestamp64Milli(toDateTime64(last_refresh_time,3,'UTC')) AS started_epoch,toUnixTimestamp64Milli(toDateTime64(last_success_time,3,'UTC')) AS success_epoch,notEmpty(exception) AS failed FROM system.view_refreshes WHERE database=" + util.SQLString(database) + " AND view=" + util.SQLString(name) + " LIMIT 2 SETTINGS max_threads=1,max_execution_time=5"
+	query := "SELECT status,toUnixTimestamp64Milli(now64(3)) AS observed_epoch,toUnixTimestamp64Milli(toDateTime64(last_refresh_time,3,'UTC')) AS last_refresh_epoch,toUnixTimestamp64Milli(toDateTime64(last_success_time,3,'UTC')) AS last_success_epoch,notEmpty(exception) AS failed FROM system.view_refreshes WHERE database=" + util.SQLString(database) + " AND view=" + util.SQLString(name) + " LIMIT 2 SETTINGS max_threads=1,max_execution_time=5"
 	rows, err := client.QueryJSONEachRowContext(ctx, query)
 	if err != nil || len(rows) != 1 {
 		return refreshState{}, errors.New("book native refresh coordinator unavailable")
 	}
 	row := rows[0]
-	for _, field := range []string{"status", "observed_epoch", "started_epoch", "success_epoch", "failed"} {
+	for _, field := range []string{"status", "observed_epoch", "last_refresh_epoch", "last_success_epoch", "failed"} {
 		if row[field] == nil {
 			return refreshState{}, errors.New("book native refresh metadata incomplete")
 		}
 	}
 	observed, observedOK := util.NonnegativeInteger(row["observed_epoch"])
-	started, startedOK := util.NonnegativeInteger(row["started_epoch"])
-	success, successOK := util.NonnegativeInteger(row["success_epoch"])
+	lastRefresh, lastRefreshOK := util.NonnegativeInteger(row["last_refresh_epoch"])
+	lastSuccess, lastSuccessOK := util.NonnegativeInteger(row["last_success_epoch"])
 	failed, failedOK := util.NonnegativeInteger(row["failed"])
-	if !observedOK || !startedOK || !successOK || !failedOK || failed > 1 {
+	if !observedOK || !lastRefreshOK || !lastSuccessOK || !failedOK || failed > 1 {
 		return refreshState{}, errors.New("book native refresh metadata invalid")
 	}
-	return refreshState{Status: util.ToString(row["status"]), Observed: observed, Started: started, Success: success, Failed: failed != 0}, nil
+	state := refreshState{Status: util.ToString(row["status"]), Observed: observed, Started: lastSuccess, Success: lastRefresh, Failed: failed != 0}
+	// ClickHouse records the successful refresh's start in last_success_time.
+	// last_refresh_time is the latest attempt's finish when idle, but its
+	// current start while running. Keep the running-age gate on that attempt;
+	// only an idle, exception-free state can prove a completed generation.
+	if running(state) {
+		state.Started, state.Success = lastRefresh, lastSuccess
+	}
+	return state, nil
 }
 
 func running(s refreshState) bool {
@@ -199,7 +207,9 @@ func healthyState(s refreshState) error {
 	if s.Status != "Scheduled" && s.Status != "Scheduling" && s.Status != "WaitingForDependencies" {
 		return errors.New("book native refresh schedule disabled or dependencies unavailable")
 	}
-	if s.Success <= 0 || s.Observed-s.Success > int64(13*time.Hour/time.Millisecond) {
+	// Keep the existing freshness bound on the successful refresh's start.
+	// Its completion orders the next stage, but does not extend that bound.
+	if s.Success < s.Started || s.Observed-s.Started > int64(13*time.Hour/time.Millisecond) {
 		return errors.New("book native refresh has no fresh successful generation")
 	}
 	return nil
