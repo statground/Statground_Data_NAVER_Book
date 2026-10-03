@@ -24,6 +24,7 @@ jobs:
       run_kind: ${{ github.event_name == 'schedule' && 'scheduled' || 'manual' }}
       mode: fixed_keyword
       queries: ${{ vars.KAKAO_BOOK_DISCOVERY_QUERIES || '통계학;R 프로그래밍;외국어 학습;언어 학습' }}
+      lexicon_enabled: true
       sort: latest
       page_cap: 1
       page_size: 50

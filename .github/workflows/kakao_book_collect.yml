@@ -17,6 +17,16 @@ on:
         description: "Semicolon/newline-delimited queries; values are never printed"
         required: true
         type: string
+      lexicon_enabled:
+        description: "Replace half of the existing keyword batch with committed dictionary nouns"
+        required: false
+        type: boolean
+        default: false
+      discovery_keyword_limit:
+        description: "Optional bounded batch cap; zero uses the existing query count"
+        required: false
+        type: number
+        default: 0
       sort:
         required: false
         type: string
@@ -98,6 +108,14 @@ on:
         description: "Semicolon/newline-delimited queries; values are never printed"
         required: true
         default: "통계학"
+      lexicon_enabled:
+        description: "Enable 50:50 discovery; supply at least two curated queries"
+        type: boolean
+        default: false
+      discovery_keyword_limit:
+        description: "Optional cap within the supplied query count"
+        type: number
+        default: 0
       sort:
         type: choice
         options: [accuracy, latest]
@@ -136,14 +154,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     outputs:
-      webr_refresh_verified: ${{ steps.webr_book_refresh_verify.outputs.verified || steps.webr_book_refresh_manual.outputs.verified }}
-      book_serving_refresh_verified: ${{ steps.webr_book_refresh_verify.outputs.verified || steps.webr_book_refresh_manual.outputs.verified }}
+      webr_refresh_verified: ${{ steps.native_book_refresh.outputs.verified || steps.webr_book_refresh_manual.outputs.verified }}
+      book_serving_refresh_verified: ${{ steps.native_book_refresh.outputs.verified || steps.webr_book_refresh_manual.outputs.verified }}
     env:
       # Port 50005 is the durable direct S1_R1 endpoint, never the 50006 gateway.
       CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME: clickhouse-s1-r1
       KAKAO_RUN_KIND: ${{ inputs.run_kind || 'manual' }}
       KAKAO_COLLECT_MODE: ${{ inputs.mode || 'manual' }}
       KAKAO_QUERIES: ${{ inputs.queries }}
+      KAKAO_LEXICON_ENABLED: ${{ inputs.lexicon_enabled || false }}
+      KAKAO_DISCOVERY_KEYWORD_LIMIT: ${{ inputs.discovery_keyword_limit || '' }}
+      LEXICON_SCOPE: kakao-book
+      LEXICON_STATE_DIR: ${{ runner.temp }}/kakao-lexicon
+      KAKAO_COLLECTION_RECEIPT_FILE: ${{ runner.temp }}/kakao-collection-receipt.json
       KAKAO_SEARCH_SORT: ${{ inputs.sort || 'accuracy' }}
       KAKAO_SEARCH_TARGET: ${{ inputs.target || '' }}
       KAKAO_PAGE_CAP: ${{ inputs.page_cap || 1 }}
@@ -204,6 +227,39 @@ jobs:
           KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
         run: |
           test -n "$KAKAO_REST_API_KEY" || { echo "KAKAO_REST_API_KEY secret is required"; exit 1; }
+
+      - name: Require three-profile publication before discovery collection
+        if: ${{ inputs.dry_run != true && (inputs.run_kind == 'scheduled' || inputs.lexicon_enabled == true) }}
+        env:
+          PUB_ENABLED: ${{ vars.BOOK_SERVING_GENERATION_PUBLISH_ENABLED }}
+          PUB_SQL_TOKEN: ${{ secrets.STATGROUND_SQL_READ_TOKEN }}
+          PUB_COORDINATOR_ENDPOINT: ${{ secrets.BOOK_SERVING_COORDINATOR_ENDPOINT }}
+          PUB_WEBR_PASSWORD: ${{ secrets.WEBR_BOOK_SERVING_PUBLISHER_PASSWORD }}
+          PUB_MIRTYPE_PASSWORD: ${{ secrets.MIRTYPE_BOOK_SERVING_PUBLISHER_PASSWORD }}
+          PUB_STATGROUND_PASSWORD: ${{ secrets.STATGROUND_PROVIDER_BOOK_SERVING_PUBLISHER_PASSWORD }}
+          PUB_NAVER_OUTBOX_ENDPOINT: ${{ secrets.BOOK_SERVING_NAVER_OUTBOX_ENDPOINT }}
+          PUB_KAKAO_OUTBOX_ENDPOINT: ${{ secrets.BOOK_SERVING_KAKAO_OUTBOX_ENDPOINT }}
+          PUB_OUTBOX_OBSERVER_PASSWORD: ${{ secrets.BOOK_SERVING_OUTBOX_OBSERVER_PASSWORD }}
+        run: |
+          python3 - <<'PY'
+          import os
+
+          required = {
+              "STATGROUND_SQL_READ_TOKEN": "PUB_SQL_TOKEN",
+              "BOOK_SERVING_COORDINATOR_ENDPOINT": "PUB_COORDINATOR_ENDPOINT",
+              "WEBR_BOOK_SERVING_PUBLISHER_PASSWORD": "PUB_WEBR_PASSWORD",
+              "MIRTYPE_BOOK_SERVING_PUBLISHER_PASSWORD": "PUB_MIRTYPE_PASSWORD",
+              "STATGROUND_PROVIDER_BOOK_SERVING_PUBLISHER_PASSWORD": "PUB_STATGROUND_PASSWORD",
+              "BOOK_SERVING_NAVER_OUTBOX_ENDPOINT": "PUB_NAVER_OUTBOX_ENDPOINT",
+              "BOOK_SERVING_KAKAO_OUTBOX_ENDPOINT": "PUB_KAKAO_OUTBOX_ENDPOINT",
+              "BOOK_SERVING_OUTBOX_OBSERVER_PASSWORD": "PUB_OUTBOX_OBSERVER_PASSWORD",
+          }
+          missing = [name for name, alias in required.items() if not os.environ.get(alias, "").strip()]
+          if os.environ.get("PUB_ENABLED") != "true":
+              missing.insert(0, "BOOK_SERVING_GENERATION_PUBLISH_ENABLED=true repository variable")
+          if missing:
+              raise SystemExit("Same-run Book publication is required before API collection; configure: " + ", ".join(missing))
+          PY
 
       - name: Validate ClickHouse endpoint
         env:
@@ -290,6 +346,8 @@ jobs:
             replica:Data_Book_Service.book_catalog_latest_local,
             replica:webr_book.naver_r_book_catalog_local,
             replica:mirtype_book.naver_language_book_catalog_local,
+            replica:Data_Book_Service.book_bibliography_discovery_local,
+            replica:Data_Content_Lexicon.keyword_selection_log_local,
             local:Data_Book_KAKAO_Log.kakao_direct_insert_outbox
           CH_HOST: ${{ secrets.CLICKHOUSE_HOST }}
           CH_PORT: ${{ steps.clickhouse_transport.outputs.port }}
@@ -303,6 +361,9 @@ jobs:
         env:
           KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
           KAKAO_REQUIRE_CLICKHOUSE_HTTPS: "false"
+          LEXICON_CLICKHOUSE_HTTP_URL: ${{ steps.clickhouse_transport.outputs.protocol }}://${{ secrets.CLICKHOUSE_HOST }}:${{ steps.clickhouse_transport.outputs.port }}/
+          LEXICON_CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
+          LEXICON_CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
           CH_HOST: ${{ secrets.CLICKHOUSE_HOST }}
           CH_PORT: ${{ steps.clickhouse_transport.outputs.port }}
           CH_USER: ${{ secrets.CLICKHOUSE_USER }}
@@ -312,9 +373,9 @@ jobs:
           CH_DATABASE: Data_Book_KAKAO_Raw
         run: go run -mod=mod ./cmd/collect_kakao
 
-      - name: Verify scheduled serving catalog refresh chain
-        id: webr_book_refresh_verify
-        if: ${{ inputs.dry_run != true && inputs.run_kind == 'scheduled' }}
+      - name: Request native serving refresh after discovery collection
+        id: native_book_refresh
+        if: ${{ inputs.dry_run != true && (inputs.run_kind == 'scheduled' || inputs.lexicon_enabled == true) }}
         env:
           CH_HOST: ${{ secrets.CLICKHOUSE_HOST }}
           CH_PORT: ${{ steps.clickhouse_transport.outputs.port }}
@@ -323,16 +384,14 @@ jobs:
           CH_PROTOCOL: ${{ steps.clickhouse_transport.outputs.protocol }}
           CH_HTTP_URL_PATH: ${{ secrets.CLICKHOUSE_HTTP_URL_PATH }}
           CH_DATABASE: Data_Book_Service
-          BOOK_REFRESH_VERIFY_ONLY: "true"
-          BOOK_REFRESH_COORDINATOR_ATTEMPTS: "12"
-          BOOK_REFRESH_COORDINATOR_RETRY_MILLISECONDS: "500"
+          BOOK_REFRESH_REQUEST_TIMEOUT_SECONDS: "900"
         run: |
-          go run -mod=mod ./cmd/refresh_webr_book_catalog
+          go run -mod=mod ./cmd/request_book_refresh
           echo "verified=true" >> "$GITHUB_OUTPUT"
 
       - name: Refresh provider-neutral serving catalogs for manual runs
         id: webr_book_refresh_manual
-        if: ${{ inputs.dry_run != true && inputs.run_kind != 'scheduled' }}
+        if: ${{ inputs.dry_run != true && inputs.run_kind != 'scheduled' && inputs.lexicon_enabled != true }}
         env:
           CH_HOST: ${{ secrets.CLICKHOUSE_HOST }}
           CH_PORT: ${{ steps.clickhouse_transport.outputs.port }}

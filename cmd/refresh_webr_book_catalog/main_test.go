@@ -455,8 +455,8 @@ func TestRunBusyPathRestoresAllSchedules(t *testing.T) {
 		return json.Marshal(reply)
 	}
 
-	if err := run(); err != nil {
-		t.Fatalf("run() busy path error=%v", err)
+	if err := run(); !errors.Is(err, errBookRefreshBusy) {
+		t.Fatalf("run() busy path error=%v, want publication to remain unverified", err)
 	}
 	mu.Lock()
 	defer mu.Unlock()

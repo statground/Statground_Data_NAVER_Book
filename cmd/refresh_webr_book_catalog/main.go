@@ -88,8 +88,7 @@ func run() (runErr error) {
 		lease,
 	); err != nil {
 		if errors.Is(err, errBookRefreshBusy) {
-			fmt.Println("[book-catalog] refresh skipped because the serial Book refresh chain is already running")
-			return nil
+			return fmt.Errorf("new Book collection publication is unverified while the serial refresh chain is running: %w", err)
 		}
 		return err
 	}

@@ -390,8 +390,12 @@ func TestBookServingPublicationIsGatedAfterRefreshWithMutuallyExclusiveLegacyFal
 					t.Errorf("%s workflow secret mapping %s count=%d, want %d", test.name, name, count, want)
 				}
 			}
-			if count := strings.Count(text, "vars.BOOK_SERVING_GENERATION_PUBLISH_ENABLED"); count != 2 {
-				t.Errorf("%s migration feature-gate count=%d, want new and legacy exclusion", test.name, count)
+			wantGates := 2
+			if test.name == "kakao" {
+				wantGates++ // New discovery must verify publication configuration before calling Kakao.
+			}
+			if count := strings.Count(text, "vars.BOOK_SERVING_GENERATION_PUBLISH_ENABLED"); count != wantGates {
+				t.Errorf("%s publication feature-gate count=%d, want %d", test.name, count, wantGates)
 			}
 			if strings.Contains(text, "book_serving_generation_publisher.py") {
 				t.Errorf("%s collector duplicated the pinned SQL publisher", test.name)
@@ -439,5 +443,46 @@ func TestThreeProfilePublisherHasNoIndependentScheduleAndLegacySourceRemainsPinn
 	if !strings.Contains(legacy, "ref: 27cbfecbb883c6c834ae2c58be74dad47c690b4d") ||
 		!strings.Contains(legacy, "webr_book_generation_publisher.py") {
 		t.Fatal("mutually exclusive migration fallback no longer uses its reviewed immutable source")
+	}
+}
+
+func TestDiscoveryPublicationConfigurationGuardExecutesBeforeAPIAndRedactsSecrets(t *testing.T) {
+	text := readWorkflow(t, "../../.github/workflows/kakao_book_collect.yml")
+	marker := "      - name: Require three-profile publication before discovery collection\n"
+	start := strings.Index(text, marker)
+	end := strings.Index(text[start+len(marker):], "\n      - name:")
+	if start < 0 || end < 0 || start >= strings.Index(text, "      - name: Collect Kakao books into provider tables") {
+		t.Fatal("publication readiness guard is absent or runs after provider collection")
+	}
+	step := text[start : start+len(marker)+end]
+	runStart := strings.Index(step, "        run: |\n")
+	if runStart < 0 {
+		t.Fatal("guard run block is absent")
+	}
+	var script strings.Builder
+	for _, line := range strings.Split(step[runStart+len("        run: |\n"):], "\n") {
+		script.WriteString(strings.TrimPrefix(line, "          "))
+		script.WriteByte('\n')
+	}
+	aliases := []string{"PUB_SQL_TOKEN", "PUB_COORDINATOR_ENDPOINT", "PUB_WEBR_PASSWORD", "PUB_MIRTYPE_PASSWORD", "PUB_STATGROUND_PASSWORD", "PUB_NAVER_OUTBOX_ENDPOINT", "PUB_KAKAO_OUTBOX_ENDPOINT", "PUB_OUTBOX_OBSERVER_PASSWORD"}
+	for _, enabled := range []bool{false, true} {
+		command := exec.Command("bash", "-c", script.String())
+		command.Env = []string{"PATH=" + os.Getenv("PATH")}
+		if enabled {
+			command.Env = append(command.Env, "PUB_ENABLED=true")
+			for _, alias := range aliases {
+				command.Env = append(command.Env, alias+"=private-test-token")
+			}
+		}
+		output, err := command.CombinedOutput()
+		if enabled && err != nil || !enabled && err == nil {
+			t.Fatalf("enabled=%t guard error=%v output=%s", enabled, err, output)
+		}
+		if strings.Contains(string(output), "private-test-token") {
+			t.Fatal("publication configuration guard exposed a secret")
+		}
+		if !enabled && !strings.Contains(string(output), "before API collection") {
+			t.Fatalf("guard did not explain the pre-API stop: %s", output)
+		}
 	}
 }

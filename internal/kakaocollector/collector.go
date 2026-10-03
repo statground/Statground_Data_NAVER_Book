@@ -32,17 +32,18 @@ type Config struct {
 }
 
 type Result struct {
-	SkippedDue      bool
-	Calls           int
-	Fetched         int
-	Inserted        int
-	NewISBN         int
-	ChangedISBN     int
-	Duplicates      int
-	TotalCount      int
-	PageableCount   int
-	ErrorCategory   string
-	AdjustedPageCap int
+	SkippedDue       bool
+	Calls            int
+	Fetched          int
+	Inserted         int
+	NewISBN          int
+	ChangedISBN      int
+	Duplicates       int
+	TotalCount       int
+	PageableCount    int
+	ErrorCategory    string
+	AdjustedPageCap  int
+	LatestInsertedAt time.Time
 }
 
 type Collector struct {
@@ -139,6 +140,7 @@ func (c *Collector) Collect(ctx context.Context, config Config) (Result, error) 
 		result.TotalCount = response.TotalCount
 		result.PageableCount = response.PageableCount
 		result.Fetched += len(response.Documents)
+		collectedAt := c.now()
 		rows, stats, buildErr := c.rowsForDocuments(ctx, response.Documents, rawkakao.Evidence{
 			RunUUID:       c.RunUUID,
 			RequestUUID:   observer.LastSuccessfulRequestUUID(),
@@ -153,7 +155,7 @@ func (c *Collector) Collect(ctx context.Context, config Config) (Result, error) 
 			IsEnd:         response.IsEnd,
 			Source:        config.Source,
 			LineageTopic:  config.LineageTopic,
-			CollectedAt:   c.now(),
+			CollectedAt:   collectedAt,
 		}, seen)
 		if buildErr != nil {
 			result.ErrorCategory = ErrorCategory(buildErr)
@@ -166,6 +168,7 @@ func (c *Collector) Collect(ctx context.Context, config Config) (Result, error) 
 				collectErr = insertErr
 				break
 			}
+			result.LatestInsertedAt = collectedAt
 		}
 		result.Inserted += len(rows)
 		result.NewISBN += stats.NewISBN

@@ -7,10 +7,12 @@ import (
 	"strings"
 	"time"
 
+	"statground_naver_book_go/internal/bookrefreshreceipt"
 	"statground_naver_book_go/internal/ch"
 	"statground_naver_book_go/internal/envx"
 	"statground_naver_book_go/internal/kakaocollector"
 	"statground_naver_book_go/internal/kakaostore"
+	"statground_naver_book_go/internal/lexicon"
 	"statground_naver_book_go/internal/provider"
 	"statground_naver_book_go/internal/provider/kakao"
 	"statground_naver_book_go/internal/quota"
@@ -59,6 +61,9 @@ func (s *collectionSummary) recordResult(result kakaocollector.Result) {
 	s.total.NewISBN += result.NewISBN
 	s.total.ChangedISBN += result.ChangedISBN
 	s.total.Duplicates += result.Duplicates
+	if result.LatestInsertedAt.After(s.total.LatestInsertedAt) {
+		s.total.LatestInsertedAt = result.LatestInsertedAt
+	}
 }
 
 func (s collectionSummary) String() string {
@@ -86,6 +91,20 @@ func run() error {
 	timeout := durationSeconds("KAKAO_RUN_TIMEOUT_SECONDS", 30*time.Minute)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+	queries := splitQueries(envx.String("KAKAO_QUERIES", envx.String("KAKAO_QUERY", "")))
+	if len(queries) == 0 {
+		return &safeError{category: "invalid_request"}
+	}
+	batch, err := selectDiscoveryQueries(ctx, queries, runKind, util.NowKST(), lexicon.FromEnv)
+	if err != nil {
+		return &safeError{category: "configuration", stage: "discovery_selection"}
+	}
+	curatedCount, dictionaryCount := discoveryComposition(batch.Selections)
+	fmt.Printf("provider=kakao discovery_candidates=%d curated_candidates=%d dictionary_candidates=%d discovery_degraded=%t\n", len(batch.Selections), curatedCount, dictionaryCount, batch.Degraded)
+	if boolEnv("KAKAO_DISCOVERY_PLAN_ONLY", false) {
+		fmt.Println("provider=kakao status=discovery_plan_only external_calls=0 collection_writes=0")
+		return nil
+	}
 
 	if _, err := envx.Require("KAKAO_REST_API_KEY"); err != nil {
 		return &safeError{category: "configuration"}
@@ -126,10 +145,6 @@ func run() error {
 		return nil
 	}
 
-	queries := splitQueries(envx.String("KAKAO_QUERIES", envx.String("KAKAO_QUERY", "")))
-	if len(queries) == 0 {
-		return &safeError{category: "invalid_request"}
-	}
 	mode := strings.TrimSpace(envx.String("KAKAO_COLLECT_MODE", "manual"))
 	sort := strings.TrimSpace(envx.String("KAKAO_SEARCH_SORT", "accuracy"))
 	target := strings.TrimSpace(envx.String("KAKAO_SEARCH_TARGET", ""))
@@ -143,11 +158,11 @@ func run() error {
 	if err != nil {
 		return &safeError{category: "configuration"}
 	}
-	candidates := make([]quota.Candidate, 0, len(queries))
-	for _, query := range queries {
+	candidates := make([]quota.Candidate, 0, len(batch.Selections))
+	for _, selection := range batch.Selections {
 		candidates = append(candidates, quota.Candidate{
 			Request: provider.SearchRequest{
-				Query:  query,
+				Query:  selection.Keyword,
 				Sort:   sort,
 				Target: target,
 				Page:   startPage,
@@ -163,9 +178,16 @@ func run() error {
 	if err != nil {
 		return &safeError{category: kakaocollector.ErrorCategory(err), stage: kakaocollector.ErrorStage(err), reason: kakaocollector.ErrorReason(err)}
 	}
-	plan := quota.BuildPlan(candidates, planningBudget)
+	candidates = balanceDiscoveryCandidates(candidates, batch)
+	plan := balanceDiscoveryPlan(quota.BuildPlan(candidates, planningBudget), batch)
+	byQuery := discoveryByQuery(batch.Selections)
+	plannedSelections := make([]lexicon.Selection, 0, len(plan.Selected))
+	for _, planned := range plan.Selected {
+		plannedSelections = append(plannedSelections, byQuery[strings.ToLower(strings.Join(strings.Fields(planned.Request.Query), " "))])
+	}
+	plannedCurated, plannedDictionary := discoveryComposition(plannedSelections)
 	fmt.Printf(
-		"provider=kakao observed_calls_today=%d planned_requests=%d planned_calls=%d skipped_invalid=%d skipped_duplicate=%d skipped_budget=%d dry_run=%t candidate_requests=%d deferred_before_planning_requests=%d\n",
+		"provider=kakao observed_calls_today=%d planned_requests=%d planned_calls=%d skipped_invalid=%d skipped_duplicate=%d skipped_budget=%d dry_run=%t candidate_requests=%d deferred_before_planning_requests=%d planned_curated_requests=%d planned_dictionary_requests=%d\n",
 		observedCalls,
 		len(plan.Selected),
 		plan.PlannedCalls,
@@ -173,15 +195,28 @@ func run() error {
 		plan.SkippedDuplicate,
 		plan.SkippedOverBudget,
 		dryRun,
-		candidateCount, deferred,
+		candidateCount, deferred, plannedCurated, plannedDictionary,
 	)
 	if dryRun {
 		return nil
 	}
 	summary := collectionSummary{plannedRequests: len(plan.Selected), candidateRequests: candidateCount, deferredBeforePlanningRequests: deferred}
+	runUUID := util.UUIDv7()
+	started, err := beginCollectionReceipt(ctx, clickhouseClient, runUUID)
+	if err != nil {
+		return err
+	}
 	if len(plan.Selected) == 0 {
+		if err := writeCollectionReceipt(ctx, store, runUUID, started, summary); err != nil {
+			return err
+		}
 		fmt.Println(summary.String())
 		return nil
+	}
+	if boolEnv("KAKAO_LEXICON_ENABLED", runKind == "scheduled") {
+		if err := lexicon.Record(ctx, plannedSelections); err != nil {
+			return &safeError{category: "discovery_evidence", stage: "record_selection"}
+		}
 	}
 
 	searchClient, err := kakao.NewClientFromEnv()
@@ -192,22 +227,33 @@ func run() error {
 	if err != nil {
 		return &safeError{category: "configuration"}
 	}
-	runUUID := util.UUIDv7()
 	collector, err := kakaocollector.New(searchClient, store, runtimeBudget, runUUID)
 	if err != nil {
 		return &safeError{category: "contract_error"}
 	}
 	for _, planned := range plan.Selected {
+		selection := byQuery[strings.ToLower(strings.Join(strings.Fields(planned.Request.Query), " "))]
 		result, collectErr := collector.Collect(ctx, kakaocollector.Config{
 			Mode:         mode,
 			Request:      planned.Request,
 			PageCap:      planned.EstimatedCalls,
 			RespectDue:   respectDue,
 			Priority:     planned.Priority,
-			Source:       storeConfig.Source,
+			Source:       discoverySource(storeConfig.Source, selection),
 			LineageTopic: storeConfig.LineageTopic,
 		})
 		summary.recordResult(result)
+		if boolEnv("KAKAO_LEXICON_ENABLED", runKind == "scheduled") {
+			outcome := "completed"
+			if result.SkippedDue {
+				outcome = "skipped_due"
+			} else if collectErr != nil {
+				outcome = "provider_error"
+			}
+			if err := lexicon.Outcome(ctx, []lexicon.Selection{selection}, outcome, result.Inserted); err != nil {
+				return &safeError{category: "discovery_evidence", stage: "record_outcome"}
+			}
+		}
 		if result.SkippedDue {
 			continue
 		}
@@ -218,7 +264,49 @@ func run() error {
 			break
 		}
 	}
+	if err := writeCollectionReceipt(ctx, store, runUUID, started, summary); err != nil {
+		return err
+	}
 	fmt.Println(summary.String())
+	return nil
+}
+
+func beginCollectionReceipt(ctx context.Context, client *ch.Client, runUUID string) (int64, error) {
+	path := strings.TrimSpace(os.Getenv("KAKAO_COLLECTION_RECEIPT_FILE"))
+	if path == "" {
+		return 0, nil
+	}
+	rows, err := client.QueryJSONEachRowContext(ctx, "SELECT toUnixTimestamp64Milli(now64(3)) AS collection_started_millis SETTINGS max_threads=1,max_execution_time=5")
+	if err != nil || len(rows) != 1 {
+		return 0, &safeError{category: "publication_receipt", stage: "source_start_timestamp"}
+	}
+	started, valid := util.NonnegativeInteger(rows[0]["collection_started_millis"])
+	if !valid || started <= 0 {
+		return 0, &safeError{category: "publication_receipt", stage: "source_start_timestamp"}
+	}
+	if err := bookrefreshreceipt.Write(path, bookrefreshreceipt.Receipt{Version: 1, RunUUID: runUUID, State: "collecting", StartedMillis: started}); err != nil {
+		return 0, &safeError{category: "publication_receipt", stage: "write_precollection_receipt"}
+	}
+	return started, nil
+}
+
+func writeCollectionReceipt(ctx context.Context, store *kakaostore.ClickHouseStore, runUUID string, started int64, summary collectionSummary) error {
+	path := strings.TrimSpace(os.Getenv("KAKAO_COLLECTION_RECEIPT_FILE"))
+	if path == "" {
+		return nil
+	}
+	var latest int64
+	if !summary.total.LatestInsertedAt.IsZero() {
+		latest = summary.total.LatestInsertedAt.UnixMilli()
+	}
+	confirmed, completed, err := kakaostore.ConfirmCollectionSource(ctx, store.Client, store.Config.RawTable, store.Config.OutboxTable, runUUID, summary.total.Inserted, latest)
+	if err != nil {
+		return &safeError{category: kakaocollector.ErrorCategory(err), stage: "source_confirmation", reason: kakaocollector.ErrorReason(err)}
+	}
+	if err := bookrefreshreceipt.Write(path, bookrefreshreceipt.Receipt{Version: 1, RunUUID: runUUID, State: "completed", StartedMillis: started, Inserted: summary.total.Inserted, LatestInsertedMillis: confirmed, CompletedMillis: completed}); err != nil {
+		return &safeError{category: "publication_receipt", stage: "write_collection_receipt"}
+	}
+	fmt.Printf("provider=kakao source_confirmed=true source_rows=%d source_watermark_millis=%d collection_started_millis=%d publication=unverified\n", summary.total.Inserted, confirmed, started)
 	return nil
 }
 
