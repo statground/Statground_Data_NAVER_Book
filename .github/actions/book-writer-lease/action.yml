@@ -18,7 +18,7 @@ runs:
       uses: actions/checkout@v6
       with:
         repository: statground/Statground_SQL
-        ref: 66e604d1fc2befcc7753191219c98940dc548790
+        ref: 4c90b20f64027019e098d9b848e3e702b7ee24b0
         token: ${{ inputs.sql-read-token }}
         path: .writer-lease/statground-sql
         persist-credentials: false
@@ -31,7 +31,7 @@ runs:
         set -euo pipefail
         umask 077
         sql_root="$GITHUB_WORKSPACE/.writer-lease/statground-sql"
-        test "$(git -C "$sql_root" rev-parse HEAD)" = "66e604d1fc2befcc7753191219c98940dc548790"
+        test "$(git -C "$sql_root" rev-parse HEAD)" = "4c90b20f64027019e098d9b848e3e702b7ee24b0"
         python3 -m venv "$RUNNER_TEMP/book-writer-lease-python"
         cat >"$RUNNER_TEMP/book-writer-lease-requirements.txt" <<'EOF'
         PyMySQL==1.1.2 --hash=sha256:e6b1d89711dd51f8f74b1631fe08f039e7d76cf67a42a323d3178f0f25762ed9

@@ -21,7 +21,7 @@ import (
 
 const Resource = "statground-book-shared-writer-v1"
 
-var participants = []string{"nlk-raw", "nlk-projection", "full-catalog", "provider-collection"}
+var participants = []string{"nlk-raw", "nlk-projection", "full-catalog", "provider-collection", "webr-public-v2"}
 
 type safeError string
 

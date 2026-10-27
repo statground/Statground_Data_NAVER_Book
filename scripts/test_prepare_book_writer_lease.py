@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 import sys
@@ -10,6 +11,20 @@ import unittest
 from unittest.mock import patch
 
 import prepare_book_writer_lease as setup
+
+class SourcePinContractTests(unittest.TestCase):
+    def test_action_and_preparer_pin_the_same_qualified_sql_source(self):
+        expected_commit = "4c90b20f64027019e098d9b848e3e702b7ee24b0"
+        expected_helper = "064110bf82ddab9680a88ccf1c0a05f1ae5d6662cb37cc3ac6e8b189d5ba6e66"
+        self.assertEqual(setup.SQL_COMMIT, expected_commit)
+        self.assertEqual(setup.HELPER_SHA256, expected_helper)
+        root = Path(__file__).resolve().parents[1]
+        action = (root / ".github/actions/book-writer-lease/action.yml").read_text()
+        self.assertEqual(re.findall(r"(?m)^        ref: ([0-9a-f]{40})$", action), [expected_commit])
+        self.assertEqual(re.findall(r'rev-parse HEAD\)" = "([0-9a-f]{40})"', action), [expected_commit])
+        self.assertIn("sparse-checkout: " + setup.HELPER_RELATIVE, action)
+        self.assertIn("persist-credentials: false", action)
+        self.assertIn("scripts/prepare_book_writer_lease.py", action)
 
 class PrepareWriterLeaseTests(unittest.TestCase):
     def setUp(self):

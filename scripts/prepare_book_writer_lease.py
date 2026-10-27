@@ -8,8 +8,8 @@ from pathlib import Path
 import stat
 import sys
 
-SQL_COMMIT = "66e604d1fc2befcc7753191219c98940dc548790"
-HELPER_SHA256 = "6d3f1368061f7b00091de96ec8bd2083aa84b953eb1d31581727c366788057a4"
+SQL_COMMIT = "4c90b20f64027019e098d9b848e3e702b7ee24b0"
+HELPER_SHA256 = "064110bf82ddab9680a88ccf1c0a05f1ae5d6662cb37cc3ac6e8b189d5ba6e66"
 HELPER_RELATIVE = "docker-compose/50005_Clickhouse_Statground/book_shared_writer_lease.py"
 
 class PreparationError(Exception):

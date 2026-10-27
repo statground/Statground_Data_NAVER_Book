@@ -74,6 +74,51 @@ func testIntent() Intent {
 	return Intent{Operation: "019a0000-0000-7000-8000-000000000002", Target: "Data_Book_Service.book_provider_latest", QueryID: "019a0000-0000-7000-8000-000000000003", RequestSHA256: strings.Repeat("c", 64)}
 }
 
+func TestExactFiveWriterCoverageRequired(t *testing.T) {
+	expected := []string{"nlk-raw", "nlk-projection", "full-catalog", "provider-collection", "webr-public-v2"}
+	if strings.Join(participants, ",") != strings.Join(expected, ",") {
+		t.Fatal("selected writer coverage changed")
+	}
+	for _, test := range []struct {
+		name    string
+		writers []string
+		accept  bool
+	}{
+		{"exact-five", expected, true},
+		{"legacy-four", expected[:4], false},
+		{"duplicate", []string{"nlk-raw", "nlk-projection", "full-catalog", "provider-collection", "provider-collection"}, false},
+		{"unknown", []string{"nlk-raw", "nlk-projection", "full-catalog", "provider-collection", "unknown-writer"}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			guard, fixture := newProtocolGuard(t)
+			fixture.change = func(_ string, reply *Reply) error {
+				reply.FencedWriters = append([]string(nil), test.writers...)
+				return nil
+			}
+			err := guard.Assert(context.Background())
+			if test.accept {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("incomplete writer coverage accepted")
+			}
+			if _, _, err := guard.Begin(context.Background(), testIntent()); err == nil {
+				t.Fatal("new operation admitted with rejected coverage")
+			}
+			fixture.mu.Lock()
+			defer fixture.mu.Unlock()
+			for _, phase := range fixture.phases {
+				if phase == "begin" {
+					t.Fatal("native intent sent after coverage refusal")
+				}
+			}
+		})
+	}
+}
+
 func TestOwnershipIdentityDriftStopsFurtherAdmission(t *testing.T) {
 	for _, field := range []string{"resource", "epoch", "holder", "fence", "participants", "unexpected-pending"} {
 		t.Run(field, func(t *testing.T) {
