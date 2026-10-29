@@ -2,6 +2,13 @@ name: Web-R Book Verified Generation Publisher
 
 on:
   workflow_call:
+    outputs:
+      webr_publication_status:
+        description: Exact Web-R host observation status; noncomplete fails this workflow.
+        value: ${{ jobs.publish.outputs.webr_publication_status }}
+      webr_publication_complete:
+        description: True only after the exact selected Web-R publication was observed complete.
+        value: ${{ jobs.publish.outputs.webr_publication_complete }}
     secrets:
       STATGROUND_SQL_READ_TOKEN:
         required: true
@@ -19,6 +26,9 @@ permissions:
 
 jobs:
   publish:
+    outputs:
+      webr_publication_status: ${{ steps.webr_handoff.outputs.status || 'not_observed' }}
+      webr_publication_complete: ${{ steps.webr_handoff.outputs.complete || 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -34,7 +44,45 @@ jobs:
           sparse-checkout: docker-compose/50005_Clickhouse_Statground/webr_book_generation_publisher.py
           sparse-checkout-cone-mode: false
 
+      - name: Checkout immutable read-only host handoff source
+        uses: actions/checkout@v6
+        with:
+          repository: statground/Statground_Data_NAVER_Book
+          ref: fd04d2941d7b1dded06a05a3efb020a561c76219
+          path: .host-handoff/data
+          persist-credentials: false
+          fetch-depth: 1
+          sparse-checkout: scripts/read_book_host_publication.py
+          sparse-checkout-cone-mode: false
+
+      - name: Checkout immutable read-only SQL source
+        uses: actions/checkout@v6
+        with:
+          repository: statground/Statground_SQL
+          ref: 0913a89bf171dbc6a3b104b87795ce6ff8231d47
+          token: ${{ secrets.STATGROUND_SQL_READ_TOKEN }}
+          path: .host-handoff/statground-sql
+          persist-credentials: false
+          fetch-depth: 1
+          sparse-checkout: docker-compose/50005_Clickhouse_Statground/book_serving_generation_publisher.py
+          sparse-checkout-cone-mode: false
+
+      - name: Verify immutable read-only handoff inputs
+        run: |
+          set -euo pipefail
+          readonly data_root="$GITHUB_WORKSPACE/.host-handoff/data"
+          readonly sql_root="$GITHUB_WORKSPACE/.host-handoff/statground-sql"
+          test "$(git -C "$data_root" rev-parse HEAD)" = "fd04d2941d7b1dded06a05a3efb020a561c76219"
+          test "$(git -C "$sql_root" rev-parse HEAD)" = "0913a89bf171dbc6a3b104b87795ce6ff8231d47"
+          for entry in "$data_root:scripts/read_book_host_publication.py" "$sql_root:docker-compose/50005_Clickhouse_Statground/book_serving_generation_publisher.py"; do
+            root="${entry%%:*}"
+            relative="${entry#*:}"
+            test -f "$root/$relative" && test ! -L "$root/$relative"
+            test "$(git -C "$root" hash-object "$relative")" = "$(git -C "$root" rev-parse "HEAD:$relative")"
+          done
+
       - name: Publish verified Web-R Book generation
+        id: webr_handoff
         env:
           PUBLISHER_ENDPOINT: ${{ secrets.WEBR_BOOK_PUBLISHER_ENDPOINT }}
           PUBLISHER_USER: ${{ secrets.WEBR_BOOK_PUBLISHER_USER }}
@@ -55,10 +103,12 @@ jobs:
             echo "::error::Pinned Statground SQL publisher commit mismatch"
             exit 1
           }
-          test -f "$publisher" || {
+          test -f "$publisher" && test ! -L "$publisher" || {
             echo "::error::Pinned Web-R Book generation publisher is missing"
             exit 1
           }
+          readonly publisher_relative="docker-compose/50005_Clickhouse_Statground/webr_book_generation_publisher.py"
+          test "$(git -C "$sql_root" hash-object "$publisher_relative")" = "$(git -C "$sql_root" rev-parse "$expected_sql_commit:$publisher_relative")"
           test -n "$PUBLISHER_ENDPOINT" || {
             echo "::error::WEBR_BOOK_PUBLISHER_ENDPOINT secret is required"
             exit 1
@@ -110,8 +160,77 @@ jobs:
           PY
 
           unset PUBLISHER_ENDPOINT PUBLISHER_USER PUBLISHER_PASSWORD PUBLISHER_CA_PEM
-          python3 "$publisher" \
-            --transport http \
-            --config "$publisher_config" \
-            --timeout-seconds 120 \
-            publish
+          PUBLISHER_CONFIG="$publisher_config" python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          def fail():
+              raise SystemExit("Legacy Web-R host observation was refused")
+
+          def pairs(items):
+              value = {}
+              for key, item in items:
+                  if key in value:
+                      fail()
+                  value[key] = item
+              return value
+
+          root = Path(os.environ["GITHUB_WORKSPACE"])
+          command = [sys.executable, str(root / ".host-handoff/data/scripts/read_book_host_publication.py"),
+                     "--contract", "legacy", "--config", os.environ["PUBLISHER_CONFIG"],
+                     "--sql-source-root", str(root / ".host-handoff/statground-sql"),
+                     "--legacy-source-root", str(root / ".publisher/statground-sql")]
+          completed = subprocess.run(command, check=False, capture_output=True, text=True,
+                                     env={"PYTHONUNBUFFERED": "1"})
+          if completed.stderr or len(completed.stdout.encode("utf-8")) > 16384:
+              fail()
+          lines = completed.stdout.splitlines()
+          if len(lines) != 1:
+              fail()
+          try:
+              value = json.loads(lines[0], object_pairs_hook=pairs)
+          except (ValueError, TypeError):
+              fail()
+          keys = {"schema", "contract", "service", "status", "complete", "reason", "observed_state",
+                  "wire_ack_proved", "host_request_sent", "source_manifest_sha256", "content_sha256", "rows"}
+          if (type(value) is not dict or set(value) != keys
+                  or value["schema"] != "sg.book.host-publication-observation.v1"
+                  or value["contract"] != "legacy" or value["service"] != "webr"
+                  or value["status"] not in {"complete", "pending", "refused", "compatibility_unknown"}
+                  or type(value["complete"]) is not bool
+                  or value["complete"] != (value["status"] == "complete")
+                  or type(value["observed_state"]) is not bool
+                  or value["wire_ack_proved"] is not False or value["host_request_sent"] is not False
+                  or type(value["reason"]) is not str
+                  or value["reason"] not in {"observed_complete", "awaiting_authoritative_host_publication", "legacy_contract_not_observed", "source_not_ready", "expected_identity_mismatch", "incomplete_inventory", "authority_changed", "source_pin_or_custody", "readonly_request_refused", "budget_exhausted", "invalid_input", "observation_failed"}):
+              fail()
+          status, reason = value["status"], value["reason"]
+          if ((status == "complete" and reason != "observed_complete")
+                  or (status == "pending" and reason != "awaiting_authoritative_host_publication")
+                  or (status == "compatibility_unknown" and reason != "legacy_contract_not_observed")
+                  or (status == "refused" and reason in {"observed_complete", "awaiting_authoritative_host_publication", "legacy_contract_not_observed"})
+                  or value["observed_state"] != (status != "refused")):
+              fail()
+          for key in ("source_manifest_sha256", "content_sha256"):
+              if value[key] is not None and (type(value[key]) is not str or re.fullmatch("[0-9a-f]{64}", value[key]) is None):
+                  fail()
+          if value["rows"] is not None and (type(value["rows"]) is not int or not 0 < value["rows"] < 1 << 64):
+              fail()
+          if value["complete"] and (not value["observed_state"] or value["rows"] is None):
+              fail()
+          expected_exit = 0 if value["complete"] else 1 if value["status"] == "refused" else 2
+          if completed.returncode != expected_exit:
+              fail()
+          output = os.environ.get("GITHUB_OUTPUT")
+          if output:
+              with open(output, "a", encoding="utf-8") as handle:
+                  for key in ("status", "complete", "reason"):
+                      item = str(value[key]).lower() if key == "complete" else value[key]
+                      handle.write(key + "=" + item + "\n")
+          print(json.dumps(value, sort_keys=True, separators=(",", ":")))
+          raise SystemExit(0 if value["complete"] else 2)
+          PY

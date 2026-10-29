@@ -9,6 +9,13 @@ on:
         type: boolean
         default: false
   workflow_call:
+    outputs:
+      webr_publication_status:
+        description: Exact Web-R host observation status; noncomplete fails this workflow.
+        value: ${{ jobs.publish.outputs.webr_publication_status }}
+      webr_publication_complete:
+        description: True only after the exact selected Web-R publication was observed complete.
+        value: ${{ jobs.publish.outputs.webr_publication_complete }}
     secrets:
       STATGROUND_SQL_READ_TOKEN:
         required: true
@@ -39,6 +46,9 @@ concurrency:
 
 jobs:
   publish:
+    outputs:
+      webr_publication_status: ${{ steps.webr_handoff.outputs.status || 'not_observed' }}
+      webr_publication_complete: ${{ steps.webr_handoff.outputs.complete || 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -53,6 +63,43 @@ jobs:
           fetch-depth: 1
           sparse-checkout: docker-compose/50005_Clickhouse_Statground/book_serving_generation_publisher.py
           sparse-checkout-cone-mode: false
+
+      - name: Checkout immutable read-only host handoff source
+        uses: actions/checkout@v6
+        with:
+          repository: statground/Statground_Data_NAVER_Book
+          ref: fd04d2941d7b1dded06a05a3efb020a561c76219
+          path: .host-handoff/data
+          persist-credentials: false
+          fetch-depth: 1
+          sparse-checkout: scripts/read_book_host_publication.py
+          sparse-checkout-cone-mode: false
+
+      - name: Checkout immutable read-only SQL source
+        uses: actions/checkout@v6
+        with:
+          repository: statground/Statground_SQL
+          ref: 0913a89bf171dbc6a3b104b87795ce6ff8231d47
+          token: ${{ secrets.STATGROUND_SQL_READ_TOKEN }}
+          path: .host-handoff/statground-sql
+          persist-credentials: false
+          fetch-depth: 1
+          sparse-checkout: docker-compose/50005_Clickhouse_Statground/book_serving_generation_publisher.py
+          sparse-checkout-cone-mode: false
+
+      - name: Verify immutable read-only handoff inputs
+        run: |
+          set -euo pipefail
+          readonly data_root="$GITHUB_WORKSPACE/.host-handoff/data"
+          readonly sql_root="$GITHUB_WORKSPACE/.host-handoff/statground-sql"
+          test "$(git -C "$data_root" rev-parse HEAD)" = "fd04d2941d7b1dded06a05a3efb020a561c76219"
+          test "$(git -C "$sql_root" rev-parse HEAD)" = "0913a89bf171dbc6a3b104b87795ce6ff8231d47"
+          for entry in "$data_root:scripts/read_book_host_publication.py" "$sql_root:docker-compose/50005_Clickhouse_Statground/book_serving_generation_publisher.py"; do
+            root="${entry%%:*}"
+            relative="${entry#*:}"
+            test -f "$root/$relative" && test ! -L "$root/$relative"
+            test "$(git -C "$root" hash-object "$relative")" = "$(git -C "$root" rev-parse "HEAD:$relative")"
+          done
 
       - name: Prepare immutable single-profile runner
         run: |
@@ -242,6 +289,66 @@ jobs:
                   fail("publication row count differs from preflight")
               return receipt
 
+          def handoff_pairs(items):
+              value = {}
+              for key, item in items:
+                  if key in value:
+                      fail("host observation has duplicate fields")
+                  value[key] = item
+              return value
+
+
+          def validate_handoff(value, contract, preflight=None):
+              receipt = exact_keys(value, {
+                  "schema", "contract", "service", "status", "complete", "reason",
+                  "observed_state", "wire_ack_proved", "host_request_sent",
+                  "source_manifest_sha256", "content_sha256", "rows",
+              }, "host observation")
+              if (receipt["schema"] != "sg.book.host-publication-observation.v1"
+                      or receipt["contract"] != contract or receipt["service"] != "webr"
+                      or receipt["status"] not in {"complete", "pending", "refused", "compatibility_unknown"}
+                      or type(receipt["complete"]) is not bool
+                      or receipt["complete"] != (receipt["status"] == "complete")
+                      or type(receipt["observed_state"]) is not bool
+                      or receipt["wire_ack_proved"] is not False
+                      or receipt["host_request_sent"] is not False
+                      or type(receipt["reason"]) is not str
+                      or receipt["reason"] not in {"observed_complete", "awaiting_authoritative_host_publication", "legacy_contract_not_observed", "source_not_ready", "expected_identity_mismatch", "incomplete_inventory", "authority_changed", "source_pin_or_custody", "readonly_request_refused", "budget_exhausted", "invalid_input", "observation_failed"}):
+                  fail("host observation status is invalid")
+              status, reason = receipt["status"], receipt["reason"]
+              if ((status == "complete" and reason != "observed_complete")
+                      or (status == "pending" and reason != "awaiting_authoritative_host_publication")
+                      or (status == "compatibility_unknown" and (contract != "legacy" or reason != "legacy_contract_not_observed"))
+                      or (status == "refused" and reason in {"observed_complete", "awaiting_authoritative_host_publication", "legacy_contract_not_observed"})
+                      or receipt["observed_state"] != (status != "refused")):
+                  fail("host observation fields are inconsistent")
+              for key in ("source_manifest_sha256", "content_sha256"):
+                  if receipt[key] is not None:
+                      exact_digest(receipt[key], key)
+              if receipt["rows"] is not None:
+                  exact_uint(receipt["rows"], "host rows", positive=True)
+              if receipt["complete"]:
+                  if not receipt["observed_state"]:
+                      fail("host completion has no observed state")
+                  exact_digest(receipt["source_manifest_sha256"], "host manifest")
+                  exact_digest(receipt["content_sha256"], "host content")
+                  exact_uint(receipt["rows"], "host rows", positive=True)
+                  if preflight is not None and (
+                          receipt["content_sha256"] != preflight["content_sha256"]
+                          or receipt["rows"] != preflight["source_rows"]):
+                      fail("host observation differs from preflight")
+              return receipt
+
+
+          def handoff_outputs(receipt):
+              output = os.environ.get("GITHUB_OUTPUT")
+              if output:
+                  with open(output, "a", encoding="utf-8") as handle:
+                      handle.write("status=" + receipt["status"] + "\n")
+                      handle.write("complete=" + str(receipt["complete"]).lower() + "\n")
+                      handle.write("reason=" + receipt["reason"] + "\n")
+
+
           parser = argparse.ArgumentParser()
           parser.add_argument("--service", choices=tuple(USERS), required=True)
           parser.add_argument("--preflight-only", action="store_true")
@@ -334,16 +441,32 @@ jobs:
                   handle.flush()
                   os.fsync(handle.fileno())
 
-              command = [
-                  sys.executable,
-                  os.environ["BOOK_SERVING_PUBLISHER_PATH"],
-                  "--config",
-                  str(config_path),
-                  "--service",
-                  args.service,
-              ]
-              if args.preflight_only:
-                  command.append("--preflight-only")
+              host_readonly = args.service == "webr"
+              host_handoff = host_readonly and not args.preflight_only
+              if host_readonly:
+                  if host_handoff:
+                      preflight = validate_preflight(read_private_json(preflight_path), args.service)
+                  helper = Path(os.environ["BOOK_HOST_HANDOFF_PATH"])
+                  sql_root = Path(os.environ["BOOK_HOST_READONLY_SQL_ROOT"])
+                  if not helper.is_absolute() or not sql_root.is_absolute():
+                      fail("host handoff inputs are not absolute")
+                  command = [sys.executable, str(helper), "--contract", "public-v2",
+                             "--config", str(config_path), "--sql-source-root", str(sql_root)]
+                  if args.preflight_only:
+                      command.append("--preflight-only")
+                  else:
+                      command.extend(["--expected-json", str(preflight_path)])
+              else:
+                  command = [
+                      sys.executable,
+                      os.environ["BOOK_SERVING_PUBLISHER_PATH"],
+                      "--config",
+                      str(config_path),
+                      "--service",
+                      args.service,
+                  ]
+                  if args.preflight_only:
+                      command.append("--preflight-only")
               completed = subprocess.run(
                   command,
                   check=False,
@@ -351,7 +474,7 @@ jobs:
                   text=True,
                   env={"PYTHONUNBUFFERED": "1"},
               )
-              if completed.returncode != 0:
+              if completed.returncode != 0 and not host_handoff:
                   fail("pinned publisher blocked the selected profile")
               if completed.stderr or len(completed.stdout.encode("utf-8")) > 16384:
                   fail("pinned publisher emitted unexpected output")
@@ -359,16 +482,24 @@ jobs:
               if len(lines) != 1:
                   fail("pinned publisher did not emit one JSON receipt")
               try:
-                  raw_receipt = json.loads(lines[0])
+                  raw_receipt = json.loads(lines[0], object_pairs_hook=handoff_pairs) if host_readonly else json.loads(lines[0])
               except json.JSONDecodeError:
                   fail("pinned publisher receipt is not JSON")
               if args.preflight_only:
                   receipt = validate_preflight(raw_receipt, args.service)
+              elif host_handoff:
+                  receipt = validate_handoff(raw_receipt, "public-v2", preflight)
+                  expected_exit = 0 if receipt["complete"] else 1 if receipt["status"] == "refused" else 2
+                  if completed.returncode != expected_exit:
+                      fail("host observation exit status is inconsistent")
+                  handoff_outputs(receipt)
               else:
                   preflight = validate_preflight(read_private_json(preflight_path), args.service)
                   receipt = validate_publish(raw_receipt, args.service, preflight)
               write_private_json(receipt_path, receipt)
               print(json.dumps(receipt, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
+              if host_handoff and not receipt["complete"]:
+                  raise SystemExit(2)
           finally:
               config_path.unlink(missing_ok=True)
               ca_path.unlink(missing_ok=True)
@@ -377,6 +508,8 @@ jobs:
 
       - name: Preflight Web-R serving profile
         env:
+          BOOK_HOST_HANDOFF_PATH: ${{ github.workspace }}/.host-handoff/data/scripts/read_book_host_publication.py
+          BOOK_HOST_READONLY_SQL_ROOT: ${{ github.workspace }}/.host-handoff/statground-sql
           BOOK_SERVING_PUBLISHER_PATH: ${{ github.workspace }}/.publisher/statground-sql/docker-compose/50005_Clickhouse_Statground/book_serving_generation_publisher.py
           COORDINATOR_ENDPOINT: ${{ secrets.BOOK_SERVING_COORDINATOR_ENDPOINT }}
           PUBLISHER_USER: webr_book_serving_publisher
@@ -412,8 +545,11 @@ jobs:
         run: python3 "$RUNNER_TEMP/book-serving-single-profile.py" --service statground-provider --preflight-only
 
       - name: Publish Web-R serving profile
+        id: webr_handoff
         if: ${{ github.event_name == 'workflow_call' || inputs.publish == true }}
         env:
+          BOOK_HOST_HANDOFF_PATH: ${{ github.workspace }}/.host-handoff/data/scripts/read_book_host_publication.py
+          BOOK_HOST_READONLY_SQL_ROOT: ${{ github.workspace }}/.host-handoff/statground-sql
           BOOK_SERVING_PUBLISHER_PATH: ${{ github.workspace }}/.publisher/statground-sql/docker-compose/50005_Clickhouse_Statground/book_serving_generation_publisher.py
           COORDINATOR_ENDPOINT: ${{ secrets.BOOK_SERVING_COORDINATOR_ENDPOINT }}
           PUBLISHER_USER: webr_book_serving_publisher
