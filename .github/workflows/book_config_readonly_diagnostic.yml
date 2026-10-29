@@ -1,0 +1,71 @@
+name: Book configuration read-only diagnostic 20261030
+
+on:
+  push:
+    branches:
+      - codex/book-config-readonly-diagnostic-20261030
+    paths:
+      - .github/workflows/book_config_readonly_diagnostic.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: book-config-readonly-diagnostic-20261030
+  cancel-in-progress: false
+
+jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Inspect only fixed configuration metadata
+        shell: bash
+        env:
+          BOOK_WRITER_LEASE_CONFIG_JSON: ${{ secrets.BOOK_WRITER_LEASE_CONFIG_JSON }}
+          BOOK_WRITER_LEASE_TIDB_PASSWORD: ${{ secrets.BOOK_WRITER_LEASE_TIDB_PASSWORD }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+
+          def unique(items):
+              result = {}
+              for key, value in items:
+                  if key in result:
+                      raise ValueError("duplicate")
+                  result[key] = value
+              return result
+
+          def reject_constant(_value):
+              raise ValueError("nonfinite")
+
+          def observe(config, password):
+              result = {
+                  "schema": "webr.book.config-readonly-metadata.v1",
+                  "config_present": bool(config),
+                  "password_present": bool(password),
+                  "config_within_16KiB": len(config.encode("utf8")) <= 16384,
+                  "JSON_object": False,
+                  "known_config_schema": False,
+                  "password_env_matches_existing_known_key": False,
+                  "Book_admission": False,
+                  "DB_calls": 0,
+                  "operating_writes": 0,
+              }
+              if config and result["config_within_16KiB"]:
+                  try:
+                      value = json.loads(config, object_pairs_hook=unique,
+                                         parse_constant=reject_constant)
+                      result["JSON_object"] = type(value) is dict
+                      if result["JSON_object"]:
+                          result["known_config_schema"] = value.get("schema") == "sg.book.writer-lease.config.v1"
+                          result["password_env_matches_existing_known_key"] = value.get("password_env") == "BOOK_WRITER_LEASE_TIDB_PASSWORD"
+                  except (ValueError, TypeError, RecursionError, OverflowError):
+                      pass
+              return result
+
+          result = observe(os.environ.get("BOOK_WRITER_LEASE_CONFIG_JSON", ""),
+                           os.environ.get("BOOK_WRITER_LEASE_TIDB_PASSWORD", ""))
+          print("WEBR_BOOK_CONFIG_METADATA_V1 " + json.dumps(result, sort_keys=True, separators=(",", ":")))
+          PY
