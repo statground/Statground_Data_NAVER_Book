@@ -11,6 +11,13 @@ import sys
 SQL_COMMIT = "4c90b20f64027019e098d9b848e3e702b7ee24b0"
 HELPER_SHA256 = "064110bf82ddab9680a88ccf1c0a05f1ae5d6662cb37cc3ac6e8b189d5ba6e66"
 HELPER_RELATIVE = "docker-compose/50005_Clickhouse_Statground/book_shared_writer_lease.py"
+RUNNER_CA_TEMPLATE = "${RUNNER_TEMP}/book-writer-lease/ca.pem"
+PROVENANCE_SCHEMA = "statground.book-writer-runtime-config.v1"
+TEMPLATE_CONFIG_KEYS = frozenset((
+    "schema", "resource", "host", "port", "user", "password_env", "tls_ca_file",
+    "control_epoch", "activation_revision", "coverage_sha256", "lease_seconds",
+    "allow_private_tcp", "endpoint_pin",
+))
 
 class PreparationError(Exception):
     pass
@@ -26,6 +33,39 @@ def write_private(path, data, mode=0o600):
         stream.flush()
         os.fsync(stream.fileno())
 
+def resolve_runner_ca_template(config_bytes, config, runtime):
+    """Resolve only the explicit runner template; preserve legacy bytes exactly."""
+    if config.get("tls_ca_file") != RUNNER_CA_TEMPLATE:
+        return config_bytes, None
+    runner_temp = os.environ.get("RUNNER_TEMP", "")
+    require(os.environ.get("GITHUB_ACTIONS") == "true" and runner_temp
+            and "\n" not in runner_temp and "\r" not in runner_temp)
+    parent = Path(runner_temp)
+    require(parent.is_absolute() and runtime == parent / "book-writer-lease"
+            and parent.resolve(strict=True) == parent and parent.is_dir())
+    # Reject ambiguous JSON only in this new opt-in branch. Host preparation
+    # and already concrete runner paths retain their original exact-byte path.
+    def unique(items):
+        value = {}
+        for key, item in items:
+            require(key not in value)
+            value[key] = item
+        return value
+    try:
+        resolved = json.loads(config_bytes, object_pairs_hook=unique,
+                              parse_constant=lambda _: require(False))
+    except (ValueError, TypeError):
+        raise PreparationError("Book writer lease runtime configuration rejected") from None
+    require(isinstance(resolved, dict) and resolved == config and set(resolved) == TEMPLATE_CONFIG_KEYS
+            and resolved.get("allow_private_tcp") is False)
+    resolved["tls_ca_file"] = str(runtime / "ca.pem")
+    runtime_bytes = (json.dumps(resolved, sort_keys=True, separators=(",", ":"),
+                                allow_nan=False) + "\n").encode()
+    provenance = {"schema": PROVENANCE_SCHEMA, "ca_template": RUNNER_CA_TEMPLATE,
+                  "source_config_sha256": hashlib.sha256(config_bytes).hexdigest(),
+                  "runtime_config_sha256": hashlib.sha256(runtime_bytes).hexdigest()}
+    return runtime_bytes, provenance
+
 def prepare(sql_root, runtime, python, config_bytes, ca_bytes, password):
     require(runtime.is_absolute() and python.is_absolute() and "\n" not in str(runtime) and "\r" not in str(runtime))
     require(bool(password) and 0 < len(config_bytes) <= 65536)
@@ -38,6 +78,9 @@ def prepare(sql_root, runtime, python, config_bytes, ca_bytes, password):
     except (ValueError, TypeError):
         raise PreparationError("Book writer lease runtime configuration rejected") from None
     require(isinstance(config, dict) and config.get("password_env") == "BOOK_WRITER_LEASE_TIDB_PASSWORD")
+    config_bytes, provenance = resolve_runner_ca_template(config_bytes, config, runtime)
+    if provenance is not None:
+        config = json.loads(config_bytes)
     ca_path = runtime / "ca.pem"
     if config.get("tls_ca_file"):
         require(config["tls_ca_file"] == str(ca_path) and 0 < len(ca_bytes) <= 1048576)
@@ -47,6 +90,9 @@ def prepare(sql_root, runtime, python, config_bytes, ca_bytes, password):
     require(stat.S_IMODE(runtime.stat().st_mode) == 0o700 and not runtime.is_symlink())
     write_private(runtime / "helper.py", source, 0o700)
     write_private(runtime / "config.json", config_bytes)
+    if provenance is not None:
+        write_private(runtime / "config-provenance.json",
+                      (json.dumps(provenance, sort_keys=True, separators=(",", ":")) + "\n").encode())
     if ca_bytes:
         write_private(ca_path, ca_bytes)
     # Execute the same verified source bytes. The wrapper pins the SQL helper

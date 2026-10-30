@@ -89,5 +89,70 @@ class PrepareWriterLeaseTests(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             setup.prepare(self.sql, self.runtime, self.python, self.config(), b"", "fixture-only")
 
+class RunnerCATemplateTests(unittest.TestCase):
+    setUp = PrepareWriterLeaseTests.setUp
+
+    def source(self, **changes):
+        value = {"schema": "sg.book.writer-lease.config.v1",
+                 "resource": "statground-book-shared-writer-v1", "host": "203.0.113.10",
+                 "endpoint_pin": "203.0.113.10:51002",
+                 "port": 51002, "user": "book_writer_0123456789abcdef",
+                 "password_env": "BOOK_WRITER_LEASE_TIDB_PASSWORD",
+                 "tls_ca_file": setup.RUNNER_CA_TEMPLATE, "allow_private_tcp": False,
+                 "control_epoch": "11111111-1111-4111-8111-111111111111",
+                 "activation_revision": 1, "coverage_sha256": "a" * 64,
+                 "lease_seconds": 120}
+        value.update(changes)
+        return (json.dumps(value, indent=2) + "\n").encode()
+
+    def runner(self):
+        return patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "RUNNER_TEMP": str(self.root)})
+
+    def test_template_resolves_only_actual_runner_path_and_preserves_all_other_fields(self):
+        self.runtime = self.root / "book-writer-lease"
+        original = self.source()
+        with self.runner():
+            _, config_path = setup.prepare(self.sql, self.runtime, self.python, original, b"test-ca", "fixture-only")
+        result = json.loads(config_path.read_bytes())
+        expected = json.loads(original); expected["tls_ca_file"] = str(self.runtime / "ca.pem")
+        self.assertEqual(result, expected)
+        record = json.loads((self.runtime / "config-provenance.json").read_bytes())
+        self.assertEqual(record["source_config_sha256"], hashlib.sha256(original).hexdigest())
+        self.assertEqual(record["runtime_config_sha256"], hashlib.sha256(config_path.read_bytes()).hexdigest())
+        self.assertNotEqual(record["source_config_sha256"], record["runtime_config_sha256"])
+        self.assertEqual(stat.S_IMODE((self.runtime / "config-provenance.json").stat().st_mode), 0o600)
+
+    def test_template_requires_actual_runner_context_before_any_runtime_write(self):
+        self.runtime = self.root / "book-writer-lease"
+        for environment in ({"GITHUB_ACTIONS": "false", "RUNNER_TEMP": str(self.root)},
+                            {"GITHUB_ACTIONS": "true", "RUNNER_TEMP": "/a/different/root"}):
+            with self.subTest(environment=environment), patch.dict(os.environ, environment), self.assertRaises(setup.PreparationError):
+                setup.prepare(self.sql, self.runtime, self.python, self.source(), b"ca", "fixture-only")
+            self.assertFalse(self.runtime.exists())
+
+    def test_template_refuses_duplicate_fields_password_fields_and_nonfinite_numbers(self):
+        self.runtime = self.root / "book-writer-lease"
+        duplicate = self.source().replace(b'"port": 51002,', b'"port": 51002, "port": 51002,')
+        malformed = (duplicate, self.source(password="never-written"), self.source(lease_seconds=float("nan")))
+        for raw in malformed:
+            with self.runner(), self.assertRaises(setup.PreparationError):
+                setup.prepare(self.sql, self.runtime, self.python, raw, b"ca", "fixture-only")
+            self.assertFalse(self.runtime.exists())
+
+    def test_no_general_environment_or_path_expansion(self):
+        self.runtime = self.root / "book-writer-lease"
+        for template in ("$RUNNER_TEMP/book-writer-lease/ca.pem", "${HOME}/ca.pem",
+                         "${RUNNER_TEMP}/../ca.pem"):
+            with self.runner(), self.assertRaises(setup.PreparationError):
+                setup.prepare(self.sql, self.runtime, self.python, self.source(tls_ca_file=template), b"ca", "fixture-only")
+            self.assertFalse(self.runtime.exists())
+
+    def test_concrete_host_path_keeps_original_bytes_and_no_runner_provenance(self):
+        original = self.source(tls_ca_file=str(self.runtime / "ca.pem"))
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "false", "RUNNER_TEMP": "/unused"}):
+            _, path = setup.prepare(self.sql, self.runtime, self.python, original, b"ca", "fixture-only")
+        self.assertEqual(path.read_bytes(), original)
+        self.assertFalse((self.runtime / "config-provenance.json").exists())
+
 if __name__ == "__main__":
     unittest.main()

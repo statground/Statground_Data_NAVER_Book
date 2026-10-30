@@ -1,0 +1,51 @@
+name: Book coordinator read-only qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: Root-owned qualification request UUID
+        required: true
+        type: string
+      expected_source_config_sha256:
+        description: SHA256 of the reviewed password-free source configuration JSON
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: book-coordinator-readonly-qualification
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BOOK_WRITER_LEASE_TIDB_PASSWORD: ${{ secrets.BOOK_WRITER_LEASE_TIDB_PASSWORD }}
+    steps:
+      - name: Checkout the dispatched source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Prepare pinned helper and actual runner CA path
+        uses: ./.github/actions/book-writer-lease
+        with:
+          sql-read-token: ${{ secrets.STATGROUND_SQL_READ_TOKEN }}
+          config-json: ${{ secrets.BOOK_WRITER_LEASE_CONFIG_JSON }}
+          ca-pem: ${{ secrets.BOOK_WRITER_LEASE_CA_PEM }}
+      - name: Qualify route and runtime identity without writer operations
+        shell: bash
+        env:
+          BOOK_WRITER_LEASE_CONFIG_JSON: ${{ secrets.BOOK_WRITER_LEASE_CONFIG_JSON }}
+          BOOK_WRITER_LEASE_CA_PEM: ${{ secrets.BOOK_WRITER_LEASE_CA_PEM }}
+          QUALIFICATION_REQUEST_ID: ${{ inputs.request_id }}
+          QUALIFICATION_CONFIG_SHA256: ${{ inputs.expected_source_config_sha256 }}
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/book-writer-lease-python/bin/python" -B scripts/qualify_book_writer_coordinator.py --execute --request-id "$QUALIFICATION_REQUEST_ID" --expected-source-config-sha256 "$QUALIFICATION_CONFIG_SHA256"
+      # Prepared files follow the hosted runner's temporary-directory lifecycle.
+      # Do not delete preexisting paths after a failed exclusive preparation.
