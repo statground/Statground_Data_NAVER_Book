@@ -37,6 +37,7 @@ const replicaHealthSelectPrivilege = "SELECT(database, table, is_readonly, is_se
 type Writer struct {
 	Client *ch.Client
 	Cfg    Config
+	acks   *outboxACKScope
 }
 
 type Event struct {
@@ -94,7 +95,16 @@ func NewFromEnv(client *ch.Client, rawTable string) (*Writer, error) {
 			return nil, fmt.Errorf("invalid NAVER %s table identifier", name)
 		}
 	}
-	return &Writer{Client: client, Cfg: cfg}, nil
+	maximum, err := outboxACKBatchFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	writer := &Writer{Client: client, Cfg: cfg}
+	writer.acks, err = bindOutboxACKScope(writer, maximum)
+	if err != nil {
+		return nil, err
+	}
+	return writer, nil
 }
 
 func (w *Writer) Validate(ctx context.Context) error {
@@ -269,31 +279,31 @@ func (w *Writer) NewEvent(eventType, eventUUID, sourceURL, createdAt string, pay
 func (w *Writer) InsertRawRows(rows []map[string]any) error {
 	ctx, cancel := w.writeContext()
 	defer cancel()
-	return w.InsertRawRowsContext(ctx, rows)
+	return w.insertRowsWithOutbox(ctx, "insert_raw", w.Cfg.RawTable, w.Cfg.RawLocalTable, rows, false)
 }
 
 func (w *Writer) InsertRawRowsContext(ctx context.Context, rows []map[string]any) error {
-	return w.insertRowsWithOutbox(ctx, "insert_raw", w.Cfg.RawTable, w.Cfg.RawLocalTable, rows)
+	return w.insertRowsWithOutbox(ctx, "insert_raw", w.Cfg.RawTable, w.Cfg.RawLocalTable, rows, true)
 }
 
 func (w *Writer) InsertCollectLogRows(rows []map[string]any) error {
 	ctx, cancel := w.writeContext()
 	defer cancel()
-	return w.InsertCollectLogRowsContext(ctx, rows)
+	return w.insertRowsWithOutbox(ctx, "insert_collect_log", w.Cfg.CollectLogTable, w.Cfg.CollectLogLocalTable, rows, false)
 }
 
 func (w *Writer) InsertCollectLogRowsContext(ctx context.Context, rows []map[string]any) error {
-	return w.insertRowsWithOutbox(ctx, "insert_collect_log", w.Cfg.CollectLogTable, w.Cfg.CollectLogLocalTable, rows)
+	return w.insertRowsWithOutbox(ctx, "insert_collect_log", w.Cfg.CollectLogTable, w.Cfg.CollectLogLocalTable, rows, true)
 }
 
 func (w *Writer) InsertPublisherCacheRows(rows []map[string]any) error {
 	ctx, cancel := w.writeContext()
 	defer cancel()
-	return w.InsertPublisherCacheRowsContext(ctx, rows)
+	return w.insertRowsWithOutbox(ctx, "insert_publisher_cache", w.Cfg.PublisherCacheTable, w.Cfg.PublisherCacheLocal, rows, false)
 }
 
 func (w *Writer) InsertPublisherCacheRowsContext(ctx context.Context, rows []map[string]any) error {
-	return w.insertRowsWithOutbox(ctx, "insert_publisher_cache", w.Cfg.PublisherCacheTable, w.Cfg.PublisherCacheLocal, rows)
+	return w.insertRowsWithOutbox(ctx, "insert_publisher_cache", w.Cfg.PublisherCacheTable, w.Cfg.PublisherCacheLocal, rows, true)
 }
 
 func (w *Writer) writeContext() (context.Context, context.CancelFunc) {
@@ -316,7 +326,7 @@ func (w *Writer) WithTimeout(timeout time.Duration) *Writer {
 	} else {
 		clientCopy.HTTPClient = &http.Client{Timeout: timeout}
 	}
-	return &Writer{Client: &clientCopy, Cfg: w.Cfg}
+	return &Writer{Client: &clientCopy, Cfg: w.Cfg, acks: w.acks}
 }
 
 func producerHost() string {

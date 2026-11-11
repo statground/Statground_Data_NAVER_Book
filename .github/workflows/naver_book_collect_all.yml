@@ -43,6 +43,7 @@ jobs:
       DB_PREFLIGHT_REQUIRED: "true"
       DB_LOG_WRITE_TIMEOUT_SECONDS: "60"
       DB_LOG_BEST_EFFORT_TIMEOUT_SECONDS: "8"
+      NAVER_OUTBOX_ACK_BATCH_SIZE: "5"
       NAVER_OUTBOX_REPLAY_LIMIT: "25"
       NAVER_OUTBOX_MAX_REPLICA_QUEUE: "1000"
       NAVER_OUTBOX_MAX_REPLICA_DELAY_SECONDS: "900"
@@ -137,6 +138,7 @@ jobs:
 
       - name: Run unit tests
         env:
+          NAVER_OUTBOX_ACK_BATCH_SIZE: "1"
           GOPROXY: https://proxy.golang.org,direct
         run: go test -mod=mod ./...
 

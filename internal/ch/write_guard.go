@@ -45,8 +45,7 @@ func CloseWriterLease() error { return writerlease.Default().Close() }
 // RunWriterCommand drains admitted requests and reports release failures even
 // when the command itself completed successfully.
 func RunWriterCommand(run func() error) error {
-	err := run()
-	return errors.Join(err, CloseWriterLease())
+	return runWriterCommand(run, CloseWriterLease)
 }
 
 // sqlTokens inspects SQL only. JSONEachRow payloads are never interpreted as

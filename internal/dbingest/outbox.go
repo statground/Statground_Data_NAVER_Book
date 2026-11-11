@@ -50,12 +50,24 @@ func IsDurabilityError(err error) bool {
 	return errors.As(err, &target)
 }
 
-func (w *Writer) insertRowsWithOutbox(ctx context.Context, operation, targetTable, targetLocalTable string, rows []map[string]any) error {
+func (w *Writer) insertRowsWithOutbox(ctx context.Context, operation, targetTable, targetLocalTable string, rows []map[string]any, retainParent bool) (result error) {
 	if w == nil || w.Client == nil {
 		return &operationError{operation: operation, category: "clickhouse_contract", reason: "not_configured"}
 	}
 	if len(rows) == 0 {
 		return nil
+	}
+	if w.acks != nil {
+		release, err := w.acks.acquire(ctx, false)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if result != nil && w.acks.latched == nil {
+				w.acks.latched = result
+			}
+			release()
+		}()
 	}
 	canonicalRows, rowsJSON, token, err := encodeOutboxRows(targetTable, rows)
 	if err != nil {
@@ -70,6 +82,13 @@ func (w *Writer) insertRowsWithOutbox(ctx context.Context, operation, targetTabl
 	}
 	if err := w.Client.InsertJSONEachRowSynchronousContext(ctx, targetTable, canonicalRows, token); err != nil {
 		return writerOperationError(operation, err)
+	}
+	if w.acks != nil {
+		var clientTimeout time.Duration
+		if w.Client.HTTPClient != nil {
+			clientTimeout = w.Client.HTTPClient.Timeout
+		}
+		return w.acks.delivered(ctx, outboxUUID, clientTimeout, retainParent)
 	}
 	if err := w.markOutboxReplayed(ctx, []string{outboxUUID}); err != nil {
 		return writerOperationError("mark_outbox", err)
