@@ -38,7 +38,7 @@ func TestRealProducerCompletionRegistersOnlyConfirmedSourceAndPreservesFailure(t
 					}
 					var req bookpipeline.Registration
 					json.NewDecoder(r.Body).Decode(&req)
-					json.NewEncoder(w).Encode(bookpipeline.RegistrationResult{Schema: "book.pipeline.source-registration-result.v1", Status: "registered", Durable: true, Environment: "test", BatchID: req.BatchID, SourceVersion: req.SourceVersion, SourceSHA256: req.SourceSHA256, EventID: "01a00000-0000-7000-8000-000000000002", ReceiptReference: "/server/retained.json"})
+					json.NewEncoder(w).Encode(bookpipeline.RegistrationResult{Schema: "book.pipeline.source-registration-result.v1", Status: "registered", Durable: true, Environment: "test", BatchID: req.BatchID, SourceVersion: req.SourceVersion, SourceSHA256: req.SourceSHA256, EventID: strings.Repeat("c", 64), ReceiptReference: "/server/retained.json"})
 					return
 				}
 				// Explicit local ClickHouse transport model; actual producer function

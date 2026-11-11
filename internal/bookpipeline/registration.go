@@ -182,7 +182,7 @@ type RegistrationResult struct {
 }
 
 func (r RegistrationResult) matches(request Registration) bool {
-	return r.Schema == "book.pipeline.source-registration-result.v1" && r.Status == "registered" && r.Durable && r.Environment == request.Environment && r.BatchID == request.BatchID && r.SourceVersion == request.SourceVersion && r.SourceSHA256 == request.SourceSHA256 && nonzeroUUID(r.EventID) && filepath.IsAbs(r.ReceiptReference) && filepath.Clean(r.ReceiptReference) == r.ReceiptReference
+	return r.Schema == "book.pipeline.source-registration-result.v1" && r.Status == "registered" && r.Durable && r.Environment == request.Environment && r.BatchID == request.BatchID && r.SourceVersion == request.SourceVersion && r.SourceSHA256 == request.SourceSHA256 && digest.MatchString(r.EventID) && r.EventID != strings.Repeat("0", 64) && filepath.IsAbs(r.ReceiptReference) && filepath.Clean(r.ReceiptReference) == r.ReceiptReference
 }
 
 // Register persists the immutable receipt and exact pending request before its

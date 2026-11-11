@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"statground_naver_book_go/internal/bookpipeline"
 )
@@ -14,6 +17,63 @@ import (
 func testJob() bookpipeline.RefreshJob {
 	r := sourceReceipt()
 	return bookpipeline.RefreshJob{Schema: "book.pipeline.refresh-request.v1", JobID: strings.Repeat("a", 64), Environment: "test", RunUUID: r.RunUUID, BatchID: r.RunUUID, SourceID: "kakao.collection", SourceVersion: strings.Repeat("b", 64), SourceSHA256: strings.Repeat("b", 64), SourceBytes: 250, SourceReference: "/retained/source.json", TransformVersion: "native-book-refresh.v1", AuthorityRevision: 1, OwnerFence: 7}
+}
+
+type emptyTargetNative struct{ *nativeFake }
+
+func (f emptyTargetNative) QueryJSONEachRowContext(ctx context.Context, q string) ([]map[string]any, error) {
+	if strings.Contains(q, "AS generation_epoch FROM ") {
+		return []map[string]any{{"row_count": 0, "generation_epoch": 0}}, nil
+	}
+	return f.nativeFake.QueryJSONEachRowContext(ctx, q)
+}
+
+func TestActualGoResultAcceptedBySQLValidatorABI(t *testing.T) {
+	sql := os.Getenv("BOOK_PIPELINE_SQL_SOURCE")
+	if sql == "" {
+		t.Skip("explicit reviewed SQL source root not supplied")
+	}
+	for _, empty := range []bool{false, true} {
+		t.Run(fmt.Sprint(empty), func(t *testing.T) {
+			dir := privateTestDir(t)
+			result := filepath.Join(dir, "result.json")
+			jobPath := filepath.Join(dir, "job.json")
+			receiptPath := filepath.Join(dir, "source.json")
+			r := sourceReceipt()
+			raw, _ := json.Marshal(r)
+			os.WriteFile(receiptPath, raw, 0600)
+			job := testJob()
+			job.SourceReference = receiptPath
+			job.SourceSHA256 = bookpipeline.SHA(raw)
+			job.SourceVersion = job.SourceSHA256
+			job.SourceBytes = len(raw)
+			jobRaw, _ := json.Marshal(job)
+			os.WriteFile(jobPath, jobRaw, 0600)
+			var native refreshClient = fakeNative()
+			if empty {
+				native = emptyTargetNative{fakeNative()}
+			}
+			if err := executeJob(context.Background(), native, r, job, func(context.Context, refreshStage) error { return nil }, 0, result); err != nil {
+				t.Fatal(err)
+			}
+			script := `import sys,json
+sys.path.insert(0,sys.argv[1])
+from book_pipeline.model import validate_result,receipt
+with open(sys.argv[2],'rb') as f:result=json.load(f)
+with open(sys.argv[3],'rb') as f:job=json.load(f)
+with open(sys.argv[4],'rb') as f:source=receipt(f.read())
+validate_result(result,job,source_watermark_millis=source['latest_inserted_millis'])
+assert result['publication_verified'] is False
+print('validated_actual_Go_result')
+`
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			output, err := exec.CommandContext(ctx, "python3", "-I", "-B", "-c", script, sql, result, jobPath, receiptPath).CombinedOutput()
+			if err != nil || strings.TrimSpace(string(output)) != "validated_actual_Go_result" {
+				t.Fatalf("SQL actual Go-result contract: %v %s", err, output)
+			}
+		})
+	}
 }
 
 func TestWorkerActualRefreshCallableWritesFourRealReadbacksOnly(t *testing.T) {

@@ -31,7 +31,7 @@ func profile(dir, endpoint string) Profile {
 }
 
 func answer(request Registration) RegistrationResult {
-	return RegistrationResult{Schema: "book.pipeline.source-registration-result.v1", Status: "registered", Duplicate: false, Durable: true, Environment: request.Environment, BatchID: request.BatchID, SourceVersion: request.SourceVersion, SourceSHA256: request.SourceSHA256, EventID: "01a00000-0000-7000-8000-000000000002", ReceiptReference: "/retained/test/" + request.SourceSHA256 + ".json"}
+	return RegistrationResult{Schema: "book.pipeline.source-registration-result.v1", Status: "registered", Duplicate: false, Durable: true, Environment: request.Environment, BatchID: request.BatchID, SourceVersion: request.SourceVersion, SourceSHA256: request.SourceSHA256, EventID: strings.Repeat("c", 64), ReceiptReference: "/retained/test/" + request.SourceSHA256 + ".json"}
 }
 
 func TestRegisterRetainsBeforeAuthenticatedHTTPAndReusesDurableAck(t *testing.T) {
@@ -78,7 +78,7 @@ func TestRegisterRetainsBeforeAuthenticatedHTTPAndReusesDurableAck(t *testing.T)
 }
 
 func TestFailureRedirectAndCancellationPreservePendingWithoutRetry(t *testing.T) {
-	for _, kind := range []string{"failure", "redirect", "wrong_hash", "nil_event", "duplicate_key", "cancel"} {
+	for _, kind := range []string{"failure", "redirect", "wrong_hash", "nil_event", "zero_event_hash", "duplicate_key", "cancel"} {
 		t.Run(kind, func(t *testing.T) {
 			dir := privateTestDir(t)
 			path, raw := receiptFile(t, dir)
@@ -100,6 +100,10 @@ func TestFailureRedirectAndCancellationPreservePendingWithoutRetry(t *testing.T)
 				case "nil_event":
 					v := answer(req)
 					v.EventID = "00000000-0000-0000-0000-000000000000"
+					json.NewEncoder(w).Encode(v)
+				case "zero_event_hash":
+					v := answer(req)
+					v.EventID = strings.Repeat("0", 64)
 					json.NewEncoder(w).Encode(v)
 				case "duplicate_key":
 					w.Write([]byte(`{"schema":"book.pipeline.source-registration-result.v1","schema":"other"}`))
