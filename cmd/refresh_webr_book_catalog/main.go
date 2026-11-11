@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"statground_naver_book_go/internal/bookpipeline"
 	"statground_naver_book_go/internal/ch"
 	"statground_naver_book_go/internal/envx"
 	"statground_naver_book_go/internal/util"
@@ -37,6 +38,13 @@ func main() {
 }
 
 func run() (runErr error) {
+	mode, modeErr := bookpipeline.Mode()
+	if modeErr != nil {
+		return modeErr
+	}
+	if mode == "broker" {
+		return errors.New("book broker mode requires the admitted refresh worker; legacy refresh disabled")
+	}
 	if value := strings.ToLower(envx.String("BOOK_REFRESH_VERIFY_ONLY", "")); value == "true" || value == "1" {
 		client, err := ch.NewFromEnv()
 		if err != nil {

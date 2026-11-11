@@ -3,13 +3,18 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
+	"statground_naver_book_go/internal/bookpipeline"
 	"statground_naver_book_go/internal/bookrefreshreceipt"
 	"statground_naver_book_go/internal/ch"
 	"statground_naver_book_go/internal/envx"
@@ -44,7 +49,42 @@ func main() {
 }
 
 func run() error {
-	receipt, err := bookrefreshreceipt.Read(strings.TrimSpace(os.Getenv("KAKAO_COLLECTION_RECEIPT_FILE")))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return runArgs(ctx, os.Args[1:])
+}
+
+func runArgs(parent context.Context, args []string) error {
+	flags := flag.NewFlagSet("request_book_refresh", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	jobPath := flags.String("job-json", "", "private authoritative job")
+	resultPath := flags.String("result", "", "append-only verified result")
+	if flags.Parse(args) != nil || flags.NArg() != 0 || (*jobPath == "") != (*resultPath == "") {
+		return errors.New("book refresh invalid job arguments")
+	}
+	mode, err := bookpipeline.Mode()
+	if err != nil {
+		return err
+	}
+	if mode == "broker" && *jobPath == "" {
+		return errors.New("book refresh broker job required; direct refresh disabled")
+	}
+	if *jobPath != "" && mode != "broker" {
+		return errors.New("book refresh broker mode required")
+	}
+	var job bookpipeline.RefreshJob
+	var receipt bookrefreshreceipt.Receipt
+	if *jobPath != "" {
+		job, receipt, err = bookpipeline.ReadJob(*jobPath)
+		if err != nil {
+			return err
+		}
+		if err = bookpipeline.ResultAvailable(*resultPath); err != nil {
+			return err
+		}
+	} else {
+		receipt, err = bookrefreshreceipt.Read(strings.TrimSpace(os.Getenv("KAKAO_COLLECTION_RECEIPT_FILE")))
+	}
 	if err != nil {
 		return err
 	}
@@ -52,7 +92,7 @@ func run() error {
 	if seconds < 1 || seconds > 1800 {
 		return errors.New("invalid book native refresh timeout")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(seconds)*time.Second)
+	ctx, cancel := context.WithTimeout(parent, time.Duration(seconds)*time.Second)
 	defer cancel()
 	client, err := ch.NewFromEnv()
 	if err != nil {
@@ -62,7 +102,27 @@ func run() error {
 	if err := client.ValidateDirectEndpointHostnameContext(ctx, envx.String("CLICKHOUSE_DIRECT_ENDPOINT_HOSTNAME", "")); err != nil {
 		return err
 	}
+	if *jobPath != "" {
+		return executeJob(ctx, client, receipt, job, runPressureGate, time.Second, *resultPath)
+	}
 	return requestRefreshes(ctx, client, receipt, runPressureGate, time.Second)
+}
+
+func executeJob(ctx context.Context, client refreshClient, receipt bookrefreshreceipt.Receipt, job bookpipeline.RefreshJob, gate pressureGate, poll time.Duration, resultPath string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if job.Validate() != nil || job.RunUUID != receipt.RunUUID {
+		return errors.New("book refresh job binding invalid")
+	}
+	if err := bookpipeline.ResultAvailable(resultPath); err != nil {
+		return err
+	}
+	var observed []bookpipeline.StageResult
+	if err := requestRefreshesObserved(ctx, client, receipt, gate, poll, func(row bookpipeline.StageResult) { observed = append(observed, row) }); err != nil {
+		return err
+	}
+	return bookpipeline.WriteResult(resultPath, bookpipeline.Result(job, observed))
 }
 
 // This command requests existing DB-owned native jobs. It never creates a
@@ -70,6 +130,13 @@ func run() error {
 // Keeper/native MV scheduling remains the sole execution owner. The separate
 // manual-maintenance command still requires its durable writer lease.
 func requestRefreshes(ctx context.Context, client refreshClient, receipt bookrefreshreceipt.Receipt, gate pressureGate, poll time.Duration) error {
+	return requestRefreshesObserved(ctx, client, receipt, gate, poll, nil)
+}
+
+func requestRefreshesObserved(ctx context.Context, client refreshClient, receipt bookrefreshreceipt.Receipt, gate pressureGate, poll time.Duration, observe func(bookpipeline.StageResult)) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := receipt.ValidateCompleted(); err != nil {
 		return err
 	}
@@ -79,6 +146,9 @@ func requestRefreshes(ctx context.Context, client refreshClient, receipt bookref
 	}
 	required := max(receipt.StartedMillis, receipt.LatestInsertedMillis)
 	for _, stage := range stages {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		state, err := readState(ctx, client, stage.View)
 		if err != nil {
 			return err
@@ -148,6 +218,9 @@ func requestRefreshes(ctx context.Context, client refreshClient, receipt bookref
 			return errors.New("book native refresh target generation invalid")
 		}
 		fmt.Printf("book_native_refresh view=%s source_watermark_millis=%d refresh_started_millis=%d refresh_success_millis=%d target_rows=%d target_generation_millis=%d publication=unverified\n", stage.View, receipt.LatestInsertedMillis, state.Started, state.Success, rowCount, generation)
+		if observe != nil {
+			observe(bookpipeline.StageResult{View: stage.View, Target: stage.Target, SourceWatermarkMillis: required, RefreshStartedMillis: state.Started, RefreshSuccessMillis: state.Success, TargetRows: rowCount, TargetGenerationMillis: generation, Verified: true})
+		}
 		required = state.Success
 	}
 	fmt.Println("book_native_refresh status=completed refresh_verified=true publication=unverified")

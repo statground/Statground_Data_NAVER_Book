@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"statground_naver_book_go/internal/bookpipeline"
 	"statground_naver_book_go/internal/bookrefreshreceipt"
 	"statground_naver_book_go/internal/ch"
 	"statground_naver_book_go/internal/envx"
@@ -82,6 +83,18 @@ func main() {
 }
 
 func run() error {
+	pipelineMode, err := bookpipeline.Mode()
+	if err != nil {
+		return err
+	}
+	if pipelineMode == "broker" {
+		if strings.TrimSpace(os.Getenv("KAKAO_COLLECTION_RECEIPT_FILE")) == "" {
+			return &safeError{category: "configuration", stage: "pipeline_receipt"}
+		}
+		if _, err := bookpipeline.LoadProfile(); err != nil {
+			return err
+		}
+	}
 	runKind := strings.ToLower(strings.TrimSpace(envx.String("KAKAO_RUN_KIND", "manual")))
 	if runKind == "scheduled" && !boolEnv("KAKAO_BOOK_SCHEDULE_ENABLED", false) {
 		fmt.Println("provider=kakao status=schedule_disabled")
@@ -313,6 +326,19 @@ func writeCollectionReceipt(ctx context.Context, store *kakaostore.ClickHouseSto
 	}
 	if err := bookrefreshreceipt.Write(path, bookrefreshreceipt.Receipt{Version: 1, RunUUID: runUUID, State: "completed", StartedMillis: started, Inserted: summary.total.Inserted, LatestInsertedMillis: confirmed, CompletedMillis: completed}); err != nil {
 		return &safeError{category: "publication_receipt", stage: "write_collection_receipt"}
+	}
+	mode, err := bookpipeline.Mode()
+	if err != nil {
+		return err
+	}
+	if mode == "broker" {
+		profile, err := bookpipeline.LoadProfile()
+		if err != nil {
+			return err
+		}
+		if _, err := bookpipeline.Register(ctx, profile, path); err != nil {
+			return &safeError{category: "pipeline_registration", stage: "pending_durable_registration"}
+		}
 	}
 	fmt.Printf("provider=kakao source_confirmed=true source_rows=%d source_watermark_millis=%d collection_started_millis=%d publication=unverified\n", summary.total.Inserted, confirmed, started)
 	return nil
