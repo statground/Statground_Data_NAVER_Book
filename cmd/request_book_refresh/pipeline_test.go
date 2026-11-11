@@ -33,13 +33,16 @@ func TestActualGoResultAcceptedBySQLValidatorABI(t *testing.T) {
 	if sql == "" {
 		t.Skip("explicit reviewed SQL source root not supplied")
 	}
-	for _, empty := range []bool{false, true} {
-		t.Run(fmt.Sprint(empty), func(t *testing.T) {
+	for _, fixture := range []struct{ emptyTarget, emptySource bool }{{}, {emptyTarget: true}, {emptySource: true}} {
+		t.Run(fmt.Sprintf("emptyTarget=%t/emptySource=%t", fixture.emptyTarget, fixture.emptySource), func(t *testing.T) {
 			dir := privateTestDir(t)
 			result := filepath.Join(dir, "result.json")
 			jobPath := filepath.Join(dir, "job.json")
 			receiptPath := filepath.Join(dir, "source.json")
 			r := sourceReceipt()
+			if fixture.emptySource {
+				r.Inserted, r.LatestInsertedMillis = 0, 0
+			}
 			raw, _ := json.Marshal(r)
 			os.WriteFile(receiptPath, raw, 0600)
 			job := testJob()
@@ -49,9 +52,13 @@ func TestActualGoResultAcceptedBySQLValidatorABI(t *testing.T) {
 			job.SourceBytes = len(raw)
 			jobRaw, _ := json.Marshal(job)
 			os.WriteFile(jobPath, jobRaw, 0600)
-			var native refreshClient = fakeNative()
-			if empty {
-				native = emptyTargetNative{fakeNative()}
+			fake := fakeNative()
+			if fixture.emptySource {
+				fake.confirmedRows, fake.confirmedLatest = 0, 0
+			}
+			var native refreshClient = fake
+			if fixture.emptyTarget {
+				native = emptyTargetNative{fake}
 			}
 			if err := executeJob(context.Background(), native, r, job, func(context.Context, refreshStage) error { return nil }, 0, result); err != nil {
 				t.Fatal(err)
@@ -62,7 +69,7 @@ from book_pipeline.model import validate_result,receipt
 with open(sys.argv[2],'rb') as f:result=json.load(f)
 with open(sys.argv[3],'rb') as f:job=json.load(f)
 with open(sys.argv[4],'rb') as f:source=receipt(f.read())
-validate_result(result,job,source_watermark_millis=source['latest_inserted_millis'])
+validate_result(result,job,source_watermark_millis=max(source['started_millis'],source['latest_inserted_millis']))
 assert result['publication_verified'] is False
 print('validated_actual_Go_result')
 `
