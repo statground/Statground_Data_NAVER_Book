@@ -1,0 +1,43 @@
+name: Google Books Inbound Receipt
+
+on:
+  workflow_dispatch:
+    inputs:
+      isbn:
+        description: ISBN for one public Google Books lookup
+        type: string
+        required: true
+  schedule:
+    - cron: '11 3 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: google-books-inbound-receipt
+  cancel-in-progress: false
+
+jobs:
+  inbound:
+    if: github.event_name == 'workflow_dispatch' || vars.GOOGLE_BOOKS_INBOUND_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Check Google Books receipt contract
+        run: go test ./cmd/google_books_inbound
+      - name: Fetch one public bibliography receipt
+        env:
+          GOOGLE_BOOKS_API_KEY: ${{ secrets.GOOGLE_BOOKS_API_KEY }}
+          GOOGLE_BOOKS_INBOUND_ISBN: ${{ inputs.isbn || vars.GOOGLE_BOOKS_INBOUND_ISBN }}
+        run: go run ./cmd/google_books_inbound -isbn "$GOOGLE_BOOKS_INBOUND_ISBN" > "$RUNNER_TEMP/google-books-inbound.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: google-books-inbound-receipt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/google-books-inbound.json
+          if-no-files-found: error
+          retention-days: 14
