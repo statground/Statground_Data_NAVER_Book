@@ -263,10 +263,14 @@ func FromEnv(ctx context.Context, scope string) ([]Candidate, string, error) {
 	filtered := []Candidate{}
 	snapshot := ""
 	for _, c := range pool {
-		if validCandidate(c) {
-			filtered = append(filtered, c)
-			snapshot = c.SnapshotID
+		if !validCandidate(c) {
+			continue
 		}
+		if snapshot != "" && snapshot != c.SnapshotID {
+			return nil, "", errors.New("keyword_pool_snapshot_mismatch")
+		}
+		snapshot = c.SnapshotID
+		filtered = append(filtered, c)
 	}
 	if len(filtered) == 0 {
 		return nil, "", errors.New("keyword_pool_empty")
@@ -278,7 +282,8 @@ func publishedPool(ctx context.Context, scope string) ([]Candidate, error) {
 	// Published scopes contain at most 2,000 rows. Read the marker-backed pool
 	// separately from cooldowns so nested Distributed reads do not share one
 	// execution budget. An oversized pool must defer rather than filter a prefix.
-	sql := "SELECT keyword,normalized_word,language,sources,confidence,snapshot_id,scope,count() OVER () AS pool_count,toUnixTimestamp(now()) AS cooldown_reference FROM Data_Content_Lexicon.keyword_candidate_pool_latest WHERE scope=" + literal(scope) + " ORDER BY cityHash64(normalized_word," + literal(RunID()) + ") LIMIT 2000 FORMAT JSON"
+	// Select shuffles the complete verified pool using the stable run seed.
+	sql := "SELECT keyword,normalized_word,language,sources,confidence,snapshot_id,scope,count() OVER () AS pool_count,toUnixTimestamp(now()) AS cooldown_reference FROM Data_Content_Lexicon.keyword_candidate_pool_latest WHERE scope=" + literal(scope) + " ORDER BY normalized_word,language LIMIT 2000 FORMAT JSON"
 	data, e := request(ctx, sql, nil, "")
 	if e != nil {
 		return nil, e
@@ -300,7 +305,12 @@ func publishedPool(ctx context.Context, scope string) ([]Candidate, error) {
 	words := []string{}
 	wordSet := map[string]bool{}
 	var reference uint64
+	var snapshot string
 	for _, row := range envelope.Data {
+		if row.Scope != scope || !snapshotTag.MatchString(row.SnapshotID) || (snapshot != "" && snapshot != row.SnapshotID) {
+			return nil, errors.New("keyword_pool_snapshot_mismatch")
+		}
+		snapshot = row.SnapshotID
 		count, ce := strconv.ParseUint(row.PoolCount.String(), 10, 64)
 		cutoff, te := strconv.ParseUint(row.CooldownReference.String(), 10, 32)
 		if ce != nil || count > 2000 || count != uint64(len(envelope.Data)) || te != nil || cutoff == 0 || (reference != 0 && reference != cutoff) {
