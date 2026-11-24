@@ -76,7 +76,12 @@ func RunID() string {
 	return processID
 }
 func validScope(s string) bool {
-	return s == "kakao-book" || s == "gmarket" || s == "kurly" || s == "r-youtube"
+	switch s {
+	case "kakao-book", "gmarket", "kurly", "r-youtube", "adpick-travel", "adpick-services":
+		return true
+	default:
+		return false
+	}
 }
 func literal(s string) string {
 	return "'" + strings.ReplaceAll(strings.ReplaceAll(s, "\\", "\\\\"), "'", "\\'") + "'"
@@ -628,6 +633,7 @@ func deliverPending(ctx context.Context, path string) error {
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	expected := []deliveryRow{}
 	keys := []string{}
+	insertTable := ""
 	for decoder.More() {
 		var row deliveryRow
 		if decoder.Decode(&row) != nil || !validSelection(row.Selection) || !safeTag.MatchString(row.Outcome) {
@@ -639,6 +645,14 @@ func deliverPending(ctx context.Context, path string) error {
 		if _, e := strconv.ParseUint(row.ResultCount.String(), 10, 64); e != nil {
 			return errors.New("keyword_pending_corrupt")
 		}
+		table := "Data_Content_Lexicon.keyword_selection_log"
+		if row.Scope == "adpick-travel" || row.Scope == "adpick-services" {
+			table += "_adpick"
+		}
+		if insertTable != "" && insertTable != table {
+			return errors.New("keyword_pending_mixed_insert_targets")
+		}
+		insertTable = table
 		expected = append(expected, row)
 		keys = append(keys, "("+literal(row.Scope)+","+literal(row.RunID)+","+literal(row.NormalizedWord)+","+literal(row.Origin)+")")
 	}
@@ -648,7 +662,7 @@ func deliverPending(ctx context.Context, path string) error {
 	if e := writeGate(ctx); e != nil {
 		return e
 	}
-	if _, e := request(ctx, "INSERT INTO Data_Content_Lexicon.keyword_selection_log FORMAT JSONEachRow", body, digest(body)); e != nil {
+	if _, e := request(ctx, "INSERT INTO "+insertTable+" FORMAT JSONEachRow", body, digest(body)); e != nil {
 		return e
 	}
 	// Reusing the source column name as an aggregate alias makes ClickHouse
