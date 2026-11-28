@@ -65,6 +65,9 @@ type receipt struct {
 	ArchiveBytes   int64    `json:"archive_bytes"`
 	ArchiveSHA256  string   `json:"archive_sha256,omitempty"`
 	EditionsSHA256 string   `json:"editions_jsonl_sha256,omitempty"`
+	CatalogSample  string   `json:"catalog_sample"`
+	CatalogSource  string   `json:"catalog_source,omitempty"`
+	CatalogISBNs   int      `json:"catalog_isbn_count"`
 	RowsScanned    int      `json:"rows_scanned"`
 	Editions       int      `json:"matched_editions"`
 	RequestedISBNs []string `json:"requested_isbn_13"`
@@ -112,6 +115,9 @@ func scanDump(source io.Reader, output io.Writer, seen map[string]bool, report *
 				return nil
 			}
 			continue
+		}
+		if report.RowsScanned%1000000 == 0 {
+			fmt.Fprintf(os.Stderr, "Open Library scan: rows=%d matched_editions=%d\n", report.RowsScanned, report.Editions)
 		}
 
 		var matches []string
@@ -203,7 +209,8 @@ func capture(dir, input string, probe bool) error {
 	if len(snapshot) != 2 || path.Base(path.Dir(res.Request.URL.Path)) != "ol_dump_"+snapshot[1] {
 		return fmt.Errorf("unexpected editions snapshot URL")
 	}
-	if _, err := time.Parse(time.DateOnly, snapshot[1]); err != nil {
+	snapshotDate, err := time.Parse(time.DateOnly, snapshot[1])
+	if err != nil {
 		return err
 	}
 	size := res.ContentLength
@@ -223,6 +230,15 @@ func capture(dir, input string, probe bool) error {
 		Status: "complete", SnapshotDate: snapshot[1], ArchiveBytes: size,
 		SourceURL:      "https://archive.org/download/ol_dump_" + snapshot[1] + "/" + snapshot[0],
 		RequestedISBNs: make([]string, 0, len(seen)), MatchedISBNs: []string{},
+	}
+	address, catalogISBNs, err := currentCatalogISBNs(snapshotDate)
+	if err != nil {
+		report.CatalogSample = "unavailable"
+	} else {
+		report.CatalogSample, report.CatalogSource, report.CatalogISBNs = "sampled", address, len(catalogISBNs)
+		for isbn := range catalogISBNs {
+			seen[isbn] = false
+		}
 	}
 	hash := sha256.New()
 	compressed := &io.LimitedReader{R: res.Body, N: size + 1}
