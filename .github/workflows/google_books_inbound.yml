@@ -19,23 +19,55 @@ concurrency:
 
 jobs:
   inbound:
-    if: github.event_name == 'workflow_dispatch' || vars.GOOGLE_BOOKS_INBOUND_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - name: Report lookup readiness
+        id: admission
+        shell: bash
+        env:
+          GOOGLE_BOOKS_INBOUND_ENABLED: ${{ vars.GOOGLE_BOOKS_INBOUND_ENABLED }}
+          GOOGLE_BOOKS_INBOUND_ISBN: ${{ inputs.isbn || vars.GOOGLE_BOOKS_INBOUND_ISBN }}
+          GOOGLE_BOOKS_API_KEY: ${{ secrets.GOOGLE_BOOKS_API_KEY }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == schedule && "$GOOGLE_BOOKS_INBOUND_ENABLED" != true ]]; then
+            echo 'Scheduled lookup disabled. No provider request was sent.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          missing=()
+          if [[ -z "${GOOGLE_BOOKS_INBOUND_ISBN//[[:space:]]/}" ]]; then
+            missing+=(GOOGLE_BOOKS_INBOUND_ISBN)
+          fi
+          if [[ -z "${GOOGLE_BOOKS_API_KEY//[[:space:]]/}" ]]; then
+            missing+=(GOOGLE_BOOKS_API_KEY)
+          fi
+          if (( ${#missing[@]} > 0 )); then
+            printf 'Google Books lookup blocked. Missing configuration: %s\n' "${missing[*]}" >> "$GITHUB_STEP_SUMMARY"
+            printf '::error::Google Books lookup blocked. Missing configuration: %s\n' "${missing[*]}"
+            exit 1
+          fi
+
+          echo 'lookup=true' >> "$GITHUB_OUTPUT"
+          echo 'One Google Books ISBN lookup admitted. This workflow records an Inbound receipt.' >> "$GITHUB_STEP_SUMMARY"
+      - if: steps.admission.outputs.lookup == 'true'
+        uses: actions/checkout@v6
+      - if: steps.admission.outputs.lookup == 'true'
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
       - name: Check Google Books receipt contract
+        if: steps.admission.outputs.lookup == 'true'
         run: go test ./cmd/google_books_inbound
       - name: Fetch one public bibliography receipt
+        if: steps.admission.outputs.lookup == 'true'
         env:
           GOOGLE_BOOKS_API_KEY: ${{ secrets.GOOGLE_BOOKS_API_KEY }}
           GOOGLE_BOOKS_INBOUND_ISBN: ${{ inputs.isbn || vars.GOOGLE_BOOKS_INBOUND_ISBN }}
         run: go run ./cmd/google_books_inbound -isbn "$GOOGLE_BOOKS_INBOUND_ISBN" > "$RUNNER_TEMP/google-books-inbound.json"
-      - uses: actions/upload-artifact@v4
+      - if: steps.admission.outputs.lookup == 'true'
+        uses: actions/upload-artifact@v4
         with:
           name: google-books-inbound-receipt-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/google-books-inbound.json
