@@ -53,6 +53,7 @@ type matchedEdition struct {
 	LastModified   string          `json:"last_modified"`
 	MatchedISBN13  []string        `json:"matched_isbn_13"`
 	SourceSHA256   string          `json:"source_row_sha256"`
+	SourceRow      []byte          `json:"source_row_b64"`
 	SourceRecord   json.RawMessage `json:"source_record"`
 }
 
@@ -151,7 +152,8 @@ func scanDump(source io.Reader, output io.Writer, seen map[string]bool, report *
 		if err := encoder.Encode(matchedEdition{
 			Provider: report.Provider, SourceSnapshot: report.SnapshotDate, EditionKey: record.Key,
 			Revision: revision, LastModified: string(columns[3]), MatchedISBN13: matches,
-			SourceSHA256: hex.EncodeToString(digest[:]), SourceRecord: json.RawMessage(columns[4]),
+			SourceSHA256: hex.EncodeToString(digest[:]), SourceRow: row,
+			SourceRecord: json.RawMessage(columns[4]),
 		}); err != nil {
 			return err
 		}
