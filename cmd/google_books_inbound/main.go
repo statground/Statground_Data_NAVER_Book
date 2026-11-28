@@ -39,7 +39,7 @@ func lookup(ctx context.Context, client *http.Client, endpoint, isbn, apiKey str
 	if strings.TrimSpace(apiKey) == "" {
 		return receipt{}, fmt.Errorf("GOOGLE_BOOKS_API_KEY is required")
 	}
-	canonical := isbn13(identity)
+	canonical := identity.EquivalentISBN13()
 	params := url.Values{
 		"q":          {"isbn:" + canonical},
 		"key":        {apiKey},
@@ -89,7 +89,7 @@ func lookup(ctx context.Context, client *http.Client, endpoint, isbn, apiKey str
 		for _, identifier := range volume.VolumeInfo.IndustryIdentifiers {
 			if identifier.Type == "ISBN_10" || identifier.Type == "ISBN_13" {
 				match := bookmodel.NormalizeISBN(identifier.Identifier)
-				if match.Valid && isbn13(match) == canonical {
+				if match.Valid && match.EquivalentISBN13() == canonical {
 					checked.ExactISBNMatches++
 					break
 				}
@@ -97,23 +97,6 @@ func lookup(ctx context.Context, client *http.Client, endpoint, isbn, apiKey str
 		}
 	}
 	return checked, nil
-}
-
-// isbn13 maps an equivalent ISBN-10 to the same edition key as its ISBN-13.
-func isbn13(identity bookmodel.ISBNIdentity) string {
-	if identity.ISBN13 != "" {
-		return identity.ISBN13
-	}
-	prefix := "978" + identity.ISBN10[:9]
-	var sum int
-	for i := range prefix {
-		weight := 1
-		if i%2 != 0 {
-			weight = 3
-		}
-		sum += weight * int(prefix[i]-'0')
-	}
-	return prefix + string(rune('0'+(10-sum%10)%10))
 }
 
 func main() {

@@ -1,0 +1,56 @@
+name: Open Library Editions Inbound
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/open_library_inbound.yml
+      - cmd/open_library_inbound/**
+    tags: [open-library-editions-capture-*]
+  workflow_dispatch:
+    inputs:
+      isbns:
+        type: string
+        description: Additional ISBNs from the existing catalog, separated by commas
+      probe:
+        type: boolean
+        default: false
+        description: Check 100 real dump rows without collecting
+  schedule:
+    - cron: '37 2 8 * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: open-library-editions-inbound
+  cancel-in-progress: false
+
+jobs:
+  inbound:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Validate the matching and output contract
+        run: go test ./cmd/open_library_inbound ./internal/bookmodel
+      - name: Read the Open Library edition dump
+        env:
+          EXTRA_ISBNS: ${{ inputs.isbns }}
+          PROBE: ${{ (github.event_name == 'push' && github.ref_type == 'branch') || inputs.probe }}
+        run: |
+          go run ./cmd/open_library_inbound \
+            -probe="${PROBE:-false}" -isbns "$EXTRA_ISBNS" \
+            -output "$RUNNER_TEMP/open-library-inbound"
+          cat "$RUNNER_TEMP/open-library-inbound/receipt.json" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Retain verified Open Library source records and receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: open-library-inbound-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/open-library-inbound/
+          if-no-files-found: error
+          retention-days: 90

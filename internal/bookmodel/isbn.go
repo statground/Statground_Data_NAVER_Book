@@ -45,6 +45,19 @@ func NormalizeISBN(raw string) ISBNIdentity {
 	return result
 }
 
+// EquivalentISBN13 returns the ISBN-13 for the same edition, including a validated ISBN-10 alias.
+func (identity ISBNIdentity) EquivalentISBN13() string {
+	if identity.ISBN13 != "" || identity.ISBN10 == "" {
+		return identity.ISBN13
+	}
+	prefix := "978" + identity.ISBN10[:9]
+	sum := 0
+	for i, digit := range prefix {
+		sum += int(digit-'0') * (1 + 2*(i%2))
+	}
+	return prefix + string(rune('0'+(10-sum%10)%10))
+}
+
 func isbnTokens(raw string) []string {
 	return strings.FieldsFunc(raw, func(r rune) bool {
 		return !(unicode.IsDigit(r) || r == 'X' || r == 'x' || r == '-')
