@@ -1,6 +1,9 @@
 name: Google Books Inbound Receipt
 
 on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/google_books_inbound.yml]
   workflow_dispatch:
     inputs:
       isbn:
@@ -30,6 +33,18 @@ jobs:
           GOOGLE_BOOKS_INBOUND_ISBN: ${{ inputs.isbn || vars.GOOGLE_BOOKS_INBOUND_ISBN }}
           GOOGLE_BOOKS_API_KEY: ${{ secrets.GOOGLE_BOOKS_API_KEY }}
         run: |
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            schedule_enabled=false
+            isbn_configured=false
+            key_configured=false
+            if [[ "$GOOGLE_BOOKS_INBOUND_ENABLED" == true ]]; then schedule_enabled=true; fi
+            if [[ -n "${GOOGLE_BOOKS_INBOUND_ISBN//[[:space:]]/}" ]]; then isbn_configured=true; fi
+            if [[ -n "${GOOGLE_BOOKS_API_KEY//[[:space:]]/}" ]]; then key_configured=true; fi
+            printf 'Google Books readiness: schedule_enabled=%s isbn_configured=%s key_configured=%s\n' \
+              "$schedule_enabled" "$isbn_configured" "$key_configured" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
           if [[ "$GITHUB_EVENT_NAME" == schedule && "$GOOGLE_BOOKS_INBOUND_ENABLED" != true ]]; then
             echo 'Scheduled lookup disabled. No provider request was sent.' >> "$GITHUB_STEP_SUMMARY"
             exit 0
